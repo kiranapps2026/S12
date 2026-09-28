@@ -855,6 +855,13 @@ S12: BudgetTracker.reserve(tenant_id, user_id, execution_id, step_id, cost)
 
 ### 16.6 BudgetLockSweeper
 
+> **S12–S15 gate v9 repair (C37, D4, C14):** superseded. A LOCKED reservation is never
+> released by a timer: releasing a reservation whose step actually executed would make the
+> execution free and let the tenant overspend. LOCKED is resolved only by a probe result, a
+> verification result or a dead-letter resolution (`EXECUTED`/`UNDETERMINED`/abandoned →
+> COMMITTED; `NOT_EXECUTED` → RELEASED). The component below is replaced by an **alert**
+> for reservations LOCKED longer than the configured age; it changes no state.
+
 ```python
 class BudgetLockSweeper:
     """Auto-releases budget locks that exceeded timeout."""
@@ -887,7 +894,7 @@ class BudgetLockSweeper:
 | release restores budget | `UPDATE budgets SET budget_pool = budget_pool + :cost, reserved = reserved - :cost WHERE tenant_id = :tid` |
 | lock transitions only from reserved/locked | WHERE status IN ('reserved', 'locked') |
 | All operations use rowcount | If rowcount == 0 → operation already completed → idempotent no-op |
-| Budget locked on timeout | Reserved budget stays locked until probe resolves or sweeper fires |
+| Budget locked on timeout | Reserved budget stays locked until the probe resolves, or the dead letter is resolved (gate D4) |
 | All operations return bool | True if state changed, False if already in target state (idempotent) |
 
 ### 16.8 BudgetTracker API
@@ -918,9 +925,9 @@ class BudgetTracker:
 3. Reserve at S12 (Execute) with full context: `(tenant_id, user_id, execution_id, step_id, cost)`. S8 performs informational affordability precheck only — the authoritative reservation happens atomically at S12.
 3a. S8 performs an informational affordability precheck only. Its result does NOT guarantee budget availability at S12. The authoritative gate is the atomic reserve() at S12.
 4. Timeout = LOCKED, not RELEASED — budget stays deducted until probe confirms outcome
-5. Inconclusive probe = stays LOCKED — never auto-release without manual review or 24h sweep
+5. Inconclusive probe = stays LOCKED — released or committed only by dead-letter resolution (gate D4, C37)
 6. Every reserve must have exactly one terminal state: COMMITTED or RELEASED
-7. LOCKED is a transient state — must resolve to COMMITTED or RELEASED within 24 hours
+7. LOCKED is resolved by probe, verification or dead-letter resolution; a lock older than the configured age raises an alert (no timer transition — gate C37)
 8. `BudgetResult.allowed` is the ONLY budget gate — no separate preflight check
 
 ### 16.10 Budget Invariants

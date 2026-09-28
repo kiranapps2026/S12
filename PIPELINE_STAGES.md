@@ -85,6 +85,12 @@ User Message (terminal)
 
 Every stage follows this contract:
 
+> **S12–S15 gate v9 repair (C38):** historical. The certified S0–S11 implementation replaced
+> `StageResult` with the typed `PipelineState`: each stage handler is
+> `async def handle(state: PipelineState) -> PipelineState` and writes only its own output
+> through `with_stage_output()`; short-circuits use `StageStatus`. S12–S15 stages follow the
+> same pattern. `StageResult` must not be reintroduced (the S0–S11 certifier fails on it).
+
 ```python
 @dataclass(frozen=True)
 class StageResult:
