@@ -169,3 +169,76 @@ below as a failing check and continue the loop until owner_verify would pass:
 <paste FAIL lines>
 continue per AUTOPILOT
 ```
+
+---
+
+## P8 — adding an owner ruling while the loop is live (R-Z, confirmation store)
+
+The certifier, runbook and AUTOPILOT are hash-pinned, and Fable runs the certifier
+every iteration. Change them only while Fable is paused, or it will report false
+FAILs or stop with S-1.
+
+**1. Pause Fable at a clean point:**
+
+```text
+PAUSE: finish your current iteration (suite green, commit, log line), then reply
+exactly "PAUSED <short hash>" and do nothing else until the owner says
+"continue per AUTOPILOT". Do not start another iteration.
+```
+
+**2. Check the tree is clean.** In `C:\Users\Administrator\Documents\1SuperAgents`,
+`git status --short` must print nothing. If it prints anything, ask Fable to commit it.
+
+**3. Make the owner change** (the runbook, certifier and AUTOPILOT are yours to edit):
+
+```powershell
+cd C:\Users\Administrator\Documents\1SuperAgents
+# a. find the interface file:line values for the ruling's <FILL> lines
+Get-ChildItem -Recurse src -Filter *.py | Select-String -Pattern 'class \w*Confirmation\w*(Store|Repository)\b|def (save|store|put|create|consume|verify)\w*\(' |
+  Where-Object { $_.Path -match 'confirm' } | ForEach-Object { "{0}:{1}  {2}" -f $_.Path.Replace("$PWD\",''), $_.LineNumber, $_.Line.Trim() }
+# b. fill the three <FILL> lines in RULING_R-Z_confirmation_store.md, then append it (UTF-8, no BOM):
+$enc = New-Object System.Text.UTF8Encoding $false
+[IO.File]::AppendAllText("$PWD\docs\gates\S0_S11_RUNBOOK.md", "`r`n" + [IO.File]::ReadAllText("<kit folder>\RULING_R-Z_confirmation_store.md", $enc), $enc)
+# c. bump the runbook revision line by hand, e.g. "Revision: v8.1 — adds R-Z (confirmation store tenant/execution id)"
+notepad docs\gates\S0_S11_RUNBOOK.md
+# d. new AUTOPILOT v2.1 into the repo
+Copy-Item "<kit folder>\repo\docs\gates\AUTOPILOT.md" docs\gates\AUTOPILOT.md -Force
+```
+
+Then copy the kit's `owner_tools\owner_certify.py` and `owner_tools\owner_common.ps1`
+into your owner folder (`...\1SuperAgents_owner`), replacing the old ones. Check:
+
+```powershell
+(Get-FileHash C:\Users\Administrator\Documents\1SuperAgents_owner\owner_certify.py -Algorithm SHA256).Hash
+# must print 356359B9EFC847B56B7D222C2F92EC3DF53DC0F76B63EDB68D18F2E7F9FF9546
+```
+
+**4. Re-pin.** From the owner folder, run
+`powershell -ExecutionPolicy Bypass -File .\owner_pin.ps1`.
+It copies the new certifier into `tools\`, runs `--selftest` (every row must be OK),
+re-pins the specs, runbook and AUTOPILOT, commits, and adds the new pin commit to
+`pin_record.txt`. Confirm that `Get-Content docs\gates\owner_certify.sha256` shows
+`356359B9…9546`, then run `.\owner_checkpoint.ps1`. It must show no red FAIL lines.
+
+**5. Resume Fable:**
+
+```text
+continue per AUTOPILOT
+
+Owner update while you were paused (commit "Owner: pin certifier, specs, runbook
+and AUTOPILOT v2"):
+- Runbook: new ruling R-Z (confirmation store takes tenant_id and execution_id,
+  supplied by S10 from ExecutionContext.tenant_id and PlanCreationResult.execution_id).
+  It names the interface file:line to change. Read R-Z fully before touching it.
+- Certifier: three new required tests (they appear under OWN-12). New SHA-256
+  356359B9EFC847B56B7D222C2F92EC3DF53DC0F76B63EDB68D18F2E7F9FF9546.
+- AUTOPILOT v2.1: sabotage kit now has SAB-11 (tenant check on consume).
+Do Part B (session start) first. test_s10_store_receives_tenant_and_execution_id
+must use a recording fake store and compare the recorded arguments with the values
+in the pipeline state; a test that only checks S10 ran does not count.
+```
+
+If you are still on the v1 kit (`tools\owner_pin.ps1` in the repo), do the v2 install
+from README.md during this same pause instead of step 4. It is one pause for both.
+If you stay on v1 for now, put the new hash in **both** `tools\owner_pin.ps1` and
+`tools\owner_verify.ps1`, because v1 hard-codes it twice.

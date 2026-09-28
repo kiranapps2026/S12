@@ -63,7 +63,7 @@ foreach ($old in @("tools/owner_pin.ps1", "tools/owner_verify.ps1")) {
 git commit -m "Owner: pin certifier, specs, runbook and AUTOPILOT v2" -- $paths
 if ($LASTEXITCODE -ne 0) { throw "git commit failed." }
 $pin = git rev-parse HEAD
-$pin | Out-File -Encoding ascii $PinRecord
+Add-Content -Encoding ascii $PinRecord $pin     # appended: the first line stays the original pin
 
 # 7. Baseline measurement, kept outside the repo
 Clear-Caches

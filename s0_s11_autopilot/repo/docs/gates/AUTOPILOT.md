@@ -1,9 +1,10 @@
-# AUTOPILOT v2 — run S0–S11 to certification, autonomously
+# AUTOPILOT v2.1 — run S0–S11 to certification, autonomously
 
 Repository: `C:\Users\Administrator\Documents\1SuperAgents`
 When the owner says **"continue per AUTOPILOT"**, do exactly this file.
 `docs/gates/S0_S11_RUNBOOK.md` holds the rulings; this file holds the loop.
-This file replaces AUTOPILOT v1 and every earlier chat instruction.
+This file replaces AUTOPILOT v1/v2 and every earlier chat instruction.
+v2.1 adds owner ruling R-Z (runbook): its three tests are in the certifier's required list (OWN-12), plus SAB-11.
 
 Total checks: **19** (OWN-01,02,03,05,06,07,08,09,10,11,16,17,18,19,20 static + OWN-12,13,14,15).
 Done = `python tools/owner_certify.py` prints `19/19 PASS`.
@@ -67,6 +68,8 @@ you were doing**:
 5. Pick the **first FAIL in this order**:
    OWN-19, OWN-17, OWN-01, OWN-06, OWN-02, OWN-03, OWN-05, OWN-18, OWN-07,
    OWN-09, OWN-10, OWN-16, OWN-08, OWN-11, OWN-12, OWN-13, OWN-14, OWN-15.
+   Runbook R-Z (confirmation store) shows up as OWN-12 detail lines; fix it
+   when OWN-12 comes up, or earlier while working on Confirmation (OWN-17).
 6. Fix it using the runbook ruling for that area (OWN-19: R-T/R-H;
    OWN-17: R-O, R-X, R-V, R-Q, R-R, R-S; OWN-18: R-P; OWN-08: R-Y;
    OWN-12: Part 5/Part 6; OWN-15: Step 10; OWN-01/OWN-06: R-G/R-A).
@@ -91,7 +94,7 @@ you were doing**:
 | **M2 Contracts** | OWN-17, OWN-02, OWN-03 PASS. No contract class has a field outside DATA_CONTRACTS + approved extensions. |
 | **M3 Vocabulary & safety defaults** | OWN-18, OWN-01, OWN-06, OWN-07, OWN-09, OWN-10, OWN-16 PASS. |
 | **M4 Module state** | OWN-08 PASS. |
-| **M5 Required tests** | OWN-12, OWN-13, OWN-14 PASS. |
+| **M5 Required tests** | OWN-12, OWN-13, OWN-14 PASS (includes the R-Z tests). |
 | **M6 Evidence** | OWN-15 PASS, sabotage kit complete (Part F), 19/19 PASS. |
 
 At each milestone run this **cross-check** and record the result:
@@ -117,7 +120,7 @@ A milestone that fails its cross-check is **not reached**: fix it before moving 
 5. Send exactly:
 ```text
 AUTOPILOT COMPLETE — owner certifier 19/19 PASS at commit <hash>
-Milestones M1–M6 reached; sabotage kit: 10/10 patches break their test.
+Milestones M1–M6 reached; sabotage kit: 11/11 patches break their test.
 Owner: run owner_verify.ps1
 ```
 
@@ -143,6 +146,7 @@ rule below, create two files in `docs/gates/sabotage/`:
 | SAB-08 | PipelineState: second write to a stage output is allowed |
 | SAB-09 | PipelineState: a stage may write a field it does not own |
 | SAB-10 | S7: unmatched combination no longer returns CLARIFY |
+| SAB-11 | Confirmation store: consuming ignores a tenant mismatch (R-Z) |
 
 Verify each yourself: `git apply docs/gates/sabotage/SAB-NN.patch`, run the test
 (must fail with `AssertionError`), `git apply -R` the patch, run it again (must

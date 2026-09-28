@@ -47,7 +47,7 @@ git worktree remove --force $wt 2>$null | Out-Null
 if (Test-Path $wt) { Remove-Item -Recurse -Force $wt }
 git worktree add --detach $wt HEAD 2>$null | Out-Null
 try {
-    foreach ($n in 1..10) {
+    foreach ($n in 1..11) {
         $id = "SAB-{0:D2}" -f $n
         $patch = Join-Path $Repo "docs\gates\sabotage\$id.patch"
         $testf = Join-Path $Repo "docs\gates\sabotage\$id.test"

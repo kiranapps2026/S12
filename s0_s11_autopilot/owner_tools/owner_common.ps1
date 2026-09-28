@@ -3,8 +3,9 @@
 $Repo       = "C:\Users\Administrator\Documents\1SuperAgents"
 $OwnerDir   = $PSScriptRoot                                   # e.g. C:\Users\Administrator\Documents\1SuperAgents_owner
 $TrustedCert = Join-Path $OwnerDir "owner_certify.py"         # the owner's own copy of the certifier
-$PinRecord  = Join-Path $OwnerDir "pin_record.txt"            # commit hash of the owner pin commit
-$ExpectedCertHash = "F8E4C933B09884B3106B48710FACE7F6B07AEA24E31F5CAE6258CE88BA1550F2"
+$PinRecord  = Join-Path $OwnerDir "pin_record.txt"            # one line per owner pin commit (first = original pin)
+$ExpectedCertHash = "356359B9EFC847B56B7D222C2F92EC3DF53DC0F76B63EDB68D18F2E7F9FF9546"   # certifier with R-Z tests
+# (previous certifier, before R-Z: F8E4C933B09884B3106B48710FACE7F6B07AEA24E31F5CAE6258CE88BA1550F2)
 $TotalChecks = 19
 
 # Files the agent must never change after the pin commit.
@@ -33,10 +34,12 @@ function Fail($msg) { Write-Host "  FAIL  $msg" -ForegroundColor Red; $script:Fa
 function Warn($msg) { Write-Host "  WARN  $msg" -ForegroundColor Yellow; $script:Warns++ }
 function Section($msg) { Write-Host ""; Write-Host "== $msg" -ForegroundColor Cyan }
 
-function Get-PinCommit {
-    if (-not (Test-Path $PinRecord)) { return $null }
-    return (Get-Content $PinRecord -Raw).Trim()
+function Get-PinLines {
+    if (-not (Test-Path $PinRecord)) { return @() }
+    return @(Get-Content $PinRecord | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
+function Get-PinCommit      { $l = Get-PinLines; if ($l.Count) { return $l[-1] } else { return $null } }  # latest pin: protection
+function Get-FirstPinCommit { $l = Get-PinLines; if ($l.Count) { return $l[0] }  else { return $null } }  # original pin: scope
 
 # Shared protection checks used by checkpoint and verify.
 function Test-Protection {
@@ -52,7 +55,7 @@ function Test-Protection {
     if (-not $pin) { Fail "no pin record — run owner_pin.ps1 first"; return }
     git merge-base --is-ancestor $pin HEAD 2>$null
     if ($LASTEXITCODE -ne 0) { Fail "pin commit $pin is not an ancestor of HEAD (history rewritten?)"; return }
-    Pass "pin commit $pin is in history"
+    Pass "latest pin commit $pin is in history ($((Get-PinLines).Count) pin(s) recorded)"
 
     $changed = git diff --name-only $pin HEAD -- $Protected
     $dirty   = git status --porcelain -- $Protected
@@ -65,9 +68,11 @@ function Test-Protection {
 
 function Test-Scope {
     Section "Change scope since pin"
-    $pin = Get-PinCommit
+    $pin = Get-FirstPinCommit
     if (-not $pin) { return }
-    $files = git diff --name-only $pin HEAD
+    # Protected paths are covered by Test-Protection (owner re-pins legitimately change them).
+    $protRx = '^(' + (($Protected | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')'
+    $files = git diff --name-only $pin HEAD | Where-Object { $_ -notmatch $protRx -and $_ -notmatch '^tools/owner_(pin|verify)\.ps1$' }
     $outside = $files | Where-Object { $_ -notmatch $AllowedPattern }
     if ($outside) { Warn "files outside the allowed scope — review each:"; $outside | ForEach-Object { "          $_" } }
     else { Pass "$(@($files).Count) changed files, all inside src/, tests/, allowed docs/gates files" }
@@ -93,3 +98,4 @@ function Clear-Caches {
     Get-ChildItem -Recurse -Directory -Filter __pycache__ -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path .pytest_cache) { Remove-Item -Recurse -Force .pytest_cache -ErrorAction SilentlyContinue }
 }
+
