@@ -1,6 +1,7 @@
 # SuprAgents — Final Architecture Document
 
-**Version**: 4.3.0 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**Version**: 4.4.0 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**4.4.0 (2026-09-28)**: absorbs the decisions of the later documents (WORKER_LIFECYCLE_VERIFICATION_ADMISSION, SUPERSESSION_AWARE_BLOCKER_REGISTER, XS-1) and the S12–S15 gate v9 rulings, so no document contradicts this one (I-015). Each changed passage carries a `S12–S15 gate v9 repair` marker; the full list is gate C38.
 **Date**: 2026-09-26 | **Source**: `rebuild/` design documents + 10-repo gap analysis + P0+P1 audit
 **Purpose**: Single, authoritative architecture document that absorbs best patterns from 10 studied repositories, resolves all known conflicts, and serves as the single source of truth for implementation.
 
@@ -22,7 +23,7 @@
 12. [Durable Execution Kernel](#12-durable-execution-kernel)
 13. [Execution Manifest](#13-execution-manifest)
 14. [Capability Model — The Contract Layer](#14-capability-model--the-contract-layer)
-15. [Execution Engine — The Runner](#15-execution-engine--the-runner)
+15. [Execution Engine — The Worker Runtime](#15-execution-engine--the-worker-runtime)
 16. [Registry — The Single Source of Truth](#16-registry--the-single-source-of-truth)
 17. [Reliability Layer — Guards, Breakers, Budgets](#17-reliability-layer--guards-breakers-budgets)
 18. [Safety Model — Cordon Points & Authorization](#18-safety-model--cordon-points--authorization)
@@ -568,24 +569,25 @@ The execution kernel ensures that every operation is traceable, reversible (wher
 |-----------|---------|----------------|
 | **Checkpoint** | Save execution state after each step | Database-backed, atomic |
 | **Resume** | Restart from last checkpoint | Deterministic replay |
-| **Lease** | Prevent concurrent execution of same worker | Distributed lock with TTL |
-| **Fence** | Prevent stale execution after restart | Monotonic sequence number |
+| **Lease** | Bound a worker's concurrent executions to `workers.capacity`; give one Worker Runtime the right to execute a step | `worker_leases` row with TTL and stored status |
+| **Fence** | Prevent a stale owner from writing after it lost the lease | Monotonic token from one database sequence, checked per execution |
 | **Scheduler** | Distribute work across worker pool | Priority-aware, fairness-guaranteed |
 
 ### Worker State Machine
 
 ```
-PENDING → ACTIVE → PAUSED → TERMINATED
-   │         │         │
-   │         │         └── → RESUMING → ACTIVE
-   │         └── → RESUMING → ACTIVE
-   └── → TERMINATED
+REGISTERED → ACTIVE → DRAINING → DRAINED → TERMINATED
+                ↑         │          │
+                └─────────┴──────────┘   (drain cancelled / restart)
 ```
+
+> **S12–S15 gate v9 repair (C38):** The earlier diagram (PENDING, PAUSED, RESUMING) predates WORKER_LIFECYCLE_VERIFICATION_ADMISSION §1. The canonical worker states and transitions are STATE_TRANSITIONS §4.
+
 
 ### Lease Management
 - Leases are acquired before execution begins
 - Leases are renewed automatically during execution
-- Lease expiry triggers graceful worker draining
+- Lease expiry ends that execution's ownership; the new owner resolves the in-flight step by probing (S12–S15 gate §13). Worker draining on lease loss belongs to the fleet phase.
 - Stale leases are detected and reclaimed by the sweeper
 
 ---
@@ -626,7 +628,10 @@ RESPONSE PLANE (S15) — Formats outcomes for the user.
 1. S5 computes effective_risk and effective_mutation once. All downstream stages (S6-S15) consume these frozen values. No stage after S5 recomputes risk or mutation.
 2. Only S12 performs actual budget reservation. S8 performs affordability precheck only. S9 does not reserve budget.
 3. S2 is the ONE unconditional LLM call. All other LLM calls are conditional (AGENTIC path only).
-4. Every stage produces a StageResult with can_short_circuit, next_stage, and context_updates.
+4. Every stage returns the next `PipelineState`, writing only its own output through `with_stage_output()`; short-circuits use `StageStatus` (DENY, CLARIFY, ...).
+
+> **S12–S15 gate v9 repair (C38):** The earlier wording ("every stage produces a StageResult") described a contract that the certified S0–S11 implementation removed; `StageResult` is forbidden by the S0–S11 certifier.
+
 5. UNKNOWN outcomes cannot become SUCCESS without verification through S13 PROBE -> CONFIRMED.
 
 **Short-Circuit Paths**:
@@ -657,13 +662,21 @@ The execution kernel guarantees that every execution is traceable, reversible wh
 
 ### State Transition Contract
 
-Every execution follows this state machine. Transitions are atomic — no intermediate states.
+Every execution is described by three canonical state machines — the run
+(`ExecutionStatus`), each step (`StepState`) and each step's budget reservation
+(`ReservationState`) — defined in STATE_TRANSITIONS §1–§3 and tabulated, with reason
+codes, in S12_S15_EXECUTION_GATE Appendix A. Transitions are atomic — no intermediate
+states. Budget is reserved **per step**:
 
 ```
-PENDING → RESERVED → COMMITTED (success)
-                      → RELEASED (failure)
-                      → LOCKED (UNKNOWN outcome, requires human review)
+reserved → locked → committed   (step verified COMPLETED)
+                  → released    (step FAILED, or probe confirms NOT_EXECUTED)
+                  (stays locked while the outcome is UNKNOWN; resolved by probe,
+                   verification or dead-letter resolution — never by a timer)
 ```
+
+> **S12–S15 gate v9 repair (C3, C38):** The earlier single per-execution machine (PENDING → RESERVED → COMMITTED/RELEASED/LOCKED) conflicted with the per-step schema (`budget_reservations.step_id`) and with §15 "reserve budget" per step. `ExecutionState` below is a descriptive summary only.
+
 
 ```python
 @dataclass(frozen=True)
@@ -688,18 +701,21 @@ class ExecutionState:
 | **Checkpoint** | Save execution state after each step | Database-backed, atomic transaction per step |
 | **Resume** | Restart from last checkpoint | Deterministic replay from frozen manifest |
 | **Lease** | Prevent concurrent execution of same worker | worker_leases table with fence_token |
-| **Fence** | Prevent stale execution after restart | Monotonic fence_token, worker must have matching lease_epoch |
+| **Fence** | Prevent stale execution after restart | Monotonic fence_token from one sequence; every durable write checks the execution's `execution_ownership.fencing_token` (gate C25) |
 | **Scheduler** | Distribute work across worker pool | Priority-aware, tenant-fair, backpressure-controlled |
 
 ### Atomic State Transitions
 
 No state transition is partial. Each transition either commits fully or rolls back.
 
-1. **S11 → S12**: ExecutionManifest frozen. Budget reservation atomically inserted into budget_reservations with state=PENDING. If insert fails, execution does not start.
-2. **S12 step start**: Step state changes from PENDING to RUNNING. Side effects (API calls, DB writes) happen AFTER reservation is confirmed.
-3. **S12 step complete**: Step state changes to COMPLETED. Adapter result stored. If adapter result is UNKNOWN, state transitions to PROBE.
-4. **S13 reconcile**: PROBE attempts verification. If verification succeeds → CONFIRMED_SUCCESS. If verification fails → CONFIRMED_FAILURE. If inconclusive → STILL_UNKNOWN → LOCKED.
-5. **S14 dead letter**: FAILURE and LOCKED states trigger dead letter classification. transient errors trigger retry. permanent errors escalate to human review.
+1. **S11 → S12 entry**: the frozen ExecutionManifest and plan are verified and persisted with the run in one admission transaction. No budget is reserved at entry.
+2. **S12 step start**: after admission, worker lease and a per-step budget reservation, the step moves PENDING → RUNNING and its reservation RESERVED → LOCKED in one transaction. Side effects happen only after that.
+3. **S12 step result**: an adapter result is verified before COMPLETED (§35). An uncertain result moves the step to PENDING_PROBE and opens a reconciliation episode; transient errors are retried while the step stays RUNNING.
+4. **S13 reconcile** (code in the S13 package, called from the S12 loop): the probe or verification resolves the episode → CONFIRMED_SUCCESS or CONFIRMED_FAILURE; if still inconclusive after the bounded attempts, the step goes to DEAD_LETTER and its budget stays LOCKED.
+5. **S14 dead letter**: records failures and unresolved uncertainty with evidence. A dead letter never re-executes a step; its retry only re-probes or re-verifies (gate D5). Permanent errors and unresolved outcomes escalate to human review.
+
+> **S12–S15 gate v9 repair (C3, C6, C12, D5, C38):** Aligned with the per-step budget, the retry-inside-RUNNING rule and the dead-letter retry modes decided after this document was written.
+
 
 ### MemoryWriteBarrier
 
@@ -711,7 +727,7 @@ All memory writes (L0-L3) pass through MemoryWriteBarrier before persisting. Thi
 ### Scheduler Integration
 
 The scheduler is a first-class subsystem that:
-- Polls execution_queue for PENDING executions
+- Dispatches PENDING executions in-process in the single-node phase (PostgreSQL is the claim authority, not a queue — §37; gate C1)
 - Selects workers based on capacity, capability_profile, and tenant fairness
 - Acquires worker lease with fence_token before assigning execution
 - Releases lease on completion or timeout
@@ -746,6 +762,9 @@ class ExecutionManifest:
     created_at: float
 ```
 
+
+> **S12–S15 gate v9 repair (C38):** The field list above predates the canonical contract. The canonical ExecutionManifest is DATA_CONTRACTS `ExecutionManifest` (identical to §38 below) plus the certified `auth_result_id`. Runtime values (`reconciliation_state`, dead-letter records, costs) are not manifest fields: the manifest is immutable, and runtime state lives in the execution tables.
+
 ### Canonical Ownership: Execution Truth
 
 > **Rule**: ExecutionContext = request identity. ExecutionManifest = complete immutable execution truth.
@@ -757,7 +776,7 @@ class ExecutionManifest:
 | `FrozenBindingIdentity` | Provider/binding/risk/mutation at S5 | Plan steps, authorization, budget |
 | `Plan` | Step graph with parameter bindings | Runtime results, provider state |
 
-**Storage**: Written to `execution_manifests` table at S11 completion. Read-only for S12 and all subsequent stages. Never updated after creation.
+**Storage**: Frozen at S11 completion; persisted to `execution_manifests` at S12 entry, in the same transaction that creates the run row, byte-identical to the S11 manifest (the table references `execution_runs`, which does not exist at S11). Read-only for S12 and all subsequent stages. Never updated after creation.
 
 ---
 ## 14. Capability Model — The Contract Layer
@@ -814,7 +833,7 @@ New protocols integrate as adapters, not as new execution engines. They follow t
 
 ---
 
-## 15. Execution Engine — The Runner
+## 15. Execution Engine — The Worker Runtime
 
 ### Execution Strategies (Selected at S7 Path Routing)
 
@@ -859,7 +878,7 @@ Each step in a plan is executed by the StepExecutor:
 | All failed | `failed` | Every step returned FAILED |
 | Mixed (some succeeded, some failed) | `partial` | Only after ALL steps are terminal |
 | Any UNKNOWN | `unknown` | Must go through PROBE → CONFIRMED before consolidation |
-| All skipped | `ok` | No steps needed execution |
+| All skipped | — | Unreachable: a step is SKIPPED only after a predecessor failed (gate C22), so the "mixed" or "all failed" row applies |
 | Partial completion | `partial` | Some steps completed, some failed, all terminal |
 
 **Rules**:
@@ -929,6 +948,9 @@ Generated files have sentinel comments for verification:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+
+> **S12–S15 gate v9 repair (C4, C38):** These are conceptual layers. The runtime guard is implemented as the five named components of RELIABILITY §1/§8 (CircuitBreaker, RetryStormGuard, BudgetTracker, TimeoutManager, Bulkhead). The "Safety Guard" layer here corresponds to the idempotency lookup and mutation-aware retry ceiling applied immediately before each adapter call; the "Dead Letter Store" layer is S14.
+
 ### Retry Decision Matrix
 
 | Mutation Type | Retry Safety | 4xx | 5xx | Timeout | Network |
@@ -939,6 +961,8 @@ Generated files have sentinel comments for verification:
 | D (Delete) | idempotent | No | Yes | Yes | Yes |
 | D | never | No | No | No | No |
 | IRREVERSIBLE | any | No | No | No | No |
+
+"Timeout: Yes" means the step may be retried **after** a probe confirms NOT_EXECUTED; a timeout is never blindly retried (§19, gate §9).
 
 ### Retry Budget (Per-Step)
 
@@ -1066,11 +1090,15 @@ ExecutionError (base)
 ### Probe Pattern (from gap analysis)
 
 When adapter returns `status="UNKNOWN"` (timeout, network error):
-1. Record step as UNKNOWN
-2. Execute probe step to determine actual outcome
-3. If confirmed success → mark step completed
-4. If confirmed failure → apply retry policy
-5. If probe inconclusive → dead letter
+1. Record the uncertainty (step → PENDING_PROBE, reconciliation episode opened)
+2. Execute the probe to determine the actual outcome
+3. If confirmed executed and successful → verify, then mark the step completed
+4. If confirmed NOT executed → apply the retry policy (retry within the step's ceiling; never for IRREVERSIBLE or non-idempotent D)
+5. If confirmed executed but failed → the step fails (no retry after an uncertainty episode unless NOT_EXECUTED is proven)
+6. If probe inconclusive after the bounded attempts → dead letter
+
+> **S12–S15 gate v9 repair (C6, C38):** Step 4 previously read "If confirmed failure → apply retry policy". A probe cannot report the error class, so retrying is limited to the one outcome proven free of side effects.
+
 
 ---
 
@@ -1086,7 +1114,7 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 | ORM | SQLAlchemy 2.0 | Async support, type safety |
 | Vector Search | LanceDB | Embedded, fast, no separate service |
 | Cache | Redis | Session cache, rate limiting |
-| Queue | PostgreSQL + pg_cron | Simple, reliable, no separate service |
+| Queue | In-process dispatch (single node); PostgreSQL is the claim authority; notification channel deferred to the fleet phase | PostgreSQL is not a message bus (§37); gate C1 |
 | Observability | OpenTelemetry + Jaeger | Distributed tracing |
 | Testing | pytest + httpx | Async support, fixture ecosystem |
 
@@ -1295,6 +1323,9 @@ class WorkStealingScheduler:
 | **Escalation** | User unavailable | Admin override | 30 minutes |
 | **Re-entry** | Confirmation expired | Restart from S10 | N/A |
 
+
+> **S12–S15 gate v9 repair (C20, C38):** The canonical confirmation contract is DATA_CONTRACTS `Confirmation` (certified in S0–S11); canonical statuses are `pending`, `consumed`, `rejected`, `expired` (STATE_TRANSITIONS §8). The block below is historical.
+
 ### Confirmation Token
 
 ```python
@@ -1392,10 +1423,10 @@ CREATE TABLE workers (
     worker_class VARCHAR(100) NOT NULL,
     runtime_version VARCHAR(50),
     capability_profile JSONB NOT NULL,
-    state VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-    capacity INTEGER NOT NULL DEFAULT 1,
+    state VARCHAR(20) NOT NULL DEFAULT 'REGISTERED',   -- STATE_TRANSITIONS §4
+    capacity INTEGER NOT NULL DEFAULT 1,               -- max concurrent executions
     current_load INTEGER NOT NULL DEFAULT 0,
-    lease_epoch BIGINT NOT NULL DEFAULT 0,
+    lease_epoch BIGINT NOT NULL DEFAULT 0,             -- newest fence token issued (gate C25)
     heartbeat_at TIMESTAMP,
     last_assignment_at TIMESTAMP,
     drain_state VARCHAR(20),
@@ -1731,6 +1762,8 @@ class BaseAdapter(ABC):
 
 New protocols add an adapter class. They do NOT modify the kernel, the pipeline, or the resolution chain.
 
+> **S12–S15 gate v9 repair (C32):** `BaseAdapter` also has `probe()` and `observe()` with safe defaults (INCONCLUSIVE / inconclusive observation) and `call()` accepts an optional `call_meta` (idempotency key, attempt and call ids). These are additive: an adapter written to the signature above keeps working, and the defaults keep uncertain mutations out of silent success. See PROVIDER_ADAPTERS §1.
+
 ### Principle 3: Bidirectional MCP (Ouroboros Pattern)
 
 The kernel can serve as both an MCP client (consuming external MCP servers) and an MCP server (exposing its capabilities to external agents).
@@ -1868,7 +1901,7 @@ class ExecutionManifest:
     created_at: float
 ```
 
-**Storage**: Written to `execution_manifests` table at S11 completion. Read-only for S12 and all subsequent stages. Never updated after creation.
+**Storage**: Frozen at S11 completion; persisted to `execution_manifests` at S12 entry in the admission transaction, byte-identical to the S11 manifest (see §13). Read-only for S12 and all subsequent stages. Never updated after creation.
 
 **Validation test**: `test_execution_manifest_frozen()` — verifies manifest cannot be modified after S11.
 
@@ -2603,7 +2636,7 @@ class ArchitectureComplianceSuite:
 | **I-001** | TENANT ISOLATION | No cross-tenant data access under any circumstance. RLS enforces this at the database level. |
 | **I-002** | FROZEN BINDINGS | Frozen bindings cannot change during execution. S5 output is immutable after S5. |
 | **I-003** | SINGLE BUDGET RESERVATION | Only S12 performs budget reservation. S8 checks affordability. S9 does not reserve. |
-| **I-004** | ZOMBIE WORKER PROTECTION | A stale worker (lease_epoch < current fence_token) cannot commit any state change. |
+| **I-004** | ZOMBIE WORKER PROTECTION | A stale owner — a Worker Runtime whose fence token for an execution is lower than that execution's current `execution_ownership.fencing_token` — cannot commit any state change for that execution. Fence tokens come from one database sequence (gate C25). |
 | **I-005** | NO SILENT SUCCESS | UNKNOWN cannot become SUCCESS without verification. S13 must establish truth before CONFIRMED_SUCCESS. |
 | **I-006** | IMMUTABLE PLAN | A plan cannot mutate after S10 confirmation. |
 | **I-007** | LLM CANNOT AUTHORIZE | LLM output cannot authorize an action. Authorization is kernel-evaluated only. |
@@ -2620,7 +2653,7 @@ class ArchitectureComplianceSuite:
 | **I-018** | SECRET ISOLATION | Provider credentials never enter execution context, prompts, traces, memory, checkpoints, or artifacts. |
 | **I-019** | SERVER-AUTHORITATIVE TIME | Distributed timing decisions use server time, not worker-local clocks. |
 | **I-020** | OUTBOX ATOMICITY | State changes and their announcing events are committed atomically. No state change exists without its event. No event exists without its state change. |
-| **I-021** | AT-LEAST-ONCE SEMANTICS | Execution is at-least-once (not exactly-once). Idempotency via request fingerprint prevents duplicate effects. Duplicate execution is safe; missing execution is not. |
+| **I-021** | AT-LEAST-ONCE SEMANTICS | Execution is at-least-once (not exactly-once). The step idempotency key (`request_id:plan_step_id`, gate C9), the idempotency ledger and probing before any retry of an uncertain step prevent duplicate effects. Duplicate execution is safe; missing execution is not. |
 | **I-022** | EVENT GATEWAY TENANT ISOLATION | `EventEnvelope.tenant_id` comes from the Event Gateway authentication context (HMAC credential lookup). It is NEVER extracted from the event payload. |
 | **I-023** | EVENT DRIVEN = SAME PIPELINE | Event-driven executions follow the identical S0→S15 pipeline as human-driven. No parallel path, no bypass mode, no special case exists. |
 | **I-024** | KERNEL STABILITY BOUNDARY | No change to S0–S15, state machines, budget, or safety is ever required to add a new adapter, protocol, or runtime. |
@@ -2877,8 +2910,9 @@ This gives the marketplace structure:
 | **Worker** | An AI agent with identity, lifecycle, memory, and execution context |
 | **Pipeline Stage** | One of 15 stages in the request lifecycle |
 | **Cordon Point** | A stage that can stop execution (short-circuit) |
-| **Lease** | Distributed lock preventing concurrent execution |
-| **Fence** | Monotonic sequence preventing stale execution |
+| **Lease** | Time-bounded right for one Worker Runtime to execute a step for a Worker; a worker's usable leases never exceed its capacity |
+| **Worker Runtime** | The running process/container that executes on behalf of Workers (§34); identified by `runtime_instance_id` |
+| **Fence** | Monotonic token (one database sequence) preventing a stale owner's writes |
 | **Probe** | Post-execution check to determine UNKNOWN outcome |
 | **A2A** | Agent-to-agent communication |
 | **HITL** | Human-in-the-loop |

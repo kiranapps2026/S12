@@ -792,6 +792,8 @@ class PlanFreeze:
 
 **Output**: `ExecutionResult`
 
+> **S12–S15 gate v9 repair (C3, C4, C11, C17, C30, C31, C35):** The normative per-step sequence is S12_S15_EXECUTION_GATE §8. In short: live authorization check → admission → worker selection → lease → budget reserve (per step) → pre-flight → step RUNNING + budget LOCKED → live check → idempotency lookup → dispatch marker → adapter call through the guard (components by name: Bulkhead, CircuitBreaker, BudgetTracker check, RetryStormGuard, TimeoutManager) → verification → COMPLETED + COMMITTED, or FAILED + RELEASED → checkpoint → lease release. Steps run in topological order of `depends_on`; admission QUEUE and lease failure are retried, never skipped. Uncertain outcomes go RUNNING → PENDING_PROBE (not UNKNOWN). The list below is historical where it differs.
+
 **Actions**:
 
 ```
@@ -943,12 +945,12 @@ class BudgetReserver:
         return self._state
 ```
 
-**Budget reservation rules**:
-1. Reservation is atomic with plan validation — either both succeed or both fail
-2. Budget is reserved at S12 start, BEFORE any step executes
-3. Budget is committed on full success, released on any failure
-4. Budget is LOCKED during UNKNOWN reconciliation — cannot be used by other executions
-5. If the process crashes with budget LOCKED, crash recovery releases the budget via checkpoint
+**Budget reservation rules** (S12–S15 gate v9 repair, C3, C14, C31):
+1. Budget is reserved **per step**, after lease acquisition and before pre-flight (the earlier "atomic with plan validation" and "reserved at S12 start" are superseded; S11's budget check is informational)
+2. RESERVED → LOCKED immediately before execution; LOCKED → COMMITTED when the step is verified COMPLETED; → RELEASED when it FAILED, was cancelled/skipped, or a probe confirmed NOT_EXECUTED
+3. Budget stays LOCKED while the outcome is uncertain — it cannot be used by other executions
+4. A LOCKED reservation is resolved only by probe, verification or dead-letter resolution — crash recovery never releases it blindly (a step that actually executed would otherwise be free and let the tenant overspend)
+5. The `BudgetReserver` sketch above (with its `tenant_budget` table and RESERVED → COMMITTED) is non-normative; the pool is `tenants.budget_pool` and the transitions are STATE_TRANSITIONS §3
 
 **Rollback on Failure**:
 
@@ -1002,10 +1004,11 @@ for step in reversed(completed_steps):
 | All COMPLETED | COMPLETED | SUCCESS |
 | Some COMPLETED, some FAILED | PARTIAL | PARTIAL |
 | All FAILED | FAILED | FAILURE |
-| All SKIPPED | COMPLETED | SUCCESS |
-| Any UNKNOWN → confirmed SUCCESS | PARTIAL | PARTIAL |
-| Any UNKNOWN → confirmed FAILURE | FAILED | FAILURE |
-| Any UNKNOWN → still UNKNOWN after max probes | DEAD_LETTER | FAILURE |
+| Any step DEAD_LETTER (uncertainty unresolved after max probes/verification) | DEAD_LETTER | FAILURE |
+| At least one COMPLETED and at least one FAILED/CANCELLED | PARTIAL | PARTIAL |
+| No step COMPLETED | FAILED | FAILURE |
+
+> **S12–S15 gate v9 repair (C8, C38, §10):** a step whose uncertainty resolved to CONFIRMED_SUCCESS counts as COMPLETED (it was listed as PARTIAL). CANCELLED and SKIPPED steps count as not completed; COMPLETED + SKIPPED with no failures is SUCCESS. The "All SKIPPED" row is unreachable (a step is skipped only after a predecessor failed) and was removed. The gate §10 table is authoritative.
 
 **UNKNOWN Handling (CRITICAL)**:
 
@@ -1021,9 +1024,10 @@ Outcome State Machine (DATA_CONTRACTS §22 ReconciliationStatus):
 **Actions on UNKNOWN**:
 
 ```
-1. If any step is UNKNOWN:
+1. If any step is uncertain (PENDING_PROBE with an open episode):
    → Trigger PROBE phase — actively query the provider for the actual outcome
-   → Set execution status to RECONCILING
+   → Set execution status to RECONCILING only when every other step is terminal
+     (gate C13; while other steps remain executable, probing happens in RUNNING)
    → Do NOT consolidate to partial or failed yet
 2. PROBE phase actions:
    a. Call provider's status endpoint with the operation ID
@@ -1112,6 +1116,9 @@ S13 emits the following LedgerEvents:
 ## 16. S14 — Dead Letter
 
 **Purpose**: Handle permanent failures that cannot be retried.
+
+> **S12–S15 gate v9 repair (C21, C29, D4, D5, §11):** A dead-letter **record** is created for retries exhausted on a definitive error, unresolved uncertainty (`unknown_unresolved`), verification FAIL, human-layer pending and inverse failures; not for 401/403/404/422. Only unresolved uncertainty puts the **step** in DEAD_LETTER; the other cases leave it FAILED. Records follow the dead-letter state machine (`status`, `retry_mode` PROBE/VERIFY/NONE, `resolution_outcome`, `origin`); a retry never re-executes a step. Resolving a dead letter never changes run or step state.
+
 
 **Input**: Failed steps from S13, `ExecutionContext`, `ReconciliationResult`
 
@@ -1217,16 +1224,16 @@ When S13 sends a step to S14 with `STILL_UNKNOWN` after max reconciliation attem
 |--------------|-----------|-------|-------|-------|-------------|---------------|
 | LLM unavailable | HTTP 5xx / timeout from LLM provider | FAILED | No (S2 has no retry) | No | No | "Service temporarily unavailable — please retry" |
 | LLM malformed | Schema validation fails at S2 | FAILED | Once with error feedback | No | No | CLARIFY — "I had trouble understanding, could you rephrase?" |
-| Provider timeout | Adapter timeout at S12 Layer 4 | UNKNOWN | No — trigger PROBE | Yes — call provider status endpoint | If STILL_UNKNOWN after 3 probes | "Operation timed out — checking status..." |
+| Provider timeout | Adapter timeout at S12 TimeoutManager | UNKNOWN | No — trigger PROBE | Yes — call provider status endpoint | If STILL_UNKNOWN after 3 probes | "Operation timed out — checking status..." |
 | Provider 429 (rate limit) | HTTP 429 at adapter call | FAILED | Yes — exponential backoff | No | If retries exhausted | "Service is busy — retrying automatically" |
 | Provider 401/403 | HTTP 401/403 at adapter call | FAILED | No — auth failure | No | No | "Authentication failed — check credentials" |
 | Provider 500 | HTTP 500 at adapter call | FAILED | Yes — up to 3 retries | No — if retries still 500 | If retries exhausted | "Provider error — retrying or escalating" |
 | Network disconnect | Connection error / DNS failure at S12 | FAILED | Yes — reconnect and retry | If timeout, PROBE after reconnect | If unreachable after max retries | "Connection lost — retrying..." |
-| Worker crash | Process exit / heartbeat timeout | RECONCILING → (checkpoint recovery) | Crash recovery resumes from last checkpoint | Yes — verify step state after restart | If checkpoint gap unrecoverable | Resume transparently or "Retrying..." |
+| Worker Runtime crash | Process exit / heartbeat timeout | In-flight step → PENDING_PROBE (recovery, gate §13) | Recovery resolves the in-flight step (ledger, dispatch marker, probe), then resumes from the first PENDING step | Yes — verify step state after restart | If checkpoint gap unrecoverable | Resume transparently or "Retrying..." |
 | DB disconnect | Database connection error | FAILED | Yes — reconnect and retry transaction | No | If DB unreachable | "Service temporarily unavailable" |
-| Lease expiration | Lock lease expires during execution | FAILED | No — lease is non-renewable | Yes — check provider for actual outcome | If STILL_UNKNOWN | "Operation expired — please retry" |
+| Lease expiration | Lease expires during execution (renewal missed) | In-flight step → PENDING_PROBE under the new owner | No — an *expired* lease is never reactivated (leases are renewable while usable; gate C5, C26) | Yes — check provider for actual outcome | If STILL_UNKNOWN | "Operation expired — please retry" |
 | Duplicate request | Idempotency key collision | PARTIAL | No — idempotency returns existing result | No | If new failure | Return existing result |
-| Stale worker | Worker heartbeat > threshold | RECONCILING | No — reassign to fresh worker | Yes — new worker probes provider | If unreachable | Transparent reassignment |
+| Stale Worker Runtime (heartbeat lost) | Worker Runtime heartbeat > threshold | Execution taken over by a new owner (new fence token) | No — the stale owner is fenced out | Yes — the new owner probes the provider | If unreachable | Transparent reassignment |
 | Expired confirmation | S10 confirmation token TTL exceeded | FAILED | No — must re-confirm | No | No | "Confirmation expired — please confirm again" |
 | Budget exhausted | Budget precheck fails at S8 | DENY | No — no execution started | No | No | "Budget limit reached — upgrade or reduce scope" |
 | Tenant disabled | Tenant status check fails at S8 | DENY | No | No | No | "Account disabled — contact support" |
@@ -1250,12 +1257,12 @@ When S13 sends a step to S14 with `STILL_UNKNOWN` after max reconciliation attem
 **Error Handling Requirement**: Any UNKNOWN outcome must go through PROBE before reaching a terminal state. The PROBE phase actively queries the provider to determine the actual outcome. Only after the provider confirms (CONFIRMED_SUCCESS) or confirms failure (CONFIRMED_FAILURE), or after max probes return STILL_UNKNOWN, can the step reach a terminal state.
 
 **Implementation contract**:
-1. S12 Layer 4 timeout → step state = UNKNOWN (not FAILED)
-2. S13 detects UNKNOWN → triggers PROBE phase
+1. S12 TimeoutManager timeout → step RUNNING → TIMEOUT → PENDING_PROBE (not FAILED; gate C6)
+2. The reconciliation code (S13 package, called from the S12 loop — gate C12) opens an episode and triggers the PROBE phase
 3. PROBE calls provider status endpoint → gets CONFIRMED_SUCCESS, CONFIRMED_FAILURE, or STILL_UNKNOWN
 4. CONFIRMED_SUCCESS → step state = COMPLETED, proceed normally
-5. CONFIRMED_FAILURE → step state = FAILED, trigger retry or rollback
-6. STILL_UNKNOWN after max probes → step state = FAILED, route to S14 DEAD_LETTER
+5. Probe EXECUTED_FAILURE → step state = FAILED (no retry); probe NOT_EXECUTED → step state = PENDING, retried within its ceiling (never IRREVERSIBLE or non-idempotent D)
+6. STILL_UNKNOWN after max probes → step state = DEAD_LETTER (not FAILED: FAILED would allow a duplicate retry), budget stays LOCKED, route to S14 (gate C6, D4)
 7. No step transitions from UNKNOWN to COMPLETED without passing through PROBE
 
 ```python

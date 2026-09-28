@@ -310,7 +310,7 @@ CREATE TABLE budget_reservations (
     execution_id     TEXT NOT NULL,                  -- Parent execution
     step_id          TEXT NOT NULL,                  -- Specific step
     cost             INTEGER NOT NULL,               -- Minor units
-    status           TEXT NOT NULL DEFAULT 'reserved',  -- reserved | locked | committed | released
+    status           TEXT NOT NULL DEFAULT 'reserved',  -- ReservationState values: reserved | locked | committed | released ('pending' is in-memory only)
     created_at       TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     committed_at     TEXT,
     released_at      TEXT,
@@ -325,6 +325,9 @@ CREATE INDEX idx_reservations_step ON budget_reservations(step_id);
 CREATE INDEX idx_reservations_locked ON budget_reservations(locked_at)
     WHERE status = 'locked';
 ```
+
+> **S12–S15 gate v9 repair (C3, C33, C34):** Budget is reserved per step (`step_id` NOT NULL). Availability = `tenants.budget_pool` − Σ `cost` of the tenant's `reserved`/`locked`/`committed` reservations created in the current period; the period start is `date_trunc` of database time (UTC) per `tenants.budget_period`. When this table is created in S12–S15, `created_at` is `TIMESTAMPTZ NOT NULL DEFAULT now()`; if it already exists as TEXT, add `created_at_ts TIMESTAMPTZ NOT NULL DEFAULT now()` and use that. The column is `cost` (the §13 "amount" wording is a naming error), and there is no `tenant_budget` table.
+
 
 ---
 
@@ -442,7 +445,7 @@ CREATE TABLE execution_runs (
     workspace_id TEXT NOT NULL,            -- D-DB4: workspace context
     conversation_id TEXT NOT NULL,
     plan_id TEXT,                         -- NULL for single-step
-    status TEXT NOT NULL,                 -- PENDING, RUNNING, RECONCILING, COMPLETED, FAILED, CANCELLED, DEAD_LETTER
+    status TEXT NOT NULL,                 -- ExecutionStatus values: pending, running, reconciling, completed, partial, failed, cancelled, dead_letter (gate C7, C28)
     actor_type TEXT NOT NULL DEFAULT 'user',  -- "user" | "worker" | "system"
     actor_id TEXT NOT NULL,                    -- user_id or worker_id
     consolidation TEXT,                   -- ok, partial, failed
@@ -464,6 +467,9 @@ CREATE INDEX idx_execution_runs_status ON execution_runs(status);
 CREATE INDEX idx_execution_runs_created ON execution_runs(created_at);
 ```
 
+> **S12–S15 gate v9 repair (C16, C28, C33, v7.3):** Additive: `cancel_requested_at TIMESTAMPTZ NULL` (C16) and a unique index on `(tenant_id, request_id)` (duplicate detection). Status CHECK is generated from `ExecutionStatus`. At S12 entry `task_id`, `workspace_id`, `conversation_id`, `user_id` come from ExecutionContext, `actor_type = 'user'`, `actor_id = user_id`. No `ON DELETE CASCADE` from this table (register P1-H).
+
+
 #### execution_steps
 
 ```sql
@@ -475,9 +481,9 @@ CREATE TABLE execution_steps (
     resolved_binding_id TEXT NOT NULL,      -- Binding used
     effective_risk REAL NOT NULL,           -- float 0.0-1.0
     effective_mutation TEXT NOT NULL,       -- R/W/D/IRREVERSIBLE
-    request_fingerprint TEXT NOT NULL,      -- SHA-256 of request
+    request_fingerprint TEXT NOT NULL,      -- SHA-256 of canonical JSON {kernel_op_id, params}; diagnostics only (gate C33)
     reservation_id TEXT,                    -- FK to budget_reservations (per-step budget tracking)
-    status TEXT NOT NULL,                   -- pending, running, completed, failed, skipped, partial, UNKNOWN, PENDING_PROBE, DEAD_LETTER
+    status TEXT NOT NULL,                   -- StepState values: pending, running, completed, partial, failed, cancelled, skipped, timeout, unknown, pending_probe, dead_letter (gate C22, C28)
     data TEXT,                              -- JSON result data
     error TEXT,                             -- Error message
     attempt INTEGER DEFAULT 1,
@@ -490,6 +496,9 @@ CREATE TABLE execution_steps (
 CREATE INDEX idx_execution_steps_execution ON execution_steps(execution_id);
 CREATE INDEX idx_execution_steps_plan ON execution_steps(plan_id);
 ```
+
+> **S12–S15 gate v9 repair (C22, C33, C34, C35):** Additive columns: `plan_step_id TEXT NOT NULL` (the S9 step id; `step_id` stores the globally unique `"{execution_id}:{plan_step_id}"`, register MC-021); `terminal_reason TEXT NULL` with `CHECK (status NOT IN ('cancelled','skipped') OR terminal_reason IS NOT NULL)`, a CHECK against `StepTerminalReason`, and a `BEFORE UPDATE` trigger rejecting any change of a non-null value; `dispatched_attempt INTEGER NULL` (dispatch marker); `tenant_id TEXT NOT NULL` (C34). `reservation_id` is set after the reservation is inserted, in the same transaction; a retry after NOT_EXECUTED points it at the new reservation.
+
 
 > **Note**: `skill_id` and `business_action_id` (seen in legacy `step_results` schema) are deferred pending Skill Factory design. Columns are omitted from the canonical schema until that design is finalized.
 
@@ -518,6 +527,9 @@ CREATE TABLE execution_manifests (
 CREATE INDEX idx_execution_manifests_trace ON execution_manifests(trace_id);
 ```
 
+> **S12–S15 gate v9 repair (C38):** Persisted at S12 entry in the admission transaction (it references `execution_runs`), byte-identical to the manifest frozen at S11. Never updated.
+
+
 #### checkpoints
 
 ```sql
@@ -538,16 +550,19 @@ CREATE INDEX idx_checkpoints_execution ON checkpoints(execution_id);
 CREATE INDEX idx_checkpoints_expires ON checkpoints(expires_at);
 ```
 
+> **S12–S15 gate v9 repair (C10, C34):** Checkpoints are rows in this table only (no files). Additive `tenant_id` (C34). The cleanup job never deletes a checkpoint of a non-terminal run. The checkpoint is a hint; database state is the source of truth on recovery.
+
+
 #### pending_confirmations
 
 ```sql
 CREATE TABLE pending_confirmations (
     confirmation_id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL REFERENCES execution_runs(execution_id),
+    execution_id TEXT NOT NULL,           -- gate C20: no FK (S10 writes before the run row exists)
     tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
     plan_hash TEXT NOT NULL,
     confirmation_message TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',        -- pending, confirmed, rejected, expired
+    status TEXT DEFAULT 'pending',        -- pending, consumed, rejected, expired (CHECK; gate C20)
     expires_at REAL NOT NULL,             -- 5 minutes from creation
     created_at REAL NOT NULL,
     consumed_at REAL,                     -- NULL = not yet consumed
@@ -557,6 +572,9 @@ CREATE INDEX idx_confirmations_execution ON pending_confirmations(execution_id);
 CREATE INDEX idx_confirmations_status ON pending_confirmations(status);
 CREATE INDEX idx_confirmations_expires ON pending_confirmations(expires_at);
 ```
+
+> **S12–S15 gate v9 repair (C20):** Additive columns `user_id`, `conversation_id`, `plan_id` so the row carries every `Confirmation` field. `tenant_id` and `execution_id` are supplied by S10 through the store interface (S0–S11 runbook ruling R-Z). Consumption is one conditional `UPDATE ... WHERE status = 'pending' AND expires_at > now AND plan_hash = :h AND user_id = :u AND tenant_id = :t`; one row updated = success.
+
 
 #### dead_letters
 
@@ -568,7 +586,7 @@ CREATE TABLE dead_letters (
     kernel_op_id TEXT NOT NULL,
     reservation_id TEXT,                     -- FK to budget_reservations (MC-023)
     error TEXT NOT NULL,
-    error_type TEXT NOT NULL,                -- transient, permanent, data
+    error_type TEXT NOT NULL,                -- transient, permanent, data, unknown_unresolved (CHECK; gate C21)
     mutation_type TEXT NOT NULL DEFAULT 'R', -- R, W, D, IRREVERSIBLE (MC-023)
     is_idempotent BOOLEAN DEFAULT 0,         -- MC-023
     retry_count INTEGER DEFAULT 0,
@@ -589,6 +607,9 @@ CREATE INDEX idx_dead_letters_resolved ON dead_letters(resolved);
 CREATE INDEX idx_dead_letters_next_retry ON dead_letters(next_retry_at);
 ```
 
+> **S12–S15 gate v9 repair (C21, C27, C29, C34):** Additive columns: `status TEXT NOT NULL DEFAULT 'pending'` CHECK in (pending, retrying, resolved, abandoned), kept consistent with `resolved`; `retry_mode TEXT NOT NULL` CHECK in (PROBE, VERIFY, NONE); `episode_id TEXT NULL`; `resolution_outcome TEXT NULL` CHECK in (EXECUTED, NOT_EXECUTED, UNDETERMINED), required when status is resolved/abandoned; `origin TEXT NOT NULL DEFAULT 'execution'` CHECK in (execution, rollback); `attempt_id TEXT NULL`; `tenant_id TEXT NOT NULL`.
+
+
 #### idempotency_ledger
 
 ```sql
@@ -601,6 +622,9 @@ CREATE TABLE idempotency_ledger (
 );
 CREATE INDEX idx_idempotency_expires ON idempotency_ledger(expires_at);
 ```
+
+> **S12–S15 gate v9 repair (C9, C17, C34):** The key is the step idempotency key `"{request_id}:{plan_step_id}"`. Additive `tenant_id` (NOT NULL when the table is empty) and an index on `(tenant_id, idempotency_key)`; every lookup filters on both. An expired record counts as no record and never authorizes a fresh call (the step is probed instead).
+
 
 #### provider_tokens
 
@@ -667,10 +691,10 @@ CREATE TABLE workers (
     worker_class VARCHAR(100) NOT NULL,
     runtime_version VARCHAR(50),
     capability_profile JSONB NOT NULL,
-    state VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-    capacity INTEGER NOT NULL DEFAULT 1,
-    current_load INTEGER NOT NULL DEFAULT 0,
-    lease_epoch BIGINT NOT NULL DEFAULT 0,
+    state VARCHAR(20) NOT NULL DEFAULT 'REGISTERED',   -- STATE_TRANSITIONS §4 (gate C33)
+    capacity INTEGER NOT NULL DEFAULT 1,               -- max concurrent executions
+    current_load INTEGER NOT NULL DEFAULT 0,           -- = number of usable leases (gate C26)
+    lease_epoch BIGINT NOT NULL DEFAULT 0,             -- newest fence token issued to this worker (gate C25)
     heartbeat_at TIMESTAMP,
     last_assignment_at TIMESTAMP,
     drain_state VARCHAR(20),
@@ -678,9 +702,10 @@ CREATE TABLE workers (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_workers_tenant ON workers(tenant_id);
-CREATE INDEX idx_workers_workspace ON workers(workspace_id);
 CREATE INDEX idx_workers_state ON workers(state);
 ```
+
+> **S12–S15 gate v9 repair (C33):** `idx_workers_workspace` was removed: this definition has no `workspace_id` column (WORKER_LIFECYCLE §3 has one; add the index only together with the column).
 
 #### worker_versions
 
@@ -722,6 +747,9 @@ CREATE INDEX idx_worker_leases_worker ON worker_leases(worker_id);
 CREATE INDEX idx_worker_leases_expires ON worker_leases(expires_at);
 CREATE INDEX idx_worker_leases_fence ON worker_leases(fence_token);
 ```
+
+> **S12–S15 gate v9 repair (C25, C26, C34):** Tokens come from the sequence `CREATE SEQUENCE fence_token_seq;` (strictly increasing for every lease acquisition and renewal). Additive columns: `status TEXT NOT NULL DEFAULT 'active'` CHECK in (pending, active, expired, released); `execution_id TEXT NULL` (diagnostics); `tenant_id TEXT NOT NULL`. Index `ON worker_leases(worker_id) WHERE status = 'active'`. A lease is usable only while `status = 'active' AND expires_at > now()`. This is the lease of record; `execution_leases` (§10) is not used.
+
 
 #### worker_assignments
 
@@ -782,7 +810,7 @@ CREATE INDEX idx_exec_owner_worker ON execution_ownership(worker_id);
 CREATE INDEX idx_exec_owner_lease ON execution_ownership(lease_id);
 ```
 
-> **Worker Identity Invariant**: `worker.lease_epoch` MUST equal the latest `worker_leases.fence_token`. A stale worker (`lease_epoch < current fence_token`) MUST be physically unable to commit any state change. This is enforced via a fence check in the session middleware — no transaction commits if the worker's `lease_epoch` does not match the current `fence_token`.
+> **Worker Identity Invariant** (S12–S15 gate v9 repair, C25): fence tokens come from one database sequence, and `workers.lease_epoch` records the newest token issued to the worker. The write fence is **per execution**: every durable write for an execution goes through `fenced_write()`, which checks `execution_ownership.fencing_token = :holder_token AND runtime_instance_id = :runtime_instance_id` in the same transaction. A stale owner therefore cannot commit any state change for that execution, while other executions on the same worker (capacity > 1) are unaffected. The earlier per-worker session-middleware check would have fenced out every concurrent execution on a worker whenever one lease renewed.
 
 ---
 
@@ -836,6 +864,64 @@ CREATE TABLE webhook_credentials (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
+
+### S12–S15 Additive Tables (gate v9)
+
+> **S12–S15 gate v9 repair (§7.3, C18, C24, C34):** tables added by the S12–S15 phase. All
+> columns are PostgreSQL types; state columns store enum `.value` strings with CHECK
+> constraints generated from the enums (C28); every table carries `tenant_id` with the
+> standard RLS policy (C34).
+
+```sql
+CREATE SEQUENCE fence_token_seq;  -- every lease acquisition and renewal (C25)
+
+CREATE TABLE execution_plans (
+    execution_id TEXT PRIMARY KEY REFERENCES execution_runs(execution_id),
+    tenant_id TEXT NOT NULL,
+    plan_hash TEXT NOT NULL,                 -- recomputed and compared on every load (I9)
+    canonical_plan JSONB NOT NULL,
+    frozen_binding_identity JSONB NOT NULL,  -- binding snapshot; never re-read after entry (C32)
+    verifiers JSONB NOT NULL,                -- built at S12 entry (D1)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE step_reconciliations (
+    episode_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL REFERENCES execution_runs(execution_id),
+    step_id TEXT NOT NULL REFERENCES execution_steps(step_id),
+    kind TEXT NOT NULL CHECK (kind IN ('EXECUTION', 'VERIFICATION')),
+    status TEXT NOT NULL,                    -- ReconciliationStatus values (none never stored)
+    outcome TEXT CHECK (outcome IN ('EXECUTED_SUCCESS','EXECUTED_FAILURE','NOT_EXECUTED',
+                                    'LEDGER_HIT','VERIFIED_PASS','VERIFIED_FAIL','EXHAUSTED')),
+    evidence JSONB NOT NULL DEFAULT '{}'::jsonb,   -- e.g. no_dispatch_marker (C35)
+    attempts INTEGER NOT NULL DEFAULT 0,
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX uq_step_open_episode ON step_reconciliations(step_id) WHERE closed_at IS NULL;
+
+CREATE TABLE state_transitions (          -- transition log for I5/I6 (C24)
+    transition_id BIGSERIAL PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    machine TEXT NOT NULL,                  -- run | step | reservation | lease | dead_letter | episode | confirmation
+    entity_id TEXT NOT NULL,
+    execution_id TEXT,
+    from_state TEXT,                        -- NULL for creation
+    to_state TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    runtime_instance_id TEXT,
+    fence_token BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_transitions_entity ON state_transitions(machine, entity_id, transition_id);
+CREATE INDEX idx_transitions_execution ON state_transitions(execution_id, transition_id);
+```
+
+The transition log is append-only (FINAL_ARCHITECTURE I-027). It may equally be implemented as
+rows in the execution ledger, provided the same columns are present.
+
+---
 
 ## 4. Migrations
 
@@ -1419,17 +1505,22 @@ CREATE TABLE checkpoint_steps (
 
 ### Recovery Flow
 
+> **S12–S15 gate v9 repair (C33, ADR-7):** the earlier flow (restore context from the checkpoint, re-resolve bindings, re-reserve budget) is superseded. Re-resolving bindings violates I-002/I-010 and ADR-7; re-reserving would double-count budget. The normative recovery is S12_S15_EXECUTION_GATE §13:
+
 ```
-1. Worker crash detected (lease expiry or heartbeat timeout)
-2. Load latest checkpoint for execution_id
-3. Restore ExecutionContext from context_snapshot
-4. Resume from next pending step
-5. Re-resolve bindings (bindings may have changed)
-6. Re-reserve budget for remaining steps
-7. Continue execution
+1. Sweeper finds a running/reconciling run whose ownership lease expired
+   (FOR UPDATE SKIP LOCKED)
+2. Take ownership: new lease (token from fence_token_seq) + execution_ownership CAS
+3. Reload the plan and frozen binding from execution_plans; verify the digest
+4. LiveAuthorizationCheck (revocations, binding/credential validity)
+5. Resolve the in-flight step: open episode → ledger → dispatch marker → probe
+   (never a blind re-execution; existing reservation reused)
+6. Continue from the first pending step
 ```
 
 ### Lease-Based Recovery
+
+> **S12–S15 gate v9 repair (C5):** `execution_leases` is a duplicate of `worker_leases` and is not used. `worker_leases` is the lease of record.
 
 ```sql
 CREATE TABLE execution_leases (
@@ -1556,7 +1647,7 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 
 | Constraint | Rule |
 |------------|------|
-| `budget_reservations.amount` | MUST be <= `tenants.budget_pool` |
+| `budget_reservations.cost` (per step) | Σ cost of the tenant's live reservations in the current period MUST be <= `tenants.budget_pool` (gate C3, invariant I1) |
 | Enforcement | Atomic UPDATE with WHERE clause (see `reserve_budget` in §7) |
 
 ---
@@ -1585,6 +1676,8 @@ def test_budget_reserve(test_db):
     )
     assert result.allowed is True
 ```
+
+> **S12–S15 gate v9 repair (C33):** in-memory SQLite is not acceptable for any lease, budget, fencing, confirmation, recovery or concurrency test (gate §15.1): those run against real PostgreSQL 16 (`TEST_DATABASE_URL`), in a schema created and dropped per test module.
 
 ### Test Data Rules
 

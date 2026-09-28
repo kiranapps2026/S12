@@ -312,7 +312,7 @@ class WorkerIdentity:
     state: WorkerIdentityState        # Current lifecycle state
     capacity: int                     # Max concurrent executions
     current_load: int                 # Current in-flight executions
-    lease_epoch: int                  # Current fencing token
+    lease_epoch: int                  # Newest fence token issued to this worker (gate C25)
     heartbeat_at: float | None        # Last heartbeat timestamp
     last_assignment_at: float | None  # Last execution assignment
     created_at: float                 # Registration timestamp
@@ -328,7 +328,7 @@ CREATE TABLE workers (
     workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
     worker_class TEXT NOT NULL,                    -- execution | scheduler | system
     capability_profile JSONB NOT NULL,             -- ["contact_create", "page_create"]
-    state TEXT NOT NULL DEFAULT 'REGISTERED',      -- WorkerIdentityState values
+    state TEXT NOT NULL DEFAULT 'REGISTERED',      -- WorkerIdentityState values (FINAL_ARCHITECTURE §26 aligned in v9)
     capacity INTEGER NOT NULL DEFAULT 1,
     current_load INTEGER NOT NULL DEFAULT 0,
     lease_epoch BIGINT NOT NULL DEFAULT 0,
@@ -345,7 +345,7 @@ CREATE INDEX idx_workers_state ON workers(state);
 ### Invariants
 
 1. `current_load <= capacity` at all times
-2. `lease_epoch` changes on every lease renewal — stale workers cannot commit
+2. `lease_epoch` changes on every lease acquisition and renewal — it records the newest fence token issued to this worker (tokens come from one database sequence). Stale owners cannot commit: the write fence is checked **per execution** against `execution_ownership.fencing_token` (gate C25), so other executions on the same worker (capacity > 1) are never fenced out by one lease's renewal
 3. `state` transitions must pass `WorkerIdentityStateValidator`
 4. `capability_profile` is set at registration and never changes
    (capability changes require a new worker registration)
@@ -644,6 +644,9 @@ class Observation:
 | `FAIL` | Observation contradicts expected state | Step → FAILED, retry or DLQ |
 | `UNKNOWN` | Observation inconclusive (timeout, partial data) | Retry observation (up to max_attempts) |
 
+
+> **S12–S15 gate v9 repair (C19, C32):** A verification UNKNOWN (after the bounded attempts below) opens a VERIFICATION episode that re-runs only the layers not yet PASS; the provider probe and the adapter are never called for it. Observations use `BaseAdapter.observe()`; its default returns an inconclusive observation, so a mutation on an adapter without observation support ends in DEAD_LETTER, never in silent success (register RES-5).
+
 ### Verification Is Bounded
 
 ```python
@@ -768,6 +771,9 @@ Each gate is checked in sequence. The first gate that rejects stops evaluation.
 | 10 | Budget remaining | `budget_exhausted` |
 | 11 | System load | `system_overloaded` |
 
+> **S12–S15 gate v9 repair (C30):** S12 maps a REJECT by `gate_failed`: gate 1 → kill-switch revocation path (run CANCELLED, `kill_switch_engaged`); gate 3 → revocation path (`authorization_revoked`); gate 10 → budget-exhaustion path (run CANCELLED, `budget_exhausted`); gate 7 is a QUEUE, never a REJECT; every other gate → remaining steps CANCELLED with `admission_rejected` and the run consolidated. Every decision is recorded as a ledger event.
+
+
 ### Admission Is Stateless
 
 Admission checks are snapshots — they do not reserve resources.
@@ -794,6 +800,9 @@ only. It never supplies the authorization decision on re-entry.
 If live authorization now denies what the snapshot permitted — grant revoked,
 tenant suspended, connection deleted, capability retired, kill switch active —
 the run terminates per the kill-switch/UNKNOWN contract. It does not resume.
+
+> **S12–S15 gate v9 repair (C23, C30, C35):** Revalidation is performed by the read-only `LiveAuthorizationCheck` at the start of every step and immediately before every adapter call. It reuses S8's check functions from a shared library, never writes a `SafetyResult`, and fails closed when live state cannot be read. It also checks the frozen binding's and the credential's validity (register ADR-7). Probes and verification are observations, not side effects: they always run to settle uncertainty (and budget) and never lead to new adapter calls after revocation. On revocation, remaining steps are CANCELLED with `authorization_revoked`, `kill_switch_engaged`, `binding_invalid` or `credential_invalid`, and the run ends CANCELLED.
+
 
 This rule binds regardless of how much of the run already completed.
 
@@ -851,6 +860,8 @@ DEGRADE_FEATURES = {
 ## 12. S12 Internal Sequence
 
 ### Full S12 Flow
+
+> **S12–S15 gate v9 repair (C11):** This sketch is non-normative. It iterates `plan.steps` in list order (the normative order is topological by `depends_on`), and its `continue` on QUEUE and on lease failure would silently skip a step. The normative sequence is S12_S15_EXECUTION_GATE §8.
 
 ```python
 class S12Execute:
@@ -1057,7 +1068,7 @@ class ExecutionOwnership:
     execution_id: str                 # UUID v4
     worker_id: str | None             # Current owner (None = not assigned)
     worker_version: str | None        # Version running this execution
-    runtime_instance_id: str | None   # Specific process/container
+    runtime_instance_id: str | None   # The Worker Runtime process (UUID generated at process start; FINAL_ARCHITECTURE §34)
     lease_id: str | None              # Current lease
     fencing_token: int | None         # Lease epoch — monotonic, never decreases
     checkpoint_sequence: int          # Last checkpoint number
@@ -1092,10 +1103,18 @@ When ownership transfers (failover, migration, drain):
 
 1. New owner writes new row with new `fencing_token`
 2. Old owner's `fencing_token` is now stale — it cannot commit state
-3. The `worker_leases.fence_token` table is the authoritative source
-   for which fencing token is current
-4. Every state commit checks: `worker.lease_epoch == current fence_token`
-   — if not, the commit is rejected
+3. Tokens come from the database sequence `fence_token_seq`, so a new owner's
+   token is always strictly greater than the previous one, whichever worker it
+   leases (gate C25). `execution_ownership.fencing_token` holds the execution's
+   current token and is updated by compare-and-set in the same transaction as the
+   lease change.
+4. Every state commit for an execution goes through `fenced_write()`, which checks
+   `execution_ownership.fencing_token = :holder_token AND runtime_instance_id =
+   :runtime_instance_id` — if not, the commit is rejected (`FencedOut`) and the
+   holder stops all work on that execution
+
+> **S12–S15 gate v9 repair (C25):** Rules 3–4 previously named `worker_leases.fence_token` as authority and checked `worker.lease_epoch` per worker. With per-worker counters a takeover by a different worker could produce a smaller token and fail the strictly-greater check below; with a per-worker check, capacity above 1 would fence out concurrent executions.
+
 
 ```python
 class OwnershipManager:

@@ -48,11 +48,11 @@ Valid Transitions:
   RUNNING     ──→ PARTIAL      (some COMPLETED, some FAILED after all steps terminal)
   RUNNING     ──→ FAILED       (unrecoverable error, no steps completed)
   RUNNING     ──→ CANCELLED    (user cancelled or budget exhausted mid-execution)
-  RUNNING     ──→ DEAD_LETTER  (all steps DEAD_LETTER or STILL_UNKNOWN after max probes)
-  RUNNING     ──→ RECONCILING  (one or more steps UNKNOWN, probing provider)
+  RUNNING     ──→ DEAD_LETTER  (any step DEAD_LETTER after consolidation — gate §10)
+  RUNNING     ──→ RECONCILING  (every other step terminal and one or more steps PENDING_PROBE — gate C13)
   RECONCILING ──→ COMPLETED   (all UNKNOWN steps resolved CONFIRMED_SUCCESS)
   RECONCILING ──→ PARTIAL     (some CONFIRMED_SUCCESS, some CONFIRMED_FAILURE)
-  RECONCILING ──→ FAILED      (all CONFIRMED_FAILURE or DEAD_LETTER)
+  RECONCILING ──→ FAILED      (no step COMPLETED; a DEAD_LETTER step makes the run DEAD_LETTER instead)
   RECONCILING ──→ DEAD_LETTER (STILL_UNKNOWN after max probes)
   RECONCILING ──→ CANCELLED   (user cancelled during reconciliation)
 
@@ -74,9 +74,10 @@ Illegal Transitions (MUST be rejected):
 ### Implementation Contract
 
 ```python
+# Stored values are ExecutionStatus.value (lowercase, gate C28); names shown here.
 VALID_TRANSITIONS = {
-    "PENDING":     {"RUNNING", "CANCELLED", "PENDING_PROBE"},
-    "RUNNING":     {"COMPLETED", "PARTIAL", "FAILED", "CANCELLED", "DEAD_LETTER", "RECONCILING", "PENDING_PROBE", "TIMEOUT"},
+    "PENDING":     {"RUNNING", "CANCELLED"},
+    "RUNNING":     {"COMPLETED", "PARTIAL", "FAILED", "CANCELLED", "DEAD_LETTER", "RECONCILING"},
     "RECONCILING": {"COMPLETED", "PARTIAL", "FAILED", "DEAD_LETTER", "CANCELLED"},
     "COMPLETED":   set(),      # Terminal — no transitions
     "PARTIAL":     set(),      # Terminal — no transitions
@@ -85,6 +86,8 @@ VALID_TRANSITIONS = {
     "DEAD_LETTER": set(),      # Terminal — no transitions
 }
 
+# gate v9 repair (C7, C24): PENDING_PROBE and TIMEOUT are step states and were removed
+# from this run-level table. Every transition also carries a reason code (Appendix A).
 def transition_execution(current_state: str, new_state: str) -> bool:
     """Validate an execution state transition."""
     if new_state not in VALID_TRANSITIONS.get(current_state, set()):
@@ -122,7 +125,7 @@ There is no persistent PROBE state in the step state machine.
 Valid Transitions:
   PENDING       ──→ RUNNING          (step starts executing)
   PENDING       ──→ SKIPPED          (dependency failed, step not needed)
-  PENDING       ──→ CANCELLED        (user cancelled before start)
+  PENDING       ──→ CANCELLED        (did not start: cancelled by the user or by the system; reason in terminal_reason — gate C22)
   RUNNING       ──→ COMPLETED        (successful execution)
   RUNNING       ──→ PARTIAL          (partial success — some sub-operations failed)
   RUNNING       ──→ FAILED           (execution failed)
@@ -130,31 +133,35 @@ Valid Transitions:
   RUNNING       ──→ TIMEOUT          (exceeded time limit)
   RUNNING       ──→ PENDING_PROBE    (timeout detected, probe queued directly)
   TIMEOUT       ──→ PENDING_PROBE    (timeout, probe queued to determine outcome)
-  TIMEOUT       ──→ UNKNOWN          (timeout confirmed — outcome indeterminate)
-  TIMEOUT       ──→ DEAD_LETTER      (timeout, no recovery possible)
-  UNKNOWN       ──→ PENDING_PROBE    (probe initiated)
-  UNKNOWN       ──→ DEAD_LETTER      (max probes exhausted)
-  UNKNOWN       ──→ FAILED           (terminal-state invariant timeout)
-  PENDING_PROBE ──→ COMPLETED        (probe confirmed executed)
-  PENDING_PROBE ──→ PENDING          (probe confirmed not started — retry)
-  PENDING_PROBE ──→ FAILED           (probe error — cannot determine)
-  PENDING_PROBE ──→ DEAD_LETTER      (probe inconclusive, max attempts)
+  UNKNOWN       ──→ PENDING_PROBE    (probe initiated — state never written in S12–S15, gate C24)
+  UNKNOWN       ──→ DEAD_LETTER      (max probes exhausted — never written in S12–S15)
+  PENDING_PROBE ──→ COMPLETED        (probe confirmed executed; verification passed)
+  PENDING_PROBE ──→ PENDING          (probe confirmed not executed, or no dispatch marker — retry)
+  PENDING_PROBE ──→ FAILED           (definitive failure only: probe EXECUTED_FAILURE, ledger failure, or verification FAIL — gate C6)
+  PENDING_PROBE ──→ DEAD_LETTER      (probe or verification inconclusive after max attempts)
 
 Terminal states (no outgoing transitions):
-  COMPLETED, FAILED, CANCELLED, SKIPPED, DEAD_LETTER
+  COMPLETED, FAILED, CANCELLED, SKIPPED, DEAD_LETTER (PARTIAL has no outgoing edge and is not produced)
 
 Illegal Transitions (MUST be rejected):
+  TIMEOUT      ──→ DEAD_LETTER       (every timeout is probed — gate C6)
+  TIMEOUT      ──→ UNKNOWN           (every timeout is probed — gate C24)
+  PENDING      ──→ PENDING_PROBE     (a step that never started has nothing to probe — gate C24)
+  PARTIAL      ──→ any state         (not produced; no outgoing edge — gate C24)
   COMPLETED    ──→ any non-terminal   (terminal states are final)
   FAILED       ──→ RUNNING           (must create new attempt)
   FAILED       ──→ COMPLETED         (cannot retroactively succeed)
   SKIPPED      ──→ RUNNING           (skipped is terminal)
   DEAD_LETTER  ──→ RUNNING           (must create new execution)
   UNKNOWN      ──→ COMPLETED         (must go through PENDING_PROBE first)
-  UNKNOWN      ──→ FAILED            (must go through PENDING_PROBE first)
+  UNKNOWN      ──→ FAILED            (must go through PENDING_PROBE first; the valid-list entry was removed — gate C6)
   PENDING      ──→ COMPLETED         (must go through RUNNING first)
   PENDING      ──→ FAILED            (must go through RUNNING first)
   RUNNING      ──→ PENDING           (running cannot regress)
 ```
+
+
+> **S12–S15 gate v9 repair (C6, C22, C24):** Retries happen inside RUNNING (attempt counter, no transition). The complete step table with reason codes and guards is S12_S15_EXECUTION_GATE Appendix A.2; DATA_CONTRACTS §19.2 is aligned to it.
 
 ### NO SILENT SUCCESS Rule
 
@@ -191,8 +198,9 @@ Valid Transitions:
   PENDING     ──→ RELEASED      (reserve failed, nothing to return)
   RESERVED    ──→ LOCKED        (step begins execution)
   RESERVED    ──→ RELEASED      (cancelled before execution)
-  LOCKED      ──→ COMMITTED     (step completed successfully)
-  LOCKED      ──→ RELEASED      (step failed, return budget)
+  LOCKED      ──→ COMMITTED     (step completed successfully; or its dead letter resolved EXECUTED/UNDETERMINED or abandoned — gate D4, C21)
+  LOCKED      ──→ RELEASED      (step failed, probe confirmed NOT_EXECUTED, or dead letter resolved NOT_EXECUTED)
+  (A LOCKED reservation is never released by a timer — gate C37.)
   COMMITTED   ──→ (terminal)    # No further transitions
   RELEASED    ──→ (terminal)    # No further transitions
 
@@ -288,7 +296,7 @@ The database only sees: ACTIVE → (heartbeat gap) → ACTIVE (new lease epoch).
 Valid Transitions:
   pending   ──→ active    (lease acquired)
   pending   ──→ expired   (acquisition timeout)
-  active    ──→ active    (lease renewed — fence_token increments)
+  active    ──→ active    (lease renewed — new fence_token from fence_token_seq, gate C25)
   active    ──→ expired   (TTL exceeded, no renewal)
   active    ──→ released  (voluntary release after work complete)
   expired   ──→ (terminal)
@@ -298,6 +306,9 @@ Illegal Transitions (MUST be rejected):
   expired   ──→ active    (expired leases cannot be renewed — must acquire new)
   released  ──→ active    (released leases cannot be reactivated)
   expired   ──→ released  (expired is already terminal)
+
+> **S12–S15 gate v9 repair (C26):** The state is stored in `worker_leases.status` (additive column). A lease is usable only while `status = 'active'` and `expires_at > now()`; an active lease past `expires_at` is transitioned to `expired` by whichever process observes it first.
+
 ```
 
 ---
@@ -446,8 +457,10 @@ ReconciliationStatus members (DATA_CONTRACTS §22):
   NONE, PENDING_PROBE, CONFIRMED_SUCCESS, CONFIRMED_FAILURE, RECONCILING
 
 Note: UNKNOWN is a StepState (§2), NOT a ReconciliationStatus.
-  When a step enters UNKNOWN, the execution's reconciliation_status
-  changes from NONE → PENDING_PROBE.
+  gate v9 repair (C18): ReconciliationStatus is tracked per uncertainty episode in
+  `step_reconciliations` (one record per episode, each starting at NONE), not as an
+  execution-level column. A run is "reconciling" when any of its steps has an open
+  episode.
   STILL_UNKNOWN is NOT a ReconciliationStatus — it is a transient
   condition that resolves to DEAD_LETTER.
 ```
@@ -461,6 +474,8 @@ Valid Transitions:
   RECONCILING    ──→ CONFIRMED_SUCCESS (provider confirms execution succeeded)
   RECONCILING    ──→ CONFIRMED_FAILURE (provider confirms execution failed)
   RECONCILING    ──→ PENDING_PROBE     (probe inconclusive, retry)
+  (An exhausted episode keeps PENDING_PROBE, is closed with closed_at and
+   outcome EXHAUSTED, and its step goes to DEAD_LETTER — gate C18.)
 
 Terminal states (no outgoing transitions):
   CONFIRMED_SUCCESS ──→ resolves step.state to COMPLETED
@@ -508,14 +523,14 @@ These invariants must hold across ALL state machines simultaneously:
 
 | Invariant | Rule |
 |-----------|------|
-| **I-1**: Terminal execution → terminal steps | If `execution.status ∈ {COMPLETED, FAILED, CANCELLED, DEAD_LETTER}`, ALL steps must be in terminal states (`completed`, `failed`, `skipped`, `DEAD_LETTER`). No step can be in `running`, `UNKNOWN`, or `PENDING_PROBE` when execution is terminal. |
+| **I-1**: Terminal execution → terminal steps | If `execution.status ∈ {completed, partial, failed, cancelled, dead_letter}`, ALL steps must be in terminal states (`completed`, `failed`, `cancelled`, `skipped`, `dead_letter`). No step can be in `running`, `unknown`, `timeout` or `pending_probe` when execution is terminal. *(v9 repair C22, C27: added `partial` and `cancelled`.)* |
 | **I-2**: RECONCILING execution → at least one UNKNOWN step | If `execution.status = RECONCILING`, at least one step must be in `UNKNOWN` or `PENDING_PROBE` state. RECONCILING cannot exist without an active reconciliation target. |
-| **I-3**: Budget locked ↔ step running | A step in `running` state MUST have a corresponding `budget_reservations` row in `locked` status. A step cannot execute without locked budget. |
-| **I-4**: Dead letter → execution terminal | A dead_letters row can only be created for an execution in `RUNNING` or `RECONCILING` state. Dead letters cannot be created for terminal executions. |
+| **I-3**: Budget locked ↔ step running | A step in `running` state MUST have exactly one `budget_reservations` row in `locked` status — the one referenced by `execution_steps.reservation_id`. Retries inside RUNNING reuse it. A step cannot execute without locked budget. *(v9 repair C27.)* |
+| **I-4**: Dead letter → execution non-terminal | A dead_letters row with `origin = 'execution'` can only be created for an execution in `running` or `reconciling` state. A row with `origin = 'rollback'` (failed inverse in an explicit `rollback_execution()`, gate D2) may be created for a terminal execution; it never changes run, step or budget state. *(v9 repair C27.)* |
 | **I-5**: Confirmation consumed → plan frozen | A `pending_confirmations` row can only transition to `consumed` if the associated plan has the S9-authoritative `plan_hash`, which S11 verifies before manifest creation. |
 | **I-6**: Worker TERMINATED → lease expired | A worker can only transition to `TERMINATED` state after its lease expires (or is forcibly released). A worker with an active lease cannot be TERMINATED. |
 | **I-7**: Frozen binding → no state change | A binding frozen at S5 cannot transition to `stale` or `invalid` during the execution. If the underlying binding changes, the execution is marked with `STALE_BINDING` and routed to dead letter. |
-| **I-8**: Budget committed → step completed | A `budget_reservations` row can only transition to `committed` if the associated step is in `completed` state. Budget cannot be committed for failed or pending steps. |
+| **I-8**: Budget committed → step completed or resolved | A `budget_reservations` row can only transition to `committed` if its step is `completed`, or its step is `dead_letter` and the step's execution dead letter was resolved `EXECUTED` or `UNDETERMINED`, or abandoned (gate D4, C21). Budget is never committed for failed, cancelled, skipped or pending steps. *(v9 repair C27.)* |
 
 ---
 
@@ -525,7 +540,7 @@ These invariants must hold across ALL state machines simultaneously:
 2. Illegal transitions MUST raise `IllegalStateTransition` exception — they are never silently ignored.
 3. State changes MUST be atomic with their side effects (e.g., transitioning step to `completed` and committing budget must be in the same transaction).
 4. State machines are defined in code as `Enum` classes matching the state names in this document.
-5. All state fields in the database use TEXT columns with CHECK constraints matching the valid states.
+5. All state fields in the database use TEXT columns with CHECK constraints matching the valid states. Stored values are the enum `.value` strings (lowercase); CHECK constraints are generated from the enums (gate C28).
 6. State transition validation is implemented in `StateTransitionValidator` (DATA_CONTRACTS §26) and must be called before every state change.
 
 ---

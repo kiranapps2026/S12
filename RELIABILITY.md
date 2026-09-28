@@ -284,6 +284,9 @@ Layer 5: Bulkhead          ── Provider isolation via semaphores (closest to 
 HealthMonitor runs alongside all layers — records scores after every result.
 ```
 
+> **S12–S15 gate v9 repair (C4, C31):** Layers are referred to by component name, never by number. The BudgetTracker layer is a read-only precondition: the step's reservation must exist, belong to the step and be LOCKED; otherwise it raises `BudgetStateError`. Reserve, lock, commit and release are performed by `BudgetReserver`, called by the S12 step loop (gate §8), so retries inside the guard never touch budget. Health recording and billing (a recorded cost event, not a budget commit) happen after the adapter returns, for every outcome.
+
+
 ### Logical Policy Order vs Resource Acquisition Order
 
 The 5 layers have two distinct ordering concepts:
@@ -426,12 +429,15 @@ The circuit breaker subsystem operates across two distinct reliability domains:
 - Global provider quota — rate limit shared across the cluster
 - Distributed admission control — coordinated accept/reject decisions
 
-> **Storage**: PostgreSQL for all durable state (execution records, budget reservations, audit trail, circuit breaker state). PostgreSQL with advisory locks or lightweight tables for fast ephemeral state (circuit breakers, rate counters, retry budget). Redis is NOT used as a message bus or queue authority. PostgreSQL + pg_cron is the canonical queue.
+> **Storage**: PostgreSQL for all durable state (execution records, budget reservations, audit trail, circuit breaker state). PostgreSQL with advisory locks or lightweight tables for fast ephemeral state (circuit breakers, rate counters, retry budget). Redis is NOT used as a message bus or queue authority.
+>
+> **S12–S15 gate v9 repair (C1, C37):** dispatch is in-process in the single-node phase; PostgreSQL is the claim authority, not a queue (the earlier "PostgreSQL + pg_cron is the canonical queue" is superseded). Circuit-breaker state sits behind an injected interface; the single-node implementation is in memory, and the PostgreSQL-backed implementation (ADR-5) belongs to the fleet phase.
 
 ### Rules
 1. One circuit breaker per (provider, operation) pair — NOT per provider
 2. Circuit breaker state is checked at the admission controller (S8 precheck context) AND at execution time (S12)
-3. HALF_OPEN allows exactly one probe request; requires 3 consecutive successes to return to CLOSED
+3. HALF_OPEN admits exactly one trial request. Its outcome is always recorded: success → CLOSED; provider failure (5xx, timeout, network, `not_dispatched`) → OPEN; UNKNOWN or unclassified → OPEN. The breaker can never stay in HALF_OPEN without a trial in flight (register MC-017). *(v9 repair C37: "3 consecutive successes" contradicted the single trial request, FINAL_ARCHITECTURE §17 and STATE_TRANSITIONS §11, which have no HALF_OPEN self-loop.)*
+3a. Client errors (401, 403, 404, 422) are not provider failures and never count toward opening the breaker.
 4. Circuit state is logged on every transition
 5. A failure on `("ghl", "ghl.contact_create")` does NOT affect `("ghl", "ghl.contact_search")`
 
@@ -514,9 +520,9 @@ See `DATA_CONTRACTS.md §16` for the full canonical definition:
 - `BudgetResult` — frozen dataclass (allowed, reason, reservation)
 - `BudgetReservation` — frozen dataclass (reservation_id, tenant_id, user_id, execution_id, step_id, cost, status, timestamps)
 - `ReservationState` — StrEnum (reserved, locked, committed, released)
-- `BudgetLockSweeper` — auto-releases locks older than 24h
+- ~~`BudgetLockSweeper` — auto-releases locks older than 24h~~ — superseded (gate C37, D4): a LOCKED reservation is never released by a timer. Replaced by an alert event for reservations LOCKED longer than the configured age.
 
-**Key rule**: Budget is per-tenant, not per-user. `budgets.budget_pool` is the tenant's shared pool. `user_id` in reservations is for attribution only.
+**Key rule**: Budget is per-tenant, not per-user. `tenants.budget_pool` is the tenant's shared pool (there is no `budgets` table; gate C3), reserved per step. `user_id` in reservations is for attribution only.
 
 ### Atomic DB Operations
 
@@ -736,7 +742,7 @@ def handle_timeout(self, reservation: BudgetReservation) -> None:
     - Probe confirms EXECUTED → commit()
     - Probe confirms NOT_EXECUTED → release()
     - Probe inconclusive → lock() again (stays locked)
-    - 24h sweeper → auto-release as safety net
+    - (v9 repair C37: no timer release; unresolved → dead letter, D4)
     """
     self._budget.lock(reservation)
 ```
@@ -758,26 +764,27 @@ S12 Execution:    guard.execute_step()
                   └─ PROBE RESULT:
                       ├─ EXECUTED → resolve_locked(R1, 'executed') → commit
                       ├─ NOT_EXECUTED → resolve_locked(R1, 'not_executed') → release
-                      └─ INCONCLUSIVE → stays locked (sweeper safety net)
+                      └─ INCONCLUSIVE → stays locked until dead-letter resolution (D4)
 
 Lease Recovery:   For each in-flight step:
                   ├─ Probe EXECUTED → resolve_locked(R, 'executed')
                   ├─ Probe NOT_EXECUTED → resolve_locked(R, 'not_executed')
-                  └─ Probe inconclusive → stays locked (sweeper safety net)
+                  └─ Probe inconclusive → stays locked until dead-letter resolution (D4)
 
-Sweeper:           Every 1h: release locks older than 24h (safety net only)
+Alert:             reservations LOCKED longer than the configured age raise an alert
+                   event (v9 repair C37: the former 24h auto-release is removed)
 ```
 
 ### Rules
 1. `reserve()` is the ONLY budget gate — no separate preflight check
-2. Atomic reserve via `UPDATE ... WHERE budget_pool >= cost` (no race conditions)
-3. Budget is per-tenant (`budgets.budget_pool`), not per-user
+2. Atomic reserve: lock the tenant row (`SELECT ... FOR UPDATE`), compute availability for the current period, insert the reservation only if `available >= cost` (gate C3, C33)
+3. Budget is per-tenant (`tenants.budget_pool`), not per-user
 4. `user_id` is attribution only — not the budget gate key
 5. Timeout = LOCKED, never RELEASED — budget stays deducted until probe confirms
-6. Inconclusive probe = stays LOCKED — never auto-release without manual review or 24h sweep
+6. Inconclusive probe = stays LOCKED — released or committed only by dead-letter resolution (D4)
 7. All commit/release/lock operations are idempotent (WHERE status IN (...))
 8. Every operation returns bool indicating whether state actually changed
-9. BudgetLockSweeper runs hourly, releases locks older than 24h
+9. No timer releases a LOCKED reservation; an alert event is recorded when a lock exceeds the configured age (gate C37)
 10. `reservation_id` in `execution_steps` links steps to their budget reservations
 
 ---
@@ -849,11 +856,14 @@ class TimeoutManager:
 
 ### Probe Sequence After Timeout
 
+> **S12–S15 gate v9 repair (§9, C32):** the probe is `BaseAdapter.probe()` returning a `ProbeOutcome` (EXECUTED_SUCCESS, EXECUTED_FAILURE, NOT_EXECUTED, INCONCLUSIVE); it never raises. The ledger is checked before any probe, and a missing dispatch marker proves NOT_EXECUTED without a probe (C35). The sketch above is non-normative.
+
 | Probe Result | Action |
 |-------------|--------|
-| EXECUTED | Commit budget, mark step COMPLETED |
-| NOT_EXECUTED | Release budget, allow retry/rollback |
-| UNKNOWN (inconclusive) | Escalate to DEAD_LETTER (S14) for manual review |
+| EXECUTED_SUCCESS | Verify; then commit budget, mark step COMPLETED |
+| EXECUTED_FAILURE | Release budget, mark step FAILED |
+| NOT_EXECUTED | Release budget; step → PENDING, retried within its ceiling (never IRREVERSIBLE or non-idempotent D) |
+| INCONCLUSIVE | Retry the probe with backoff, max 3 attempts; then DEAD_LETTER (S14), budget stays LOCKED |
 
 ### Rules
 1. Each step has its own timeout (from kernel policy)
@@ -861,7 +871,8 @@ class TimeoutManager:
 3. **Timeout produces `KernelResult(status="UNKNOWN")` — NOT "error", NOT "failed"**
 4. No automatic retry on timeout — provider probe determines next action
 5. Budget reservation is NEVER released on timeout — remains locked until probe
-6. If probe is inconclusive → DEAD_LETTER (S14) for manual review
+6. If the probe is inconclusive after 3 attempts → DEAD_LETTER (S14) for manual review
+7. Timeouts are detected only by TimeoutManager (asyncio timeout), never by matching error text (register MC-008); settings validate `adapter_client_timeout < step_timeout` and `probe_timeout < step_timeout` at startup (MC-052)
 
 ---
 
@@ -901,6 +912,7 @@ class Bulkhead:
 2. Max concurrent operations per provider is configurable
 3. When a provider's circuit is open, requests are blocked before reaching the bulkhead (Layer 1 check)
 4. Bulkhead prevents one provider from consuming all connection slots
+5. The slot is released before any backoff sleep and reacquired for the next attempt; probes and verification observations take their own slot with their own timeout (gate C37, register MC-062)
 
 ---
 
@@ -1194,6 +1206,8 @@ except asyncio.TimeoutError:
 | Rollback only after probe | Do NOT rollback until we know the actual outcome |
 
 ### Probe Sequence After Timeout
+
+> **S12–S15 gate v9 repair (C32):** superseded sketch. It mapped `NOT_STARTED` to FAILED (which would forbid the safe retry) and an unknown provider state straight to DEAD_LETTER (skipping the bounded attempts). Use `BaseAdapter.probe()` → `ProbeOutcome` and the table in §5.
 
 ```python
 class TimeoutProbe:

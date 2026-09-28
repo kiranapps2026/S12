@@ -53,6 +53,50 @@ class BaseAdapter(ABC):
         pass
 ```
 
+### Additive Interface: Call Metadata, Probe, Observation (S12–S15 gate v9 repair, C32)
+
+> These additions are backward compatible (FINAL_ARCHITECTURE I-024): existing adapters
+> keep working unchanged, and the defaults are safe (fail-closed).
+
+```python
+@dataclass(frozen=True)
+class CallMeta:
+    idempotency_key: str      # f"{request_id}:{plan_step_id}" — stable across attempts (gate C9)
+    attempt_id: str           # att-{step_index}-{attempt_N}
+    provider_call_id: str     # UUID v4 per invocation — tracing only
+    tenant_id: str
+
+class BaseAdapter(ABC):
+    # call() gains one optional keyword argument; the guard always passes it.
+    async def call(self, kernel_op_id: str, params: dict, binding: BindingRow,
+                   context: ExecutionContext, *, call_meta: CallMeta | None = None) -> KernelResult: ...
+
+    async def probe(self, kernel_op_id: str, params: dict, binding: BindingRow,
+                    context: ExecutionContext, *, call_meta: CallMeta) -> ProbeOutcome:
+        """Did the operation identified by call_meta.idempotency_key take effect?
+        NEVER raises. Default: INCONCLUSIVE (the step ends in DEAD_LETTER after the
+        bounded attempts — never a blind retry)."""
+        return ProbeOutcome.INCONCLUSIVE
+
+    async def observe(self, kernel_op_id: str, observation_spec: dict, binding: BindingRow,
+                      context: ExecutionContext) -> Observation:
+        """Read-only provider observation for the verifier (WORKER_LIFECYCLE §9).
+        NEVER raises. Default: matches_expected=None (verdict UNKNOWN — a mutation
+        without observation support never reaches silent success)."""
+        return Observation(attempt=1, observed_at=time.time(), provider_response_code=0,
+                           observed_state=None, matches_expected=None, error="observe_not_supported")
+```
+
+Per-kernel probe and observation methods close register RES-5 / MC-048 as each real
+adapter implements them; until then the defaults keep every uncertain mutation safe.
+
+**Error classes the guard relies on** (every `KernelResult(status="error")` carries one in
+`metadata["error_class"]`): `not_dispatched` (request never sent: connection refused,
+DNS/TLS failure — retryable, gate C35), `rate_limited` (429), `server_error` (5xx),
+`client_error` (401/403/404/422 — never retried, never counted by the circuit breaker),
+`adapter_defect` (an exception escaped the adapter — non-retryable, alert). Timeouts are
+not an adapter error class: `TimeoutManager` detects them (register MC-008).
+
 ### Adapter Contract Rules (NON-NEGOTIABLE)
 
 1. **NEVER raise exceptions** — always return `KernelResult(status="error", error=...)`
@@ -85,6 +129,12 @@ class SafeAdapterWrapper:
                 metadata={"exception_type": type(e).__name__, "exception_message": str(e)},
             )
 ```
+
+> **S12–S15 gate v9 repair (C32, register MC-008):** the wrapper sets
+> `metadata["error_class"] = "adapter_defect"` (non-retryable, alert event) and never
+> classifies a timeout by matching exception text. The exception message stays in
+> logs and dead-letter evidence only after redaction (gate §21 S6); it never reaches the
+> user envelope.
 
 ### Adapter Internal Structure
 

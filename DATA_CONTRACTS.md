@@ -1219,7 +1219,7 @@ class StepState(StrEnum):
     COMPLETED = "completed"       # Successfully finished
     PARTIAL = "partial"           # Partial success (some sub-operations failed)
     FAILED = "failed"             # Hard failure, not retryable
-    CANCELLED = "cancelled"       # User cancelled
+    CANCELLED = "cancelled"       # Did not start or stopped: cancelled by the user or by the system (reason in terminal_reason, gate C22)
     SKIPPED = "skipped"           # Precondition not met, step skipped
     TIMEOUT = "timeout"           # Exceeded time limit → maps to UNKNOWN
     UNKNOWN = "unknown"           # Outcome uncertain (network drop, timeout)
@@ -1229,30 +1229,29 @@ class StepState(StrEnum):
 ### 19.2 Legal Transitions
 
 ```python
+# gate v9 repair (C24): aligned with STATE_TRANSITIONS §2 and
+# S12_S15_EXECUTION_GATE Appendix A.2 (which also lists the reason codes and guards).
 STEP_TRANSITIONS = {
-    StepState.PENDING: {StepState.RUNNING, StepState.SKIPPED, StepState.CANCELLED, StepState.PENDING_PROBE},
-    # CRIT-009: PENDING → PENDING_PROBE: step timed out before starting
+    StepState.PENDING: {StepState.RUNNING, StepState.SKIPPED, StepState.CANCELLED},
+    # PENDING → PENDING_PROBE removed: a step that never started has nothing to probe.
     StepState.RUNNING: {StepState.COMPLETED, StepState.PARTIAL, StepState.FAILED,
                         StepState.TIMEOUT, StepState.CANCELLED, StepState.PENDING_PROBE},
-    # CRIT-009: RUNNING → PENDING_PROBE: timeout detected, probe queued directly
-    StepState.TIMEOUT: set(),  # CRIT-009: TIMEOUT is terminal — no outgoing transitions
-    StepState.UNKNOWN: {StepState.PENDING_PROBE, StepState.DEAD_LETTER, StepState.FAILED},
-    # CRIT-009: UNKNOWN cannot become COMPLETED without probe verification
-    # I-005: UNKNOWN cannot become COMPLETED without probe verification.
-    # UNKNOWN → PENDING_PROBE (D-PIPE1: probe initiated)
-    # UNKNOWN → DEAD_LETTER after max probes exhausted
-    # UNKNOWN → FAILED after terminal-state invariant timeout
-    StepState.PENDING_PROBE: [StepState.COMPLETED, StepState.PENDING, StepState.FAILED, StepState.DEAD_LETTER],
-    # PENDING_PROBE → COMPLETED: probe confirmed execution succeeded
-    # PENDING_PROBE → PENDING:    probe confirmed execution never started, re-queue
-    # PENDING_PROBE → FAILED:     probe error, cannot determine outcome
-    # PENDING_PROBE → DEAD_LETTER: probe inconclusive after max attempts
-    StepState.PARTIAL: [StepState.DEAD_LETTER],
-    StepState.FAILED: [],  # Terminal — all retries exhausted, step cannot be retried
-    StepState.SKIPPED: [],  # Terminal
-    StepState.CANCELLED: [],  # Terminal
-    StepState.COMPLETED: [],  # Terminal
-    StepState.DEAD_LETTER: [],  # Terminal
+    # RUNNING → PARTIAL and RUNNING → CANCELLED are legal but not produced in S12–S15.
+    StepState.TIMEOUT: {StepState.PENDING_PROBE},
+    # Every timeout is probed (gate C6). TIMEOUT → UNKNOWN / DEAD_LETTER are illegal.
+    StepState.UNKNOWN: {StepState.PENDING_PROBE, StepState.DEAD_LETTER},
+    # UNKNOWN is never written in S12–S15 (gate C24). UNKNOWN → FAILED is illegal (C6).
+    StepState.PENDING_PROBE: {StepState.COMPLETED, StepState.PENDING,
+                              StepState.FAILED, StepState.DEAD_LETTER},
+    # → FAILED only on a definitive failure (probe EXECUTED_FAILURE, ledger failure,
+    #   verification FAIL); → PENDING only on NOT_EXECUTED / no dispatch marker /
+    #   read_reexecution_safe (gate C6, C35).
+    StepState.PARTIAL: set(),      # No outgoing edge; not produced.
+    StepState.FAILED: set(),       # Terminal
+    StepState.SKIPPED: set(),      # Terminal
+    StepState.CANCELLED: set(),    # Terminal
+    StepState.COMPLETED: set(),    # Terminal
+    StepState.DEAD_LETTER: set(),  # Terminal
 }
 ```
 
@@ -1261,37 +1260,31 @@ STEP_TRANSITIONS = {
 ### 19.2 Legal Transitions (Text)
 
 ```
-PENDING → RUNNING          (step starts executing)
-PENDING → CANCELLED        (user cancelled before start)
-PENDING → SKIPPED           (precondition not met, before execution)
+PENDING → RUNNING          (step starts executing; its reservation is locked in the same transaction)
+PENDING → SKIPPED          (dependency failed, step not needed — terminal_reason dependency_failed)
+PENDING → CANCELLED        (did not start: cancelled by the user or by the system — terminal_reason required)
 
-RUNNING → COMPLETED        (success)
-RUNNING → PARTIAL          (partial success)
-RUNNING → FAILED           (hard failure)
-RUNNING → CANCELLED        (user cancelled mid-execution)
+RUNNING → COMPLETED        (verified success)
+RUNNING → FAILED           (non-retryable error, retries exhausted, or verification FAIL)
 RUNNING → TIMEOUT          (timeout exceeded)
-RUNNING → DEAD_LETTER      (permanent failure detected)
-RUNNING → SKIPPED           (precondition not met, during execution)
+RUNNING → PENDING_PROBE    (outcome or verification uncertain; crash recovery)
+RUNNING → PARTIAL          (legal, not produced in S12–S15)
+RUNNING → CANCELLED        (legal, not produced: an in-flight step is resolved first)
 
-TIMEOUT → UNKNOWN          (timeout mapped to UNKNOWN)
-UNKNOWN → PENDING_PROBE    (D-PIPE1: probe initiated)
-PENDING_PROBE → COMPLETED  (probe confirms success)
-PENDING_PROBE → PENDING     (probe confirms never started — re-queue for execution)
-PENDING_PROBE → FAILED      (probe error, cannot determine outcome)
-PENDING_PROBE → DEAD_LETTER (probe inconclusive, max attempts)
-UNKNOWN → PENDING_PROBE    (D-PIPE1: probe initiated)
-UNKNOWN → DEAD_LETTER      (max probes exhausted)
-UNKNOWN → FAILED           (terminal-state invariant timeout)
+TIMEOUT → PENDING_PROBE    (every timeout is probed)
+UNKNOWN → PENDING_PROBE    (legal; UNKNOWN is never written in S12–S15)
+UNKNOWN → DEAD_LETTER      (legal; UNKNOWN is never written in S12–S15)
 
-COMPLETED → (terminal)
-PARTIAL   → (terminal)
-FAILED    → (terminal — retries exhausted at attempt level, not step level)
-CANCELLED → (terminal)
-TIMEOUT   → (terminal — maps to UNKNOWN, then PENDING_PROBE)
-UNKNOWN   → (terminal after PENDING_PROBE resolution)
-SKIPPED   → (terminal)
-DEAD_LETTER → (terminal)
+PENDING_PROBE → COMPLETED  (probe confirms executed success; verification passed)
+PENDING_PROBE → PENDING    (probe confirms not executed, or no dispatch marker — retry)
+PENDING_PROBE → FAILED     (definitive failure only)
+PENDING_PROBE → DEAD_LETTER (inconclusive after the bounded attempts)
+
+COMPLETED, FAILED, CANCELLED, SKIPPED, DEAD_LETTER → (terminal)
+PARTIAL → (no outgoing edge)
 ```
+
+> **S12–S15 gate v9 repair (C24):** The previous text list also allowed RUNNING → DEAD_LETTER, RUNNING → SKIPPED, TIMEOUT → UNKNOWN and UNKNOWN → FAILED, and called TIMEOUT terminal. Those contradicted STATE_TRANSITIONS §2 and are removed. Retries happen inside RUNNING (attempt counter), not through state transitions.
 
 **Note**: FAILED is terminal for the step. Retries happen at the attempt level before the step enters FAILED state. Once a step enters FAILED state, all attempts are exhausted and no further retries are possible. Escalation to DEAD_LETTER happens at the execution level (LeaseRecovery), not via a step state transition.
 
@@ -1306,6 +1299,44 @@ DEAD_LETTER → (terminal)
 | FAILED | COMPLETED | Terminal state |
 | CANCELLED | RUNNING | Terminal state |
 | DEAD_LETTER | any | Terminal state |
+| PENDING | PENDING_PROBE | Nothing to probe before start (gate C24) |
+| RUNNING | DEAD_LETTER | Must pass through PENDING_PROBE (gate C24) |
+| RUNNING | SKIPPED | SKIPPED is only for steps that never started (gate C22) |
+| TIMEOUT | UNKNOWN / DEAD_LETTER | Every timeout is probed (gate C6) |
+| UNKNOWN | FAILED | Must pass through PENDING_PROBE (gate C6) |
+
+### 19.4 StepTerminalReason (gate C22, C23, C35)
+
+```python
+class StepTerminalReason(StrEnum):
+    """Why a step ended CANCELLED or SKIPPED. Closed set; stored in
+    execution_steps.terminal_reason (CHECK constraint). Values may be added, never
+    removed or renamed."""
+    USER_CANCELLED = "user_cancelled"
+    ADMISSION_REJECTED = "admission_rejected"
+    ADMISSION_EXHAUSTED = "admission_exhausted"
+    NO_WORKER = "no_worker"
+    LEASE_UNAVAILABLE = "lease_unavailable"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    PREFLIGHT_FAILED = "preflight_failed"
+    NOT_EXECUTED_NO_RETRY = "not_executed_no_retry"
+    DEPENDENCY_FAILED = "dependency_failed"
+    RUN_DEAD_LETTERED = "run_dead_lettered"
+    AUTHORIZATION_REVOKED = "authorization_revoked"
+    KILL_SWITCH_ENGAGED = "kill_switch_engaged"
+    BINDING_INVALID = "binding_invalid"
+    CREDENTIAL_INVALID = "credential_invalid"
+```
+
+### 19.5 ProbeOutcome (gate §9, C32)
+
+```python
+class ProbeOutcome(StrEnum):
+    EXECUTED_SUCCESS = "executed_success"
+    EXECUTED_FAILURE = "executed_failure"
+    NOT_EXECUTED = "not_executed"
+    INCONCLUSIVE = "inconclusive"   # also the result of any exception, and the BaseAdapter default
+```
 
 ---
 
@@ -1467,20 +1498,29 @@ class DeadLetter:
     max_retries: int          # Max allowed retries for this mutation type
     next_retry_at: float | None  # Next retry timestamp, None if exhausted
     failed_at: float          # Unix timestamp
-    escalation_status: str    # "pending" | "escalated" | "resolved"
+    status: str               # DeadLetterStatus: "pending" | "retrying" | "resolved" | "abandoned" (STATE_TRANSITIONS §9)
+    retry_mode: str           # "PROBE" | "VERIFY" | "NONE" — set at creation, never changed (gate C21, D5)
+    origin: str               # "execution" | "rollback" (gate C27)
+    tenant_id: str            # From the run (gate C29, C34)
+    evidence: dict            # Attempts, probe results, verifier observations, classification (never empty)
+    episode_id: str | None = None          # step_reconciliations episode that produced it
+    resolution_outcome: str | None = None  # "EXECUTED" | "NOT_EXECUTED" | "UNDETERMINED"; required when resolved/abandoned
     resolution_notes: str | None = None
     resolved_at: float | None = None
     resolved_by: str | None = None
 ```
 
+
+> **S12–S15 gate v9 repair (C29):** `escalation_status` (pending/escalated/resolved) is replaced by `status`, which follows the canonical dead-letter machine. Escalation is an alert event, not a state. `error_type` is one of `transient`, `permanent`, `data`, `unknown_unresolved`.
+
 ### 23.2 Escalation Flow
 
 ```
 DEAD_LETTER created (S14)
-  → escalation_status = "pending"
-  → Notify human operator (webhook/alert)
+  → status = "pending"; alert event recorded for permanent / unknown_unresolved
+  → Retry per retry_mode (PROBE: probe only; VERIFY: verification only; NONE: none)
   → Human reviews and resolves
-    → escalation_status = "resolved"
+    → status = "resolved" (or "abandoned" after retries), resolution_outcome set
     → resolution_notes filled in
     → resolved_at, resolved_by set
 ```
@@ -2116,8 +2156,8 @@ class Observation:
 | Verdict | Condition | Next Step |
 |---------|-----------|-----------|
 | `PASS` | Observation matches expected state | Step → COMPLETED |
-| `FAIL` | Observation contradicts expected state | Step → FAILED, retry or DLQ |
-| `UNKNOWN` | Observation inconclusive | Retry observation (up to max_attempts) |
+| `FAIL` | Observation contradicts expected state | Step → FAILED, dead-letter record (`data`, retry_mode NONE); never retried (gate §8 step 9, C29) |
+| `UNKNOWN` | Observation inconclusive | Retry observation (up to max_attempts); still UNKNOWN → VERIFICATION episode (gate C19), never the provider probe |
 
 ---
 

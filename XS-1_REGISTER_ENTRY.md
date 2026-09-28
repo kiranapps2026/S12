@@ -7,7 +7,7 @@ For `SUPERSESSION_AWARE_BLOCKER_REGISTER.md`, in the format required by S12_S15_
 | **ID** | XS-1 |
 | **Documents** | STATE_TRANSITIONS.md §2 (step machine) and invariant I-1; DATA_CONTRACTS.md StepState annotations; DATABASE.md `execution_steps`; S12_S15_EXECUTION_GATE §8 steps 1, 5, 6 and §9 |
 | **Phase** | S12–S15 (current gate). Pre-existing; not introduced by the Laya note. |
-| **Status** | OPEN — ruling required before S12–S15 certification |
+| **Status** | RESOLVED BY C22 (S12_S15_EXECUTION_GATE v7+; refined in v9: SKIPPED also carries a reason, collateral steps inherit the trigger's reason, immutability enforced by a database trigger, and values `authorization_revoked`, `kill_switch_engaged`, `binding_invalid`, `credential_invalid` added). Register §18. |
 
 ## Conflicting statements
 

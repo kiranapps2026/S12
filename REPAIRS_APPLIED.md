@@ -117,3 +117,33 @@ All 18 documents have been read, verified, and repaired. The document set is now
 - **Behaviorally consistent**: All state machines have valid transitions
 - **Lifecycle consistent**: All entity lifecycles are complete and valid
 - **Implementation-ready**: All contracts, schemas, and plans are complete
+
+---
+
+## S12–S15 GATE v9 REPAIRS (2026-09-28)
+
+**Scope**: align every document the S12–S15 phase depends on with FINAL_ARCHITECTURE
+(master, v4.4.0) and with the decisions made later in WORKER_LIFECYCLE_VERIFICATION_ADMISSION,
+SUPERSESSION_AWARE_BLOCKER_REGISTER and XS-1, so the implementing agent never has to choose
+between two documents. Each repaired passage carries a
+`> **S12–S15 gate v9 repair (Cn):**` marker naming the ruling; the ruling text, conflict and
+reason are in S12_S15_EXECUTION_GATE.md §5 (C1–C38). The register mapping is Section 18.
+
+**Resolution principle** (gate §3): prefer the option that (1) can never cause a duplicate
+side effect, overspend or unauthorized call; (2) never blocks progress; (3) keeps one writer
+per piece of state; (4) leaves a machine-readable reason for every decision.
+
+| Document | Repairs | Rulings |
+|---|---|---|
+| FINAL_ARCHITECTURE.md | §10 lease/fence rows and worker states; §11 invariant 4 (PipelineState, not StageResult); §12 state contract, atomic transitions, fence, scheduler; §13/§38 manifest definition and persistence point; §15 heading and "all skipped"; §17 layer mapping and timeout retry; §19 probe pattern; §20 queue; §24 confirmation; §26 worker default; §37a adapter additions; I-004; I-021; glossary | C1, C3, C4, C6, C12, C20, C25, C32, C33, C38 |
+| STATE_TRANSITIONS.md | Run table code; run annotations; step valid and illegal lists; budget LOCKED exits; lease status; reconciliation scope; I-1, I-3, I-4, I-8; CHECK values | C6, C7, C13, C18, C22, C24, C26, C27, C28, C37 |
+| DATA_CONTRACTS.md | StepState CANCELLED meaning; §19.2 code and text tables; §19.3 illegal rows; new §19.4 StepTerminalReason, §19.5 ProbeOutcome; DeadLetter `status` and fields; verdict rules | C6, C19, C22, C24, C29, C32, C35 |
+| DATABASE.md | Status comments; additive columns for budget_reservations, execution_runs, execution_steps, pending_confirmations, dead_letters, idempotency_ledger, workers, worker_leases; worker identity invariant; recovery flow; execution_leases; budget constraint; test database; new §3 "S12–S15 Additive Tables" | C3, C5, C9, C10, C16, C20, C21, C22, C25, C26, C27, C28, C33, C34, C35 |
+| MUTATION_SAFETY.md | Retry note; §5 idempotency identifiers and flow; §7 checkpoint pattern and resume; §8 dead-letter retry | C6, C9, C10, C17, C35, D5 |
+| RELIABILITY.md | Guard/BudgetTracker role; queue; half-open; 4xx; no 24h auto-release; budget pool; probe table; timeout rules; bulkhead during backoff; TimeoutProbe superseded | C1, C3, C4, C31, C32, C37 |
+| PIPELINE_STAGES.md | S12 normative sequence pointer; budget rules; S13 consolidation table; RECONCILING; UNKNOWN implementation contract; negative-path rows; S14 purpose | C2, C3, C4, C5, C8, C13, C14, C21, C29 |
+| WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md | lease_epoch invariant; ownership transfer rules; runtime id; §12 sketch; re-entry revalidation mechanism; admission mapping; verification UNKNOWN | C11, C19, C23, C25, C30, C32, C35 |
+| PROVIDER_ADAPTERS.md | Additive `call_meta`, `probe`, `observe`; error classes; wrapper classification | C32, C35 |
+| VOCABULARY_INDEX.md | Worker Runtime, Fence token, Step idempotency key; "runner" replacement | C2, C9, C25 |
+| XS-1_REGISTER_ENTRY.md | Status RESOLVED BY C22 | C22 |
+| SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Section 18 (rulings, Laya LB1–LB11, deferred items) | all |

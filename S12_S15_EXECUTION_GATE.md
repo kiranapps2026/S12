@@ -1375,7 +1375,7 @@ Add, via migration:
   - `dead_letters.origin` and `dead_letters.attempt_id` (C27, C29);
   - `tenant_id` on every table listed in C34, with RLS where enabled;
   - `budget_reservations.created_at` as `TIMESTAMPTZ`, or `created_at_ts` (C33);
-  - a transition-log table (or `audit_log` rows) carrying `from`, `to`, `reason`,
+  - the transition-log table `state_transitions` (DATABASE §3, or equivalent ledger rows) carrying `from`, `to`, `reason`,
     `runtime_instance_id`, `fence_token` (C24);
   - every CHECK constraint generated from its enum (C28).
 

@@ -34,6 +34,9 @@
 | Term | Canonical Definition | Do Not Use | Document | Usage Example |
 |------|----------------------|------------|----------|---------------|
 | **Worker** | A durable identity with state, capabilities, lease, and heartbeat. Workers survive process restarts and are scheduled by the kernel. | agent, bot, runner, executor | DATA_CONTRACTS.md, IDENTITY_AND_TENANCY.md | "The worker claims a task via lease acquisition." |
+| **Worker Runtime** | The running process/container that executes steps on behalf of Workers (FINAL_ARCHITECTURE §34). In the single-node S12–S15 phase one Worker Runtime hosts the engine for every leased Worker. Identified by `runtime_instance_id`, generated at process start. *(S12–S15 gate v9, C2.)* | runner, engine host, worker process | FINAL_ARCHITECTURE.md §34, S12_S15_EXECUTION_GATE.md §4 | "The sweeper in a fresh Worker Runtime took over the execution." |
+| **Fence token** | Monotonic token from the database sequence `fence_token_seq`, issued on every lease acquisition and renewal and mirrored in `execution_ownership.fencing_token`; every durable write for an execution checks it. *(gate v9, C25.)* | epoch, version, generation | S12_S15_EXECUTION_GATE.md C5, C25 | "The stale owner's write matched 0 rows because its fence token was superseded." |
+| **Step idempotency key** | `request_id:plan_step_id` — stable across attempts and recovery; the idempotency-ledger key. *(gate C9.)* | request key, call id | MUTATION_SAFETY.md §5 | "The retry reused the step idempotency key, so the provider deduplicated it." |
 | **Task** | The central kernel object. Immutable specification of work: intent, strategy, capability requirements, parameters, state, priority, budget, and timing. | job, unit of work, item, work item | DATA_CONTRACTS.md, EXECUTION_PLAN.md | "The task transitions from PENDING to ASSIGNED when a worker claims it." |
 | **Job** | Use "Task" instead. If referring to background processing, use "Execution." | — | — | — |
 | **Run** | A single invocation of an ExecutionPlan. | execution, attempt, invocation | EXECUTION_PLAN.md | "Each run produces a trace and checkpoint." |
@@ -133,7 +136,7 @@
 |---------------|----------------|-------------|
 | agent | Ambiguous — could mean worker, bot, or framework agent | Worker |
 | bot | Informal — lacks architectural precision | Worker |
-| runner | Conflicts with the AgentsMesh Runner component | Worker |
+| runner | Conflicts with the AgentsMesh Runner component | Worker (the durable identity) or Worker Runtime (the process) |
 | executor | Too generic | Worker or Execution |
 | workflow | Implies a fixed sequence; execution plans can be dynamic | Execution Plan |
 | script | Implies linear, non-durable execution | Execution Plan |

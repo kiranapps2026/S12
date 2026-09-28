@@ -747,3 +747,85 @@ Before proceeding, the following decisions require human approval:
 3. **ADR-5**: Confirm circuit breaker persistence approach (PostgreSQL + advisory locks + fleet coordination)
 4. **ADR-11**: Checkpoint storage model — PostgreSQL-only or PostgreSQL + external payload?
 5. **Scope**: Should the 48 OPEN implementation items be tracked in a separate implementation tracker, or remain in EXECUTION_PLAN.md?
+
+---
+
+## SECTION 18: S12–S15 GATE v9 — RULINGS, PROPAGATION AND RESOLVED ITEMS
+
+**Date**: 2026-09-28. **Source**: S12_S15_EXECUTION_GATE.md v9.
+**Rule for all entries below**: the ruling is DECIDED and PROPAGATED (every affected
+passage carries a `S12–S15 gate v9 repair (Cn)` marker). Implementation, tests, CI and
+evidence are still required (closure equation, Section 1): status
+`IMPLEMENTATION_REQUIRED` until the S12–S15 certification report cites the passing tests.
+
+### 18.1 Gate rulings
+
+| ID | Subject | Owning document(s) repaired | Resolves / refines | Tests (gate §16) |
+|---|---|---|---|---|
+| C1 | In-process dispatch; PostgreSQL is the claim authority | FINAL_ARCHITECTURE §12, §20; RELIABILITY §2 | FA §37 vs tech table | 2, 17 |
+| C2 | Term "Worker Runtime" (not "runner") | VOCABULARY_INDEX; PIPELINE_STAGES §19; FINAL_ARCHITECTURE §15 | Terms to Avoid vs v8 "Runner" | — |
+| C3 | Budget reserved per step; `tenants.budget_pool` | FINAL_ARCHITECTURE §12; PIPELINE_STAGES §14; RELIABILITY §4; DATABASE budget_reservations | MC-026, DB-RESERVE | 4 |
+| C4 | Guard components by name | FINAL_ARCHITECTURE §17; RELIABILITY §1; PIPELINE_STAGES §14, §19 | Layer numbering conflict | 2, 7 |
+| C5 | Renewable leases; capacity-bounded acquisition | PIPELINE_STAGES §19; DATABASE worker_leases, execution_leases | MC-010, REL-LEASE | 5 |
+| C6 | Step machine corrections; retries inside RUNNING | STATE_TRANSITIONS §2; DATA_CONTRACTS §19; MUTATION_SAFETY §3, §7; FINAL_ARCHITECTURE §19 | MC-037 (partly) | 1, 7, 8 |
+| C7 | Run states exactly eight | STATE_TRANSITIONS §1; DATABASE execution_runs | — | 1 |
+| C8 | UNKNOWN resolved to success counts as COMPLETED | PIPELINE_STAGES §15 | — | 10 |
+| C9 | Step idempotency key `request_id:plan_step_id` | MUTATION_SAFETY §5; FINAL_ARCHITECTURE I-021 | — | 6 |
+| C10 | Checkpoints are rows only | MUTATION_SAFETY §7; DATABASE checkpoints | ADR-11 (for this phase: PostgreSQL-only), DB-CKPT | 2 |
+| C11 | Topological order; no silent skip | WORKER_LIFECYCLE §12 | — | 15 |
+| C12 | Verification and reconciliation code in S13, called from S12 | FINAL_ARCHITECTURE §12 | — | 9 |
+| C13 | RECONCILING only when all else terminal | STATE_TRANSITIONS §1; PIPELINE_STAGES §15 | MC-005 | 8 |
+| C14 | LOCKED resolved only by probe | PIPELINE_STAGES §14 | — | 4, 14 |
+| C15 | Budget exhaustion mid-run → CANCELLED | — (gate-internal) | — | 16a |
+| C16 | User cancellation | DATABASE execution_runs (`cancel_requested_at`) | — | 16a |
+| C17 | Idempotency hit path | MUTATION_SAFETY §5 | — | 6 |
+| C18 | Per-step reconciliation episodes | STATE_TRANSITIONS §10; DATABASE §3 (`step_reconciliations`) | MC-005, Reconciliation "state machine incomplete" (§9) | 8 |
+| C19 | Execution vs verification uncertainty | DATA_CONTRACTS VerificationResult; WORKER_LIFECYCLE §8 | — | 9 |
+| C20 | `pending_confirmations` vs `Confirmation` | DATABASE pending_confirmations; FINAL_ARCHITECTURE §24 | MC-061 (contract inconsistency); depends on S0–S11 runbook R-Z | 13 |
+| C21 | Dead-letter storage | DATABASE dead_letters; DATA_CONTRACTS §23 | — | 11 |
+| C22 | Step terminal reasons | STATE_TRANSITIONS §2, I-1; DATA_CONTRACTS §19; DATABASE execution_steps | **XS-1 — RESOLVED BY C22** | 16 |
+| C23 | Live authorization revalidation | WORKER_LIFECYCLE §10 (Re-entry Revalidation) | P1-G in-flight kill-switch semantics (for S12–S15) | 16b |
+| C24 | One canonical transition table set (gate Appendix A) | STATE_TRANSITIONS §1–§2; DATA_CONTRACTS §19.2, §19.3 | MC-037 | 1, 19 |
+| C25 | Fence tokens from one sequence, checked per execution | FINAL_ARCHITECTURE §10, §12, I-004; WORKER_LIFECYCLE §3, §14; DATABASE execution_ownership | MC-011, REL-FENCE | 5, 17, 19 |
+| C26 | Lease status stored | STATE_TRANSITIONS §5; DATABASE worker_leases | — | 5, 19 |
+| C27 | Cross-state invariants I-1, I-3, I-4, I-8 amended | STATE_TRANSITIONS §12 | — | 11, 16, 19 |
+| C28 | Persisted enum values lowercase; CHECKs from enums | DATABASE (status comments); STATE_TRANSITIONS §13 | — | 19 |
+| C29 | DeadLetter contract uses `status` | DATA_CONTRACTS §23, VerificationResult | — | 11 |
+| C30 | Admission vs revalidation vs budget | WORKER_LIFECYCLE §10 | — | 19 |
+| C31 | Budget writes only in BudgetReserver | RELIABILITY §1, §4; PIPELINE_STAGES §14 | — | 19 |
+| C32 | Adapter `call_meta`, `probe`, `observe` (additive) | PROVIDER_ADAPTERS §1; FINAL_ARCHITECTURE §37a; RELIABILITY §5, App. A | **RES-5 / MC-048** (interface defined; per-kernel methods per adapter), MC-008, MC-038 (wrapper) | 19 |
+| C33 | Budget period, timestamps, step-id uniqueness, schema defects | DATABASE (several); FINAL_ARCHITECTURE §26 | MC-021 / DB-STEPID, MC-022 / DB-TS (new columns), MC-024, DB-SQLITE (for tests), **PIPE-CRASH / ADR-7** (recovery flow superseded) | 19 |
+| C34 | `tenant_id` on every S12–S15 row, RLS where enabled | DATABASE | MC-015 / DB-RLS (for S12–S15 tables), P1-H (no cascades) | 18 |
+| C35 | Dispatch marker; recovery validity; NOT_EXECUTED | DATABASE execution_steps; WORKER_LIFECYCLE §10 | **ADR-7** (UNKNOWN vs NOT_EXECUTED, validity states, budget reuse), MC-009, VAL-REC | 14, 19 |
+| C36 | Static step data flow (interim) | — (gate) | **P0-B stays OPEN**; interim contract: params bound at S9, cross-step references denied at S12 entry | 3, 19 |
+| C37 | Half-open breaker, bulkhead during backoff, timeout ordering, no 24h auto-release | RELIABILITY §2, §4, §5, §6 | MC-017 (single node), MC-062, MC-052, ADR-5 (interface ready; persistence deferred to fleet phase) | 7, 19 |
+| C38 | FINAL_ARCHITECTURE aligned with later documents | FINAL_ARCHITECTURE (v4.4.0) | I-015 kept true | — |
+
+### 18.2 Laya design note — blocker entries (target phase: LLM layer)
+
+Filed from LAYA_DECISION_ADAPTER.md §15 (the note is DEFERRED; nothing is implemented,
+migrated or tested in S0–S11 or S12–S15). IDs are stable.
+
+| ID | Gap | Status |
+|---|---|---|
+| LB1 | REFLEX calls `provider.decide()`; `RuntimeContract` has no `decide` | DECISION_REQUIRED |
+| LB2 | Strategy authority S7 vs S9 (`Step.reflex_choice`) | DECISION_REQUIRED |
+| LB3 | Event `dropped` reason codes | PROPAGATION_REQUIRED |
+| LB4 | REFLEX "safety-critical tasks" use case contradicts LR1 | DECISION_REQUIRED |
+| LB5 | Spec confidence thresholds vs provider scores | DECIDED (pending propagation) |
+| LB6 | Choosing among kernel ops needs several FrozenBindingIdentities | OPEN |
+| LB7 | Step has no field for a frozen choice set | DECISION_REQUIRED |
+| LB8 | Manifest lacks decision-contract / calibration versions | DECISION_REQUIRED |
+| LB9 | Step-loop decision position (gate §8 step 4 stays empty in S12–S15) | DECISION_REQUIRED |
+| LB10 | S10 confirmation of a candidate set (certified S10) | DECISION_REQUIRED |
+| LB11 | Promotion lifecycle state machine and owner | DECISION_REQUIRED |
+
+### 18.3 Deferred by the S12–S15 gate (target phases per gate §21 "Deferred register")
+
+Multi-node fleet and notification channel; distributed circuit breaker persistence
+(ADR-5); worker version/deployment lifecycle and worker drain on lease loss; HITL channel
+for human verification; automatic rollback triggers; `any`/`threshold` join modes;
+parallel step execution; real provider adapters and their per-kernel probe/observe
+methods (RES-5); step-to-step data flow (P0-B); alert delivery; circuit-breaker fleet
+consistency (P1-B); scheduler fairness (P1-C). Open question: no post-execution
+human-approval run state (D4).

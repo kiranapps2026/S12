@@ -153,6 +153,9 @@ class MutationSafetyGate:
 | D (non-idempotent) | NEVER | 1 | Never | N/A |
 | IRREVERSIBLE | NEVER | 1 | Never | N/A |
 
+
+> **S12–S15 gate v9 repair (C6, C35, C37):** Retries happen while the step stays RUNNING (the `attempt` counter increments; no state transition). A timeout is never retried blindly: the step is probed first and retried only if the probe confirms NOT_EXECUTED. A connect-phase failure classified `not_dispatched` (the request was never sent) is a retryable definitive failure. The effective ceiling is `min(step_policy.max_attempts, this table, reliability ceiling, provider limit)`.
+
 ### Retryable Errors
 
 | HTTP Status | Error Type | Retry? | Reason |
@@ -282,13 +285,22 @@ Prevent duplicate mutations when the same request is submitted multiple times (u
 
 ### Idempotency Key Computation
 
-**Canonical rule**: `request_id` (generated at S0) is the canonical idempotency key for duplicate detection. Deterministic SHA-256 hashing is not used for request-level deduplication.
+**Canonical rule** (S12–S15 gate v9 repair, C9): three identifiers, three purposes.
+
+| Identifier | Value | Purpose |
+|---|---|---|
+| Request-level duplicate detection | `request_id` (S0), unique per `(tenant_id, request_id)` in `execution_runs` | A repeated request returns the existing execution |
+| **Step idempotency key** | `f"{request_id}:{plan_step_id}"` | Stable across attempts and crash recovery; ledger key; passed to the provider as its idempotency key |
+| `provider_call_id` | UUID v4 per adapter invocation | Tracing only |
+| `attempt_id` | `att-{step_index}-{attempt_N}` | Tracing only |
 
 ```python
-def compute_provider_call_id(context: ExecutionContext, attempt: int) -> str:
-    """Compute provider-call idempotency key (per attempt)."""
-    return f"{context.request_id}:{attempt}"
+def step_idempotency_key(request_id: str, plan_step_id: str) -> str:
+    """Stable per step; identical for every attempt of that step."""
+    return f"{request_id}:{plan_step_id}"
 ```
+
+The earlier `f"{request_id}:{attempt}"` key gave step 2 of a plan step 1's cached result and defeated provider-side deduplication on retry.
 
 ### Idempotency Ledger
 
@@ -306,7 +318,7 @@ class IdempotencyRecord:
 
 | Mutation | Idempotency Key Required |
 |----------|--------------------------|
-| R | No |
+| R | No (the key is still computed and recorded for tracing) |
 | W | Yes |
 | D | Yes (critical) |
 | IRREVERSIBLE | Yes (critical) |
@@ -314,14 +326,19 @@ class IdempotencyRecord:
 ### Flow
 
 ```
-Before executing a step:
-    1. Compute idempotency key
+Immediately before each adapter call (step RUNNING, reservation LOCKED — gate C17):
+    1. Compute the step idempotency key; look it up filtered by tenant_id
     2. Check ledger:
-       - Key exists, not expired → return cached result
-       - Key exists, expired → execute fresh, update record
-       - Key doesn't exist → execute, store result with key
+       - Record exists, not expired → use the cached definitive result; no adapter call
+         (success → verification → COMPLETED; failure → FAILED)
+       - Record expired, or no record, for a step that may already have run
+         → probe the provider; never call the adapter blindly
+       - No record, first dispatch → write the dispatch marker, call the adapter,
+         store the result on a definitive outcome (INSERT ... ON CONFLICT DO NOTHING
+         through fenced_write(); a conflicting row raises IdempotencyConflict)
     3. TTL: 24 hours
-    4. Cleanup: periodic deletion of expired keys
+    4. Cleanup: manual job; never deletes a record of a non-terminal run
+
 ```
 
 ---
@@ -410,16 +427,11 @@ class Checkpoint:
 
 ### Checkpoint Write Pattern
 
-```python
-def write_checkpoint(checkpoint: Checkpoint) -> None:
-    """Atomic checkpoint write — crash-safe."""
-    tmp_path = f"{checkpoint_path}.tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(checkpoint.to_dict(), f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.rename(tmp_path, checkpoint_path)  # Atomic on most filesystems
-```
+> **S12–S15 gate v9 repair (C10, ADR-11):** checkpoints are rows in the `checkpoints` table,
+> written through `fenced_write()` in the same transaction as the step state they describe.
+> There are no checkpoint files. The earlier file pattern (`.tmp`, `fsync`, `os.rename`) is
+> superseded: it is not portable across nodes, and `os.rename` onto an existing file fails
+> on Windows.
 
 ### Resume Flow
 
@@ -433,7 +445,8 @@ On system start:
           - RUNNING/PENDING_PROBE/UNKNOWN steps are in-flight, not pending
        c. For each step in checkpoint.pending_steps:
           - If step.state == PENDING: execute normally
-          - If step.state == RUNNING: CRIT-008 — mark UNKNOWN, probe provider
+          - If step.state == RUNNING: CRIT-008 — move to PENDING_PROBE (not UNKNOWN; gate C6),
+            then ledger lookup → dispatch marker → probe (gate §13, C35)
             ├─ Probe EXECUTED → mark COMPLETED, commit budget
             ├─ Probe NOT_EXECUTED → mark PENDING, re-execute
             └─ Probe inconclusive → mark DEAD_LETTER, manual review
@@ -447,11 +460,11 @@ On system start:
 ### Rules
 
 1. CRIT-008: In-flight steps (RUNNING) are NEVER re-executed blindly
-2. CRIT-008: RUNNING steps become UNKNOWN → probe → resolve before re-execution
-3. Write to `.tmp` file, then `fsync`, then `os.rename` (atomic)
+2. CRIT-008: RUNNING steps become PENDING_PROBE → resolve (ledger, dispatch marker, probe) before any re-execution
+3. Write the checkpoint row through `fenced_write()` (no files; gate C10)
 4. Checkpoint after EVERY step
 5. Expire checkpoints after 24 hours
-6. Checkpoint includes budget state for correct resume
+6. Checkpoint includes budget state as a hint; recovery reuses the step's existing reservation (ADR-7)
 7. Execution state in DB is the source of truth; checkpoint is a hint
 
 ---
@@ -527,6 +540,9 @@ class DeadLetterRetryScheduler:
         idx = min(dead_letter.retry_count, len(delays) - 1)
         return delays[idx]
 ```
+
+
+> **S12–S15 gate v9 repair (D5, C21):** A dead-letter retry never re-executes a step: the run is terminal, and re-executing requires a new request through S0. What a retry may do is fixed by `retry_mode`, set at creation: `PROBE` → provider probe only; `VERIFY` → re-run the verification layers not yet PASS; `NONE` → no automatic retry (human resolution only). Transient errors are retried inside S12 before a dead letter exists. The scheduler above is superseded as an execution mechanism; its mutation checks still decide `retry_mode` (IRREVERSIBLE and non-idempotent W/D are always `NONE` for re-execution purposes).
 
 ### Cautions
 - Dead letters should NEVER be silently dropped
