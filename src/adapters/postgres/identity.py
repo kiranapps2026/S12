@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import types
 
+from adapters.postgres.budget import AVAILABLE_SQL
 from adapters.postgres.database import Database, LoopBridge
 from contracts.errors import DependencyUnavailable
 
@@ -69,15 +70,7 @@ class PostgresAuthorizationState:
         only: S12's atomic reserve (row lock on the tenant) is the authority.
         """
         self._require_own(tenant_id)
-        available = self._one("""
-            SELECT t.budget_pool - COALESCE((
-                SELECT SUM(r.cost) FROM budget_reservations r
-                 WHERE r.tenant_id = t.tenant_id
-                   AND r.status IN ('reserved', 'locked', 'committed')
-                   AND r.created_at >= date_trunc(
-                        CASE t.budget_period WHEN 'daily' THEN 'day' WHEN 'weekly' THEN 'week' ELSE 'month' END,
-                        now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'), 0) AS available
-              FROM tenants t WHERE t.tenant_id = $1""", tenant_id)["available"]
+        available = self._one(AVAILABLE_SQL, tenant_id)["available"]
         return available >= amount
 
     def _require_own(self, tenant_id: str) -> None:

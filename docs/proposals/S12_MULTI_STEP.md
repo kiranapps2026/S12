@@ -85,3 +85,36 @@ Points the gate owner should know:
   column (the spec's own CHECK made it always NULL); a minimal `state_transitions` table (C24).
 - **Not built:** the S12 step loop (lease, reserve, execute), quota refunds, `fenced_write`, worker selection.
   Nothing calls `admit_run` yet: S12 is not in the runner.
+
+## S12 step loop (built: gate §8 slice, milestones M9, M10-lite, M12, M14-lite)
+
+`engine/stages/s12_execute/loop.py::run_execution` runs an ADMITTED run one step at a time in topological
+order (ties by plan position, C11), loading the frozen plan, bindings and verifiers from the database
+(so it is recovery-shaped): cancellation check (C16); live authorization at step start and before EVERY
+adapter call (C23, S8's own check functions, fail closed, kill switch first); per-step budget
+reserve → lock → commit/release through `PostgresBudgetReserver` (C3: tenant row locked, availability by
+period, idempotent per step); pending → running; dispatch marker before the call (C35); the
+`ReliabilityGuard` (reservation must be LOCKED, breaker, timeout, adapter exceptions → `adapter_defect`);
+independent verification; `undo_token` for W/D steps with an inverse; dependents SKIPPED
+(`dependency_failed`); collateral cancellation with the trigger's reason (C22); a minimal consolidation.
+Every write goes through `PostgresExecutionRepository`: fenced by the ownership row (`FencedOut` stops all
+work), checked against the canonical state machines (`transitions.py`), logged in `state_transitions`.
+`terminal_reason` is a closed set with CHECKs and an immutability trigger (migration 010).
+
+Fail-closed choices where a later milestone is missing (documented in the module docstring):
+- a mutation is NEVER retried (no idempotency ledger, M11); READ steps retry retryable errors, 3 attempts;
+- a timeout, or a verification that is not a clear PASS/FAIL, goes running → (timeout →) pending_probe →
+  DEAD_LETTER with the budget left LOCKED (D4), the run DEAD_LETTER, remaining steps `run_dead_lettered`
+  (no probe, M13; no dead-letter record or rollback, M17);
+- a mutating step with no verifier or no verification runner is unverifiable, hence dead-lettered;
+- budget exhausted → run CANCELLED `budget_exhausted` and earlier commits stay (C15).
+
+Not built: worker selection, leases and the admission controller (M7/M8: one runtime, ownership row only),
+pre-flight schema validation (no kernel input schema exists), checkpoints, the real verification engine
+and its layers (M15), full consolidation and S13/S15 (M16/M18), quota refunds, `LiveAuthorizationCheck`'s
+"capability not retired" check (C30), no real provider adapter (a scripted adapter is used in tests).
+Nothing calls `run_execution` from the API yet.
+
+Deviations for the gate owner (migration 010): `execution_runs.connection_id` and `terminal_reason`
+(the live check needs the connection; a cancelled run needs its reason); `budget_reservations` still has no
+foreign keys to runs and steps (existing S8 budget tests use free-form ids).

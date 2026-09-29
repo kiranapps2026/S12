@@ -120,11 +120,11 @@ class PostgresExecutionAdmission:
             # 3. the run (PENDING) — the unique (tenant, request) index settles a concurrent duplicate
             inserted = await c.fetchval(
                 "INSERT INTO execution_runs (execution_id, request_id, trace_id, task_id, user_id, tenant_id,"
-                " workspace_id, conversation_id, plan_id, status, actor_type, actor_id)"
-                " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending','user',$5)"
+                " workspace_id, conversation_id, plan_id, status, actor_type, actor_id, connection_id)"
+                " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending','user',$5,$10)"
                 " ON CONFLICT (tenant_id, request_id) DO NOTHING RETURNING execution_id",
                 execution_id, ctx.request_id, ctx.trace_id, ctx.task_id, ctx.user_id, tenant,
-                ctx.workspace_id, ctx.conversation_id, plan.id)
+                ctx.workspace_id, ctx.conversation_id, plan.id, ctx.connection_id)
             if inserted is None:
                 raise _Duplicate()
 
