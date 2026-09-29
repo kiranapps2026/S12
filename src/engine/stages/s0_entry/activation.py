@@ -1,7 +1,8 @@
 """
 S0.1 — activation check: a paused or not-yet-active tenant or workspace runs no S1–S11 work.
 
-Ruling id: PENDING (owner to assign; see docs/proposals/S0_1_PAUSE_CHECK.md).
+Ruling: R-AA (proposed id, owner ratifies; text in docs/proposals/S0_1_PAUSE_CHECK.md).
+R-P is the vocabulary ruling; R-A..R-Z are all taken, so the next free id is R-AA.
 
 Decided by the database clock, never the caller's. Fail closed: if the state cannot be read
 the request is denied. Reasons (exact): tenant_paused, workspace_paused, not_yet_active,
