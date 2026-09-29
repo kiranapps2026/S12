@@ -1,7 +1,7 @@
-"""DeepSeek Responses API client implementing the IntentModel port.
+"""DeepSeek chat-completions client implementing the IntentModel port (OpenAI-compatible API).
 
-Standard library only (no extra packages for the offline bundle). The API key is
-passed in by the composition root from the environment and is never logged.
+Standard library only (no extra packages). The API key is passed in by the composition root from
+the environment and is never logged or included in an error message.
 """
 from __future__ import annotations
 
@@ -14,17 +14,17 @@ from typing import Any
 
 from adapters.llm.deepseek_request import (
     ENDPOINT,
-    INSTRUCTIONS,
     REQUEST_SETTINGS,
-    SCHEMA_NAME,
     TIMEOUT_SECONDS,
-    intent_schema,
+    system_prompt,
 )
 from contracts.errors import DependencyUnavailable
 from contracts.intent_model import IntentCompletion
 
 Transport = Callable[[str, dict[str, str], bytes, float], dict[str, Any]]
 _FAILURES = (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError)
+# "stop": finished; "length": cut off (the truncated JSON then fails S2's validation and is retried)
+_USABLE_FINISH = ("stop", "length")
 
 
 def post_json(url: str, headers: dict[str, str], body: bytes, timeout: float) -> dict[str, Any]:
@@ -52,23 +52,23 @@ class DeepSeekIntentModel:
 
 
 def build_request(text: str, intents: tuple[str, ...], feedback: str | None) -> dict[str, Any]:
-    items = [{"type": "message", "role": "user", "content": text}]
+    messages = [{"role": "system", "content": system_prompt(intents)},
+                {"role": "user", "content": text}]
     if feedback is not None:
-        items.append({"type": "message", "role": "user",
-                      "content": f"Your previous answer was rejected: {feedback}. Answer again."})
-    return {
-        **REQUEST_SETTINGS,
-        "instructions": INSTRUCTIONS,
-        "input": items,
-        "text": {"format": {"type": "json_schema", "name": SCHEMA_NAME, "schema": intent_schema(intents)}},
-    }
+        messages.append({"role": "user",
+                         "content": f"Your previous answer was rejected: {feedback}. Answer again."})
+    return {**REQUEST_SETTINGS, "messages": messages}
 
 
 def parse_reply(reply: dict[str, Any]) -> IntentCompletion:
-    """Text of the first output message; a response that is not completed is a failure."""
-    if reply.get("status", "completed") != "completed":
-        raise ValueError(f"response status {reply.get('status')}")
-    parts = [part["text"] for item in reply["output"] if item.get("type") == "message"
-             for part in item["content"] if part.get("type") == "output_text"]
-    return IntentCompletion(text=parts[0], model=reply.get("model", REQUEST_SETTINGS["model"]),
+    """The first choice's message content. An empty or unusable answer is returned as-is (S2
+    rejects it and retries with feedback); a missing structure or a filtered/failed completion
+    is a failure."""
+    choice = reply["choices"][0]
+    if choice.get("finish_reason", "stop") not in _USABLE_FINISH:
+        raise ValueError(f"finish_reason {choice.get('finish_reason')}")
+    content = choice["message"].get("content") or ""
+    if not isinstance(content, str):
+        raise TypeError("content is not text")
+    return IntentCompletion(text=content, model=reply.get("model", REQUEST_SETTINGS["model"]),
                             total_tokens=int(reply["usage"]["total_tokens"]))
