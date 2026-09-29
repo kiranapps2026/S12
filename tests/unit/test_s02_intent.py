@@ -55,3 +55,27 @@ def test_parameters_are_immutable():
     _, state = _s2(intent_json("contact.list", tags=["a"]))
     with pytest.raises(TypeError):
         state.intent_result.parameters["tags"] = ()
+
+
+def test_model_is_offered_only_production_intents():
+    h, _ = _s2(intent_json("contact.list"))
+    assert h.intent_model.offered_intents == [("contact.create", "contact.delete", "contact.list", "email.send")]
+
+
+def test_every_call_records_token_usage():
+    h, state = _s2("not json", intent_json("contact.list"))
+    records = h.usage.records
+    assert [r.quantity for r in records] == [42, 42]
+    first = records[0]
+    assert (first.resource_type, first.unit, first.kernel_op_ref, first.model) == (
+        "llm.token", "token", "llm.intent_analysis", "scripted-model")
+    assert (first.tenant_id, first.trace_id) == ("tenant-a", state.execution_context.trace_id)
+
+
+def test_unrecordable_usage_stops_the_run():
+    h = Harness()
+    state = h.state_before("S2")
+    h.usage.fail = True
+    out = h.run_stage("S2", state)
+    assert (out.halt.status, out.halt.reason) == (StageStatus.ERROR, "usage_unrecorded")
+    assert out.intent_result is None

@@ -8,7 +8,9 @@ from supragents.contracts.errors import DependencyUnavailable
 from supragents.contracts.vocabulary import CircuitState, Mutation, RecordStatus
 from supragents.ports.activation import ActivationState
 from supragents.ports.authorization import ConnectionState
+from supragents.ports.intent import IntentCompletion
 from supragents.ports.policy import KernelPolicy, PolicyVersions
+from supragents.ports.usage import UsageRecord
 
 
 class FakeActivation:
@@ -34,18 +36,33 @@ def intent_json(intent: str, confidence: float = 0.95, **parameters: object) -> 
 
 
 class ScriptedIntentModel:
-    """Returns the scripted answers in order; records every prompt and feedback."""
+    """Returns the scripted answers in order; records every prompt, intent list and feedback."""
+
+    TOKENS_PER_CALL = 42
 
     def __init__(self, *answers: str | Exception) -> None:
         self.answers = list(answers)
         self.calls: list[tuple[str, str | None]] = []
+        self.offered_intents: list[tuple[str, ...]] = []
 
-    async def complete(self, text: str, feedback: str | None) -> str:
+    async def complete(self, text: str, intents: tuple[str, ...], feedback: str | None) -> IntentCompletion:
         self.calls.append((text, feedback))
+        self.offered_intents.append(intents)
         answer = self.answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
-        return answer
+        return IntentCompletion(text=answer, model="scripted-model", total_tokens=self.TOKENS_PER_CALL)
+
+
+class RecordingUsage:
+    def __init__(self, fail: bool = False) -> None:
+        self.records: list[UsageRecord] = []
+        self.fail = fail
+
+    async def record(self, usage: UsageRecord) -> None:
+        if self.fail:
+            raise DependencyUnavailable("usage store down")
+        self.records.append(usage)
 
 
 @dataclass

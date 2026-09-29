@@ -40,6 +40,13 @@ class PostgresCapabilityRegistry:
             "retry_safety": RetrySafety(row["retry_safety"]), "truth_state": TruthState(row["truth_state"]),
         })
 
+    async def known_intents(self, tenant_id: str) -> tuple[str, ...]:
+        async with self._db.transaction() as connection:
+            rows = await connection.fetch(
+                "SELECT DISTINCT intent FROM capabilities WHERE truth_state = 'PRODUCTION_ENABLED'"
+                " ORDER BY intent")
+        return tuple(row["intent"] for row in rows)
+
     async def versions(self) -> RegistryVersions:
         async with self._db.transaction() as connection:
             row = await connection.fetchrow(

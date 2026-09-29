@@ -31,8 +31,11 @@ def test_read_request_completes_with_database_versions(pg):
     async def body(db):
         result = await build_runner(db, ScriptedIntentModel(intent_json("contact.list"))).run(
             _request("list contacts"))
-        return result, await _events(db, result.state.execution_context.trace_id)
-    result, stages = pg(body)
+        async with db.tenant_transaction("tenant-a") as connection:
+            tokens = await connection.fetchval("SELECT sum(quantity) FROM llm_usage")
+        return result, await _events(db, result.state.execution_context.trace_id), tokens
+    result, stages, tokens = pg(body)
+    assert tokens == ScriptedIntentModel.TOKENS_PER_CALL
     assert result.outcome is RunOutcome.COMPLETED
     assert result.manifest.policy_version == "tenant-a.policy-1"
     assert result.manifest.capability_version == "cap-7"

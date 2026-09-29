@@ -57,6 +57,10 @@ class FakeRegistry:
     async def kernel_operation(self, kernel_op_id):
         return self.kernel_ops.get(kernel_op_id)
 
+    async def known_intents(self, tenant_id):
+        return tuple(sorted({c.intent for c in self.capabilities
+                             if c.truth_state is TruthState.PRODUCTION_ENABLED}))
+
     async def versions(self):
         return VERSIONS
 

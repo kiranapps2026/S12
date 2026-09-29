@@ -18,6 +18,7 @@ from tests.fakes.ports import (
     FakeMutationPolicy,
     FakePolicy,
     FakePolicyVersions,
+    RecordingUsage,
     ScriptedIntentModel,
     intent_json,
 )
@@ -49,6 +50,7 @@ class Harness:
     circuit_breaker: FakeCircuitBreaker = field(default_factory=FakeCircuitBreaker)
     mutation_policy: FakeMutationPolicy = field(default_factory=FakeMutationPolicy)
     events: RecordingEvents = field(default_factory=RecordingEvents)
+    usage: RecordingUsage = field(default_factory=RecordingUsage)
     activation: FakeActivation | None = None
     confirmations: InMemoryConfirmationStore | None = None
 
@@ -63,7 +65,7 @@ class Harness:
             authorization=self.authorization, policy=self.policy,
             policy_versions=self.policy_versions,
             circuit_breaker=self.circuit_breaker, mutation_policy=self.mutation_policy,
-            confirmations=self.confirmations, clock=self.clock,
+            confirmations=self.confirmations, clock=self.clock, usage=self.usage,
         )
 
     def say(self, *answers) -> None:

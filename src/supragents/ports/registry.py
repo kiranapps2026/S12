@@ -20,4 +20,7 @@ class CapabilityRegistry(Protocol):
 
     async def kernel_operation(self, kernel_op_id: str) -> KernelOperation | None: ...
 
+    async def known_intents(self, tenant_id: str) -> tuple[str, ...]:
+        """Intents of production-enabled capabilities: the choices offered to the LLM."""
+
     async def versions(self) -> RegistryVersions: ...

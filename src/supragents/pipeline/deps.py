@@ -15,6 +15,7 @@ from supragents.ports.policy import (
 )
 from supragents.ports.registry import CapabilityRegistry
 from supragents.ports.runtime import Clock
+from supragents.ports.usage import UsageRecorder
 
 
 @dataclass(frozen=True)
@@ -28,4 +29,5 @@ class PipelineDeps:
     circuit_breaker: CircuitBreaker
     mutation_policy: MutationPolicy
     confirmations: ConfirmationStore
+    usage: UsageRecorder
     clock: Clock

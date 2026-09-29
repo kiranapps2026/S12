@@ -1,10 +1,12 @@
 """Composition root: the one place where real adapters are wired to the pipeline.
 
 ``build_runner`` is the "master switch": give it a database and an intent model and it
-returns a PipelineRunner connected to every production adapter.
+returns a PipelineRunner connected to every production adapter. ``build_intent_model``
+builds the DeepSeek model from settings.
 """
 from __future__ import annotations
 
+from supragents.adapters.llm.deepseek import DeepSeekIntentModel
 from supragents.adapters.postgres.clock import DatabaseClock
 from supragents.adapters.postgres.confirmations import PostgresConfirmationStore
 from supragents.adapters.postgres.database import Database
@@ -16,11 +18,13 @@ from supragents.adapters.postgres.policy import (
     PostgresPolicyVersions,
 )
 from supragents.adapters.postgres.registry import PostgresCapabilityRegistry
+from supragents.adapters.postgres.usage import PostgresUsageRecorder
 from supragents.adapters.runtime.circuit_breaker import InProcessCircuitBreaker
 from supragents.pipeline.deps import PipelineDeps
 from supragents.pipeline.runner import PipelineRunner
 from supragents.ports.intent import IntentModel
 from supragents.ports.policy import CircuitBreaker
+from supragents.settings import Settings
 
 
 def build_deps(database: Database, intent_model: IntentModel,
@@ -36,7 +40,12 @@ def build_deps(database: Database, intent_model: IntentModel,
         mutation_policy=PostgresMutationPolicy(database),
         confirmations=PostgresConfirmationStore(database),
         clock=DatabaseClock(database),
+        usage=PostgresUsageRecorder(database),
     )
+
+
+def build_intent_model(settings: Settings) -> IntentModel:
+    return DeepSeekIntentModel(settings.require("deepseek_api_key").deepseek_api_key)
 
 
 def build_runner(database: Database, intent_model: IntentModel,

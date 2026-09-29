@@ -1,7 +1,7 @@
 """Reference data for the PostgreSQL tests: two tenants and the standard catalog."""
 from __future__ import annotations
 
-TABLES = ("pipeline_events", "pending_confirmations", "capability_grants", "bindings", "kernel_ops",
+TABLES = ("llm_usage", "pipeline_events", "pending_confirmations", "capability_grants", "bindings", "kernel_ops",
           "capabilities", "registry_versions", "connections", "memberships", "users", "workspaces", "tenants")
 
 CATALOG = (  # capability intent, mutation, risk, kernel op, cost

@@ -1,7 +1,8 @@
-"""Command line: ``python -m supragents migrate`` or ``python -m supragents check``.
+"""Command line (reads DATABASE_URL and DEEPSEEK_API_KEY from the environment or ``.env``).
 
-Reads DATABASE_URL from the environment. ``check`` verifies that the database is reachable,
-fully migrated, and that the registry versions row exists.
+    python -m supragents migrate     create or update the tables
+    python -m supragents check       database reachable, migrated, registry versions present
+    python -m supragents llm-check   one small DeepSeek call with the built-in request
 """
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ import sys
 from supragents.adapters.postgres.database import Database
 from supragents.adapters.postgres.migrate import apply_migrations, migration_files
 from supragents.adapters.postgres.registry import PostgresCapabilityRegistry
+from supragents.bootstrap import build_intent_model
+from supragents.contracts.errors import DependencyUnavailable
 from supragents.settings import Settings, SettingsError
 
 
@@ -30,21 +33,29 @@ async def _check(database: Database) -> str:
     return f"database OK; registry capability_version={versions.capability_version}"
 
 
-async def _main(command: str) -> str:
-    database = await Database.connect(Settings.from_environment().database_url)
+async def _database_command(settings: Settings, command: str) -> str:
+    database = await Database.connect(settings.require("database_url").database_url)
     try:
         return await (_migrate if command == "migrate" else _check)(database)
     finally:
         await database.close()
 
 
+async def _llm_check(settings: Settings) -> str:
+    completion = await build_intent_model(settings).complete(
+        "list my contacts", ("contact.list", "contact.create"), None)
+    return f"DeepSeek OK: model={completion.model} tokens={completion.total_tokens} answer={completion.text}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m supragents")
-    parser.add_argument("command", choices=["migrate", "check"])
+    parser.add_argument("command", choices=["migrate", "check", "llm-check"])
     command = parser.parse_args().command
     try:
-        print(asyncio.run(_main(command)))
-    except (SettingsError, RuntimeError, OSError) as error:
+        settings = Settings.load()
+        task = _llm_check(settings) if command == "llm-check" else _database_command(settings, command)
+        print(asyncio.run(task))
+    except (SettingsError, RuntimeError, OSError, DependencyUnavailable) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0

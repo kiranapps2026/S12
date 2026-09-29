@@ -2,6 +2,8 @@
 
 LLM output is untrusted: it becomes an IntentResult only after schema validation,
 and it never populates ExecutionContext (only the system-generated task_id does).
+The model chooses among the registry's known intents; every call's tokens are
+recorded as ``llm.token`` usage, and an unrecordable call stops the run (fail closed).
 """
 from __future__ import annotations
 
@@ -16,6 +18,8 @@ from supragents.contracts.outputs import IntentResult
 from supragents.contracts.state import PipelineState
 from supragents.contracts.vocabulary import StageStatus
 from supragents.pipeline.deps import PipelineDeps
+from supragents.ports.intent import IntentCompletion
+from supragents.ports.usage import UsageRecord
 
 STAGE = "S2"
 MAX_ATTEMPTS = 2
@@ -31,16 +35,30 @@ class _ParsedIntent:
 
 async def run(state: PipelineState, deps: PipelineDeps) -> PipelineState:
     text = state.normalized_input.text
+    intents = await deps.registry.known_intents(state.execution_context.tenant_id)
     feedback: str | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            raw = await deps.intent_model.complete(text, feedback)
+            completion = await deps.intent_model.complete(text, intents, feedback)
         except Exception:
             return state.halted(STAGE, StageStatus.ERROR, "llm_unavailable")
-        parsed, feedback = _parse(raw)
+        try:
+            await deps.usage.record(_usage(state, completion))
+        except Exception:
+            return state.halted(STAGE, StageStatus.ERROR, "usage_unrecorded")
+        parsed, feedback = _parse(completion.text)
         if parsed is not None:
-            return _record(state, parsed, raw, attempt)
+            return _record(state, parsed, completion.text, attempt)
     return state.halted(STAGE, StageStatus.CLARIFY, "intent_unparseable")
+
+
+def _usage(state: PipelineState, completion: IntentCompletion) -> UsageRecord:
+    context = state.execution_context
+    return UsageRecord(
+        tenant_id=context.tenant_id, user_id=context.user_id, trace_id=context.trace_id,
+        resource_type="llm.token", quantity=completion.total_tokens, unit="token",
+        kernel_op_ref="llm.intent_analysis", model=completion.model,
+    )
 
 
 def _record(state: PipelineState, parsed: _ParsedIntent, raw: str, attempt: int) -> PipelineState:

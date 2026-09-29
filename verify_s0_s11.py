@@ -2,7 +2,8 @@
 
 Usage (from the repository root, Python 3.11+ and pytest installed):
     python verify_s0_s11.py               # run every test group
-    (set TEST_DATABASE_URL to a PostgreSQL database named *_test to include the database group)
+    (set TEST_DATABASE_URL to a PostgreSQL database named *_test to include the database group,
+     and DEEPSEEK_API_KEY to include the live DeepSeek call; both can come from .env)
     python verify_s0_s11.py --sabotage    # also prove the tests catch 14 known bugs
     python verify_s0_s11.py --report verification.md
 
@@ -27,8 +28,9 @@ GROUPS = (
     ("journeys", "tests/journeys", "full S0→S11 runs, every stop and the confirmation flow"),
     ("architecture", "tests/architecture", "no dead code, layering, size limits, no test doubles"),
     ("postgres", "tests/integration", "real PostgreSQL adapters, RLS, full S0→S11 run"),
+    ("deepseek", "tests/live", "one real DeepSeek call with the built-in request"),
 )
-DATABASE_GROUP = "postgres"
+NEEDS = {"postgres": "TEST_DATABASE_URL", "deepseek": "DEEPSEEK_API_KEY"}
 SABOTAGE = (
     ("runner ignores halts", "src/supragents/pipeline/runner.py",
      "            if state.halt is not None:\n                return RunResult(RunOutcome.STOPPED, state)\n", ""),
@@ -58,6 +60,8 @@ SABOTAGE = (
      "    if _has_cycle(plan):", "    if False:"),
     ("state allows overwriting a field", "src/supragents/contracts/state.py",
      "        if getattr(self, name) is not None:", "        if False:"),
+    ("S2 skips token usage", "src/supragents/stages/s02_intent.py",
+     "            await deps.usage.record(_usage(state, completion))", "            pass"),
     ("confirmation consumable twice (PostgreSQL)", "src/supragents/adapters/postgres/confirmations.py",
      "                   AND status = 'pending' AND expires_at > now()", "                   AND expires_at > now()"),
     ("tenant scope not set (PostgreSQL)", "src/supragents/adapters/postgres/database.py",
@@ -76,6 +80,7 @@ class Outcome:
 def main() -> int:
     args = _arguments()
     _require_layout()
+    _load_env_file(ROOT / ".env")
     outcomes = [_run_group(name, path, about) for name, path, about in GROUPS]
     if args.sabotage:
         outcomes += _run_sabotage()
@@ -91,6 +96,15 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--sabotage", action="store_true", help="prove the tests catch known bugs")
     parser.add_argument("--report", metavar="FILE", help="also write the result table to FILE")
     return parser.parse_args()
+
+
+def _load_env_file(path: Path) -> None:
+    """Same rules as supragents.settings: KEY=VALUE lines, the environment wins."""
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and key and not key.startswith("#"):
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def _require_layout() -> None:
@@ -111,8 +125,9 @@ def _pytest(root: Path, target: str) -> subprocess.CompletedProcess[str]:
 
 
 def _run_group(name: str, path: str, about: str) -> Outcome:
-    if name == DATABASE_GROUP and not os.environ.get("TEST_DATABASE_URL"):
-        return Outcome(f"tests: {name} ({about})", True, "NOT RUN — set TEST_DATABASE_URL to include it")
+    needed = NEEDS.get(name)
+    if needed and not os.environ.get(needed):
+        return Outcome(f"tests: {name} ({about})", True, f"NOT RUN — set {needed} to include it")
     result = _pytest(ROOT, path)
     summary = (result.stdout.strip().splitlines() or ["no output"])[-1]
     return Outcome(f"tests: {name} ({about})", result.returncode == 0, summary)
@@ -147,7 +162,7 @@ def _render(outcomes: list[Outcome]) -> str:
     not_run = any(o.detail.startswith("NOT RUN") for o in outcomes)
     verdict = "VERIFIED" if failed == 0 else f"NOT VERIFIED — {failed} check(s) failed"
     if failed == 0 and not_run:
-        verdict += " (without the PostgreSQL group)"
+        verdict += " (some groups not run — see NOT RUN above)"
     return "\n".join(["# S0–S11 verification", "", *lines, "", f"**{verdict}**"])
 
 

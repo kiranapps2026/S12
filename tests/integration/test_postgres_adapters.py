@@ -13,9 +13,11 @@ from supragents.adapters.postgres.ledger import PostgresEventSink
 from supragents.adapters.postgres.migrate import apply_migrations
 from supragents.adapters.postgres.policy import PostgresKernelPolicy, PostgresMutationPolicy, PostgresPolicyVersions
 from supragents.adapters.postgres.registry import PostgresCapabilityRegistry
+from supragents.adapters.postgres.usage import PostgresUsageRecorder
 from supragents.contracts.errors import DependencyUnavailable
 from supragents.contracts.events import StageEvent
 from supragents.contracts.outputs import Confirmation
+from supragents.ports.usage import UsageRecord
 from supragents.contracts.vocabulary import ConfirmationStatus, Mutation, RecordStatus, StageStatus, TruthState
 
 A = "tenant-a"
@@ -143,3 +145,21 @@ def test_ledger_rows_are_tenant_scoped(pg):
         async with db.tenant_transaction("tenant-b") as connection:
             return await connection.fetchval("SELECT count(*) FROM pipeline_events")
     assert pg(body) == 0
+
+
+def test_known_intents_are_production_only(pg):
+    intents = pg(lambda db: PostgresCapabilityRegistry(db).known_intents(A),
+                 "UPDATE capabilities SET truth_state = 'REVIEW' WHERE intent = 'contact.delete'")
+    assert intents == ("contact.create", "contact.list")
+
+
+def test_usage_rows_are_tenant_scoped(pg):
+    async def body(db):
+        await PostgresUsageRecorder(db).record(UsageRecord(
+            A, "tenant-a.user", "t-1", "llm.token", 57, "token", "llm.intent_analysis", "deepseek-flash"))
+        async with db.tenant_transaction(A) as connection:
+            own = await connection.fetchval("SELECT sum(quantity) FROM llm_usage")
+        async with db.tenant_transaction("tenant-b") as connection:
+            other = await connection.fetchval("SELECT count(*) FROM llm_usage")
+        return own, other
+    assert pg(body) == (57, 0)
