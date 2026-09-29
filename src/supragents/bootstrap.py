@@ -18,6 +18,7 @@ from supragents.adapters.postgres.policy import (
     PostgresPolicyVersions,
 )
 from supragents.adapters.postgres.registry import PostgresCapabilityRegistry
+from supragents.adapters.postgres.suspended_runs import PostgresSuspendedRunStore
 from supragents.adapters.postgres.usage import PostgresUsageRecorder
 from supragents.adapters.runtime.circuit_breaker import InProcessCircuitBreaker
 from supragents.pipeline.deps import PipelineDeps
@@ -51,4 +52,4 @@ def build_intent_model(settings: Settings) -> IntentModel:
 def build_runner(database: Database, intent_model: IntentModel,
                  circuit_breaker: CircuitBreaker | None = None) -> PipelineRunner:
     return PipelineRunner(build_deps(database, intent_model, circuit_breaker),
-                          PostgresEventSink(database))
+                          PostgresEventSink(database), PostgresSuspendedRunStore(database))

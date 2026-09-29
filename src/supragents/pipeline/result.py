@@ -18,7 +18,6 @@ class RunOutcome(StrEnum):
 class RunResult:
     outcome: RunOutcome
     state: PipelineState
-    resume_state: PipelineState | None = None  # set only when awaiting confirmation
 
     @property
     def halt(self) -> Halt | None:

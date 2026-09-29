@@ -2,7 +2,8 @@
 
 The runner alone decides whether the run continues: it stops on any halt, suspends
 when S10 is waiting for the user, and turns an unexpected exception into an ERROR
-halt, so a failure can never be mistaken for success.
+halt, so a failure can never be mistaken for success. A suspended run is stored
+durably, so ``resume`` works after a restart.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import logging
 import time
 
 from supragents.contracts.entry import EntryRequest
+from supragents.contracts.errors import UnknownConfirmation
 from supragents.contracts.events import StageEvent
 from supragents.contracts.reply import ConfirmationReply
 from supragents.contracts.state import PipelineState
@@ -19,24 +21,27 @@ from supragents.pipeline.deps import PipelineDeps
 from supragents.pipeline.result import RunOutcome, RunResult
 from supragents.pipeline.stages import STAGES, StageHandler
 from supragents.ports.runtime import EventSink
+from supragents.ports.suspended_runs import SuspendedRunStore
 
 logger = logging.getLogger("supragents.pipeline")
 _RESUME_STAGE = "S10"
 
 
 class PipelineRunner:
-    def __init__(self, deps: PipelineDeps, events: EventSink) -> None:
+    def __init__(self, deps: PipelineDeps, events: EventSink, suspended: SuspendedRunStore) -> None:
         self._deps = deps
         self._events = events
+        self._suspended = suspended
 
     async def run(self, entry: EntryRequest) -> RunResult:
         return await self._run_from(PipelineState(entry_request=entry), "S0")
 
-    async def resume(self, suspended: RunResult, reply: ConfirmationReply) -> RunResult:
-        """Continue a run that S10 suspended, with the user's reply."""
-        if suspended.resume_state is None:
-            raise ValueError("only a run awaiting confirmation can be resumed")
-        return await self._run_from(suspended.resume_state.with_reply(reply), _RESUME_STAGE)
+    async def resume(self, tenant_id: str, reply: ConfirmationReply) -> RunResult:
+        """Continue the run of ``tenant_id`` that waits on ``reply.confirmation_id``."""
+        state = await self._suspended.load(tenant_id=tenant_id, confirmation_id=reply.confirmation_id)
+        if state is None:
+            raise UnknownConfirmation(reply.confirmation_id)
+        return await self._run_from(state.with_reply(reply), _RESUME_STAGE)
 
     async def _run_from(self, state: PipelineState, first_stage: str) -> RunResult:
         stage_ids = [stage_id for stage_id, _ in STAGES]
@@ -46,8 +51,22 @@ class PipelineRunner:
             if state.halt is not None:
                 return RunResult(RunOutcome.STOPPED, state)
             if _awaiting_confirmation(stage_id, state):
-                return RunResult(RunOutcome.AWAITING_CONFIRMATION, state, resume_state=before)
+                return await self._suspend(before, state)
         return RunResult(RunOutcome.COMPLETED, state)
+
+    async def _suspend(self, before_s10: PipelineState, state: PipelineState) -> RunResult:
+        """Store the pre-S10 state so a reply can resume it, even after a restart."""
+        try:
+            await self._suspended.save(
+                before_s10, tenant_id=state.execution_context.tenant_id,
+                execution_id=state.plan_result.plan.execution_id,
+                confirmation_id=state.confirmation_check.confirmation.confirmation_id,
+            )
+        except Exception:
+            logger.exception("stage=%s suspended run could not be stored", _RESUME_STAGE)
+            halted = state.halted(_RESUME_STAGE, StageStatus.ERROR, "suspended_run_unrecorded")
+            return RunResult(RunOutcome.STOPPED, halted)
+        return RunResult(RunOutcome.AWAITING_CONFIRMATION, state)
 
     async def _execute(self, stage_id: str, handler: StageHandler, state: PipelineState) -> PipelineState:
         started = time.monotonic()

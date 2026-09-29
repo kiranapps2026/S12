@@ -24,6 +24,7 @@ from tests.fakes.ports import (
 )
 from tests.fakes.registry import FakeRegistry, standard_registry
 from tests.fakes.runtime import FakeClock, RecordingEvents
+from tests.fakes.suspended_runs import InMemorySuspendedRuns
 
 
 def entry(text: str = "list my contacts", **overrides) -> EntryRequest:
@@ -51,6 +52,7 @@ class Harness:
     mutation_policy: FakeMutationPolicy = field(default_factory=FakeMutationPolicy)
     events: RecordingEvents = field(default_factory=RecordingEvents)
     usage: RecordingUsage = field(default_factory=RecordingUsage)
+    suspended: InMemorySuspendedRuns = field(default_factory=InMemorySuspendedRuns)
     activation: FakeActivation | None = None
     confirmations: InMemoryConfirmationStore | None = None
 
@@ -71,11 +73,15 @@ class Harness:
     def say(self, *answers) -> None:
         self.intent_model = ScriptedIntentModel(*answers)
 
-    def run(self, request: EntryRequest | None = None):
-        return asyncio.run(PipelineRunner(self.deps, self.events).run(request or entry()))
+    @property
+    def runner(self) -> PipelineRunner:
+        return PipelineRunner(self.deps, self.events, self.suspended)
 
-    def resume(self, suspended, reply):
-        return asyncio.run(PipelineRunner(self.deps, self.events).resume(suspended, reply))
+    def run(self, request: EntryRequest | None = None):
+        return asyncio.run(self.runner.run(request or entry()))
+
+    def resume(self, reply, tenant_id: str = "tenant-a"):
+        return asyncio.run(self.runner.resume(tenant_id, reply))
 
     def state_before(self, stage_id: str, request: EntryRequest | None = None) -> PipelineState:
         """Run the real stages up to (not including) ``stage_id`` — no hand-built state."""

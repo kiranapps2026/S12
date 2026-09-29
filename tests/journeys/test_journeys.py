@@ -4,6 +4,9 @@ Each stop case asserts where the run stopped, why, and that no later stage ran.
 """
 from __future__ import annotations
 
+import pytest
+
+from supragents.contracts.errors import UnknownConfirmation
 from supragents.contracts.reply import ConfirmationReply
 from supragents.contracts.vocabulary import (
     CircuitState,
@@ -78,7 +81,7 @@ class TestConfirmation:
         h = Harness()
         suspended = self._suspended(h)
         pending = suspended.pending_confirmation
-        result = h.resume(suspended, ConfirmationReply(pending.confirmation_id, "user-1", True))
+        result = h.resume(ConfirmationReply(pending.confirmation_id, "user-1", True))
         assert result.outcome is RunOutcome.COMPLETED
         assert result.state.confirmation_check.status is ConfirmationStatus.CONSUMED
         assert h.confirmations.status(pending.confirmation_id) is ConfirmationStatus.CONSUMED
@@ -88,27 +91,27 @@ class TestConfirmation:
         h = Harness()
         suspended = self._suspended(h)
         reply = ConfirmationReply(suspended.pending_confirmation.confirmation_id, "user-1", True)
-        assert h.resume(suspended, reply).outcome is RunOutcome.COMPLETED
-        _stopped_at(h.resume(suspended, reply), "S10", StageStatus.ERROR, "confirmation_not_consumable")
+        assert h.resume(reply).outcome is RunOutcome.COMPLETED
+        _stopped_at(h.resume(reply), "S10", StageStatus.ERROR, "confirmation_not_consumable")
 
     def test_rejected_reply_stops(self):
         h = Harness()
         suspended = self._suspended(h)
         reply = ConfirmationReply(suspended.pending_confirmation.confirmation_id, "user-1", False)
-        _stopped_at(h.resume(suspended, reply), "S10", StageStatus.ERROR, "confirmation_rejected")
+        _stopped_at(h.resume(reply), "S10", StageStatus.ERROR, "confirmation_rejected")
 
     def test_expired_confirmation_stops(self):
         h = Harness()
         suspended = self._suspended(h)
         h.clock.advance(301)
         reply = ConfirmationReply(suspended.pending_confirmation.confirmation_id, "user-1", True)
-        _stopped_at(h.resume(suspended, reply), "S10", StageStatus.ERROR, "confirmation_expired")
+        _stopped_at(h.resume(reply), "S10", StageStatus.ERROR, "confirmation_expired")
 
     def test_reply_from_another_user_stops(self):
         h = Harness()
         suspended = self._suspended(h)
         reply = ConfirmationReply(suspended.pending_confirmation.confirmation_id, "user-2", True)
-        _stopped_at(h.resume(suspended, reply), "S10", StageStatus.ERROR, "confirmation_wrong_user")
+        _stopped_at(h.resume(reply), "S10", StageStatus.ERROR, "confirmation_wrong_user")
 
 
 class TestStops:
@@ -178,3 +181,29 @@ class TestTrustBoundaries:
         state = Harness().run().state
         assert state.execution_context.workspace_id == "workspace-1"
         assert state.execution_context.tenant_id == "tenant-a"
+
+
+class TestSuspendedRuns:
+    def _suspended(self, h: Harness):
+        h.say(intent_json("contact.delete", id="c-9"))
+        return h.run(entry("delete contact c-9"))
+
+    def test_resume_uses_only_the_stored_state(self):
+        h = Harness()
+        pending = self._suspended(h).pending_confirmation
+        assert len(h.suspended.rows) == 1  # a fresh runner below knows nothing else
+        result = h.resume(ConfirmationReply(pending.confirmation_id, "user-1", True))
+        assert result.outcome is RunOutcome.COMPLETED
+        assert result.manifest.plan_hash == pending.plan_hash
+
+    def test_unknown_or_foreign_confirmation_cannot_resume(self):
+        h = Harness()
+        pending = self._suspended(h).pending_confirmation
+        for tenant, confirmation_id in (("tenant-a", "no-such-id"), ("tenant-b", pending.confirmation_id)):
+            with pytest.raises(UnknownConfirmation):
+                h.resume(ConfirmationReply(confirmation_id, "user-1", True), tenant_id=tenant)
+
+    def test_unstorable_suspension_stops_the_run(self):
+        h = Harness()
+        h.suspended.fail = True
+        _stopped_at(self._suspended(h), "S10", StageStatus.ERROR, "suspended_run_unrecorded")

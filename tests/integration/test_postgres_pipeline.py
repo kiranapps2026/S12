@@ -47,8 +47,9 @@ def test_delete_waits_for_confirmation_then_completes(pg):
         runner = build_runner(db, ScriptedIntentModel(intent_json("contact.delete", id="c-1")))
         suspended = await runner.run(_request("delete contact c-1"))
         reply = ConfirmationReply(suspended.pending_confirmation.confirmation_id, "tenant-a.user", True)
-        resumed = await runner.resume(suspended, reply)
-        again = await runner.resume(suspended, reply)
+        restarted = build_runner(db, ScriptedIntentModel())  # a new process: only the database remains
+        resumed = await restarted.resume("tenant-a", reply)
+        again = await restarted.resume("tenant-a", reply)
         return suspended.outcome, resumed, again.halt.reason
     first, resumed, second = pg(body)
     assert first is RunOutcome.AWAITING_CONFIRMATION
