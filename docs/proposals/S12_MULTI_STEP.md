@@ -69,4 +69,19 @@ Points the gate owner should know:
   (`verifier_metadata_unavailable`), as is metadata for versions the registry no longer serves.
   Until real operations have these columns filled, every W/D/IRREVERSIBLE plan is denied at S12 entry
   (fail closed).
-- Next: durable admission (§7.2), which persists the verifiers with the execution (§7.3).
+- **Durable admission (§7.2) is built** (`s12_entry/admission.py::admit_run`, `adapters/postgres/admission.py`,
+  migration 009): the §7.1 checks, then ONE transaction: duplicate check by `(tenant, request_id)` (returns the
+  existing run, writes nothing), one quota use at tenant then workspace level (hard exhausted → DENY
+  `quota_exhausted`; soft → 3 attempts, then DENY with `retry_after_ms`), the run `pending`, the manifest
+  (as S11 froze it), the frozen plan with its bindings, step→binding index and verifiers, one `pending`
+  step row per plan step (binding, risk and mutation copied from that step's binding), the ownership
+  record (no worker or lease yet), transition rows, then `pending → running`. Any failure rolls
+  everything back (`admission_unavailable`); two concurrent admissions of one request create one run and
+  use the quota once; the manifest and plan tables reject updates; all tables have forced RLS.
+- **Schema deviations for the gate owner (migration 009):** times are `TIMESTAMPTZ` (DATABASE.md has `REAL`
+  for the run tables); `execution_plans.frozen_bindings` is an array with `step_binding_index` (G4); no foreign
+  keys to `workers`, `worker_leases` or `worker_versions` (they do not exist yet) and none from
+  `budget_reservations` to runs/steps (S12's reserve step adds them); `operation_quotas` has no `worker_id`
+  column (the spec's own CHECK made it always NULL); a minimal `state_transitions` table (C24).
+- **Not built:** the S12 step loop (lease, reserve, execute), quota refunds, `fenced_write`, worker selection.
+  Nothing calls `admit_run` yet: S12 is not in the runner.
