@@ -8,7 +8,11 @@ self-tests below instead (plan v3 §5).
 
 Rule (blocker register Section 20, ADR-14): no vector-store dependency, import, or
 migration may exist until MR-1 (memory scope contract and physical layout) is
-DECIDED and propagated. When the owner lifts the rule, the owner retires this file.
+DECIDED and propagated.
+
+DELETION CONTRACT: when MR-1 is decided, delete this file and the gate §1 entry
+("Write any vector code ...") in the same change, together with the other references
+listed in s12_s15_golden/README.md "Deletion contract". Neither may outlive the other.
 
 Static checks only: files are read with ast/regex, and no project code is imported,
 so import-time side effects cannot hide a violation.

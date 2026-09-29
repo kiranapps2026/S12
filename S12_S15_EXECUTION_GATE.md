@@ -100,6 +100,8 @@ Out of scope: multi-node fleet, Redis, real providers, frontend, SDK
   adapter or vector capability. Blocked until blocker register Section 20 MR-1 (memory
   scope contract and physical layout, ADR-14) is DECIDED and propagated. Enforced by the
   owner's golden guard `tests/golden/s12/test_arch_no_vector_code.py` at every milestone exit.
+  When MR-1 is decided, the owner deletes this entry and the guard in the same change
+  (deletion contract: `s12_s15_golden/README.md`).
 - Delete or weaken existing tests to restore green.
 
 ---
