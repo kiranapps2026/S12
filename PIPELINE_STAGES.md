@@ -1,6 +1,6 @@
 # Pipeline Stages
 
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §6 Request Lifecycle, §10 Execution Safety, §12 Reliability, §15 Observability. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, principal chain. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §5 ExecutionContext, §9 Step, §9 ExecutionResult, §9 ExecutionStatus, §9 ExecutionOutcome, §22 RetryDecision, §19 StepState, §17 IdempotencyKey, §20 BudgetStates. [RESOLVE_LAYER.md](RESOLVE_LAYER.md) — resolution chain. [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [SECURITY.md](SECURITY.md) — §3 Authorization Model, §10 Guardrail Precedence. [MUTATION_SAFETY.md](MUTATION_SAFETY.md) — mutation safety rules, confirmation requirements. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — worker lifecycle, independent verification, admission control, state locality.
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §8 Request Lifecycle, §11 The 15-Stage Pipeline, §17 Reliability Layer, §18 Safety Model, §27 Observability & Tracing *(section numbers corrected in audit round 2, D1)*. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, principal chain. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §5 ExecutionContext, §9 Step, §9 ExecutionResult, §9 ExecutionStatus, §9 ExecutionOutcome, §22 RetryDecision, §19 StepState, §17 IdempotencyKey, §20 BudgetStates. [RESOLVE_LAYER.md](RESOLVE_LAYER.md) — resolution chain. [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [SECURITY.md](SECURITY.md) — §3 Authorization Model, §10 Guardrail Precedence. [MUTATION_SAFETY.md](MUTATION_SAFETY.md) — mutation safety rules, confirmation requirements. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — worker lifecycle, independent verification, admission control, state locality.
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
 **Worker-management update (2026-09-29)**: §14, §19 and §21 amended per gate v10 C39–C41 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E); changed passages carry a `Worker-management repair (RD-n)` marker. No stage handler or stage contract changed.
 
@@ -143,6 +143,9 @@ These stages can stop execution (short-circuit):
 5. Look up `user_id` and `tenant_id` from connection (HUMAN/SCHEDULE/API) or Event Gateway auth (EVENT_DRIVEN)
 6. Set `connection_id` from terminal user or subscription
 7. Create immutable `ExecutionContext`
+8. **S0.1 — pause and activation check** (S0–S11 ruling R-P): read `paused_until` and `scheduled_activation_at` of the tenant and workspace; if either is paused or not yet active (database `NOW()`), return `StageStatus.DENY` (`tenant_paused`, `workspace_paused` or `not_yet_active`) → S15. Nothing is written; no S1–S11 work runs; unreadable → DENY (fail closed); no admin bypass.
+
+> **Worker-management repair (audit round 2 B6; ruling R-P):** step 8 is part of the S0 handler, not a new stage, so the stage sequence and `StageStatus` are unchanged. Without it a paused tenant would still run S1–S11 (the S2 LLM call, capability discovery, possibly an S10 confirmation) before S12 denied the run. S12 entry re-checks as a safety net (gate v10 §7.1 item 7).
 
 **Event-Driven Mode (EVENT_DRIVEN)**:
 - Input: `EventEnvelope` created by the Event Gateway
@@ -993,9 +996,10 @@ for step in reversed(completed_steps):
 
 > **Worker-management repair (RD-4, RD-5, RD-6, RD-9):** the normative sequence is S12_S15_EXECUTION_GATE §7–§8; this is a pointer.
 >
-> - **Entry (gate §7.1–§7.2):** a new run is denied, writing nothing, if its tenant or workspace is paused or not yet active (`tenant_paused`, `workspace_paused`, `not_yet_active`). Operation quota is consumed once per run in the durable-admission transaction (`quota_exhausted` on a hard limit, QUEUE on a soft one).
-> - **Per step, admission (phase 1):** gates 1–6, 12a, 13a, 16 (read-only quota), 8–11, then 7 (capacity QUEUE) last.
-> - **Per step, worker selection (phase 2):** eligibility filters remove workers that are paused, not yet active, assigned to another principal, or whose `runtime_type` cannot run the frozen binding; then locality scoring. No candidate → `no_worker`, with the filter reasons in the ledger.
+> - **S0.1 (ruling R-P):** a new request is denied before any S1–S11 work if its tenant or workspace is paused or not yet active (`tenant_paused`, `workspace_paused`, `not_yet_active`).
+> - **S12 entry (gate §7.1–§7.2):** the same check again as a safety net, writing nothing; then operation quota is consumed once per run (tenant → workspace levels; hard → DENY `quota_exhausted`; soft → bounded retry, then DENY with `retry_after_ms`). Entry denials are logged, not ledger events.
+> - **Per step, admission:** unchanged (gates 1–11). No pause, activation or quota check per step (audit round 2 A1, A2).
+> - **Per step, worker selection:** eligibility filters remove workers in another workspace, paused, not yet active, assigned to another principal (human-submitted, non-event runs only), or failing the capability match (profile, restricted list, the binding's `required_runtime_types`, `max_mutation`); then locality scoring. No candidate → `no_worker`, with the filter reasons in the ledger.
 > - A pause never cancels a running step or a held lease; the kill switch does (C23).
 > - S12 never chooses an adapter from `runtime_type`: the adapter comes from the binding frozen at S5.
 > - Batch processing (C40) and replanning (C41) are not part of S12 in this phase. When they land, batches are ordinary PlanSteps created at **S9** and replans are child executions through S0→S15 — neither is created, planned or replanned at S7 or inside S12.
@@ -1255,11 +1259,11 @@ When S13 sends a step to S14 with `STILL_UNKNOWN` after max reconciliation attem
 | Expired confirmation | S10 confirmation token TTL exceeded | FAILED | No — must re-confirm | No | No | "Confirmation expired — please confirm again" |
 | Budget exhausted | Budget precheck fails at S8 | DENY | No — no execution started | No | No | "Budget limit reached — upgrade or reduce scope" |
 | Tenant disabled | Tenant status check fails at S8 | DENY | No | No | No | "Account disabled — contact support" |
-| Tenant/workspace paused (C39) | `paused_until > NOW()` at S12 entry | DENY (`tenant_paused` / `workspace_paused`), nothing written | No — resubmit after the pause | No | No | "This workspace is paused until <time>" |
-| Tenant/workspace not yet active (C39) | `scheduled_activation_at > NOW()` at S12 entry | DENY (`not_yet_active`), nothing written | No | No | No | "This workspace becomes active at <time>" |
+| Tenant/workspace paused (C39, R-P) | `paused_until > NOW()` at S0.1 (primary) or S12 entry (safety net) | DENY (`tenant_paused` / `workspace_paused`), nothing written, no S1–S11 work when caught at S0.1 | No — resubmit after the pause | No | No | "This workspace is paused until <time>" |
+| Tenant/workspace not yet active (C39, R-P) | `scheduled_activation_at > NOW()` at S0.1 or S12 entry | DENY (`not_yet_active`), nothing written | No | No | No | "This workspace becomes active at <time>" |
 | Hard quota exhausted (C39) | Quota consumption returns 0 rows at S12 entry | DENY (`quota_exhausted`), nothing written | No | No | No | "Operation limit reached for this period — upgrade or wait for the next period" |
-| Soft quota exhausted (C39) | Quota consumption returns 0 rows at S12 entry | QUEUE (bounded, then `admission_exhausted`) | Yes — re-admit after `retry_after_ms` | No | No | "Operation limit reached — your request is queued" |
-| No eligible worker (C39) | Every candidate removed by an eligibility filter (paused, not yet active, not assigned, runtime/capability mismatch) | Step CANCELLED `no_worker`; filter reasons in the ledger | No | No | No | "No worker is available for this task right now" |
+| Soft quota exhausted (C39) | Quota consumption returns 0 rows at S12 entry | Bounded retry of the entry transaction, then DENY (`quota_exhausted`, `retry_after_ms`), nothing written | Client may resubmit after `retry_after_ms` | No | No | "Operation limit reached — try again after <time> or upgrade" |
+| No eligible worker (C39) | Every candidate removed by an eligibility filter (other workspace, paused, not yet active, not assigned, capability/runtime mismatch, mutation ceiling) | Step CANCELLED `no_worker`; filter reasons in the ledger | No | No | No | "No worker is available for this task right now" |
 
 **Notes**:
 - UNKNOWN outcomes always go through PROBE before any terminal state — no silent transitions

@@ -1,6 +1,6 @@
 # Security
 
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §3 Security Model, §10 Execution Safety. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, PrincipalChain, worker authorization. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §8 SafetyResult, §17 IdempotencyKey. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S1 (injection defense), S8 (safety gate). [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §3 (WorkerIdentity), §10 (admission control). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence).
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §25 Security Model, §18 Safety Model, §50 Architecture Invariants. *(section numbers corrected in audit round 2, D1)*  [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, PrincipalChain, worker authorization. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §8 SafetyResult, §17 IdempotencyKey. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S1 (injection defense), S8 (safety gate). [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §3 (WorkerIdentity), §10 (admission control). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence).
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY — inherits FINAL_ARCHITECTURE.md status
 **Worker-management update (2026-09-29)**: new §12a and checklist items, per gate v10 C39 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E).
 **Purpose**: Complete security model for the rebuild. Covers prompt injection defense, authorization, worker authorization, delegation and impersonation, data sanitization, credential management, audit logging, resource scoping, guardrail precedence, and secret lifecycle. Every security decision and its rationale.
@@ -280,7 +280,9 @@ EffectivePermission =
 
 **Rule: A worker cannot have more permissions than its user, tenant, and capability policies allow.** If any layer restricts the permission, the effective permission is reduced accordingly.
 
-### Worker Authorization Rules
+## 4. Worker Authorization
+
+> **Repair (audit round 2 D9):** the table of contents listed §4, but its content sat under §3 as "Worker Authorization Rules".
 
 1. Every worker execution is bound to a specific user and tenant
 2. Worker capabilities are a subset of user capabilities
@@ -782,60 +784,7 @@ Level 10 ── EXECUTE ▶ SUCCESS
 
 ## 11. External Event Security
 
-### Webhook Authentication
-
-All external events entering through the Event Gateway must be authenticated:
-
-| Source Type | Authentication Method | Key Location |
-|-------------|----------------------|--------------|
-| Webhook | HMAC-SHA256 signature |  table |
-| Schedule | Internal cron auth | Service account token |
-| MCP | mTLS or API key | Connection credential |
-| API | Bearer token or mTLS |  table |
-
-**HMAC Validation**:
-
-
-### Replay Protection
-
-| Mechanism | Implementation |
-|-----------|----------------|
-| Timestamp window | Reject events with timestamp > 5 minutes from server time |
-| Nonce tracking |  column — reject duplicate nonces |
-| Sequence tracking |  — reject stale sequences |
-
-### Tenant Isolation (Critical)
-
-**I-023: TENANT FROM AUTH, NEVER PAYLOAD**
-
- comes from the Event Gateway authentication context (HMAC credential lookup). It is NEVER extracted from the event payload.
-
-
-
-### Injection Defense for Event Payloads
-
-Event payloads are UNTRUSTED input. They must pass through the same DataSanitizer as user input:
-
-| Boundary | Direction | Action |
-|----------|-----------|--------|
-| Event Gateway → S0 | Input | Scan + sanitize before LLM call |
-| Event payload → prompt | Output | Scan event data before including in prompt |
-| Event payload → system | Input | Scan before any processing |
-
-### Event Source Trust Levels
-
-| Source | Trust Level | Allowed Operations |
-|--------|------------|-------------------|
-| Internal cron | High | All operations within service scope |
-| Authenticated webhook | Medium | Operations scoped to the webhook's capability grants |
-| MCP server | Medium | Operations scoped to the MCP connection's grants |
-| External API | Low | Read-only unless explicitly granted write |
-
-**See**: [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) §13 for complete external event security model.
-
----
-
-## 11. External Event Security
+> **Repair (audit round 2 D9):** this section appeared twice; the first copy had lost its table cells and code and was removed. The invariant cited below was I-023; tenant-from-auth is **I-022** (FINAL_ARCHITECTURE §50). **Open (register §19.5):** `webhook_credentials` stores only `secret_hash`, which cannot verify an HMAC signature, and `event_subscriptions.nonce` / `last_sequence` do not exist in DATABASE.md.
 
 ### Webhook Authentication
 
@@ -866,7 +815,7 @@ def validate_webhook_signature(payload: bytes, signature: str, secret: str) -> b
 
 ### Tenant Isolation (Critical)
 
-**I-023: TENANT FROM AUTH, NEVER PAYLOAD**
+**I-022: TENANT FROM AUTH, NEVER PAYLOAD**
 
 `EventEnvelope.tenant_id` comes from the Event Gateway authentication context (HMAC credential lookup). It is NEVER extracted from the event payload.
 
@@ -1025,8 +974,8 @@ CI pipeline runs secret scanning:
 
 1. **Settings are not authorization.** `workers.settings` can only restrict (`restricted_capabilities`, tighter `execution_policy`). No setting grants a capability, widens a scope or bypasses S8 (I-016). The settings content is never passed to an LLM as instructions for authorization.
 2. **Assignment.** `assigned_user_id` restricts which `PrincipalChain.original_principal_id` a worker may serve; it is compared with the original principal, never with a delegating worker's id, so delegation cannot launder an assignment.
-3. **Admin bypass.** Only membership role `owner` or `admin` **in the run's workspace**, read live at the check (not from the run snapshot), bypasses pause, activation and assignment filters. The bypass never affects authorization, the kill switch, quotas or budget. Every bypass is written to the ledger with the membership id.
-4. **Pause vs kill switch.** A pause only blocks new work; an incident needing an immediate stop uses the kill switch (C23). Documentation and UI must not present a pause as an emergency stop.
+3. **Admin bypass.** Only when **the run's original principal** (`PrincipalChain.original_principal_id`) holds membership role `owner` or `admin` **in the run's workspace**, read live at worker selection (not from the run snapshot), and only for the worker pause, worker activation and assignment filters (12b, 13b, 14). There is no bypass for a tenant or workspace pause, the workspace boundary, capability restrictions, the kill switch, quotas or budget. Every bypass is written to the ledger with the membership id.
+4. **Pause vs kill switch.** A tenant or workspace pause is checked at S0.1 (S0–S11 ruling R-P), before any LLM call or confirmation, and again at S12 entry; it only blocks new work. An incident needing an immediate stop uses the kill switch (C23). Documentation and UI must not present a pause as an emergency stop.
 5. **Quota integrity.** Quota is consumed only inside the durable-admission transaction with a conditional UPDATE; `operation_quotas` has RLS; a request cannot choose which quota row is charged.
 6. **Time.** Pause, activation and quota periods are compared with database `NOW()` (I-019); client-supplied times are ignored.
 7. **One execution path.** No runtime type (browser, RPA, vision, rules, data, human) bypasses S8 (I-029). Browser providers are bindings frozen at S5 with credentials from `CredentialProvider`.
@@ -1036,7 +985,9 @@ CI pipeline runs secret scanning:
 
 ---
 
-## 12. Security Checklist
+## 13. Security Checklist
+
+> **Repair (audit round 2 D9):** was a second "§12"; the table of contents lists it as §13.
 
 ### Pre-Commit Security Checks
 

@@ -246,6 +246,7 @@ CREATE TABLE bindings (
     adapter_class TEXT NOT NULL,          -- Adapter class name
     endpoint TEXT,                        -- API endpoint
     is_active BOOLEAN DEFAULT 1,
+    required_runtime_types JSONB NOT NULL DEFAULT '[]'::jsonb,  -- gate v10 C39 filter 17c; empty = any runtime
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (capability_id) REFERENCES capabilities(capability_id),
@@ -256,6 +257,8 @@ CREATE INDEX idx_bindings_capability ON bindings(capability_id);
 CREATE INDEX idx_bindings_kernel ON bindings(kernel_op_id);
 CREATE INDEX idx_bindings_provider ON bindings(provider);
 ```
+
+> **Worker-management repair (audit round 2 B1; gate v10 C39):** `required_runtime_types` lists the `RuntimeType` values (DATA_CONTRACTS §50) whose workers may run this binding; empty means any. Values are validated at binding registration; a binding that no current worker can serve is a readiness warning, not an error. It is **not** part of `FrozenBindingIdentity`: S12 reads it from the binding row it already reads once at entry (gate C32), so no S0–S11 contract changes.
 
 #### actions
 
@@ -391,14 +394,14 @@ CREATE TABLE tenants (
     settings TEXT,                        -- JSON settings
     budget_pool INTEGER DEFAULT 10000,    -- Tenant's shared budget pool (minor units)
     budget_period TEXT DEFAULT 'monthly', -- daily, weekly, monthly
-    paused_until TIMESTAMPTZ,             -- C39 gate 12a: no new runs while > NOW()
-    scheduled_activation_at TIMESTAMPTZ,  -- C39 gate 13a: no new runs until <= NOW()
+    paused_until TIMESTAMPTZ,             -- no new runs while > NOW(): S0.1 (ruling R-P) + S12 entry (C39)
+    scheduled_activation_at TIMESTAMPTZ,  -- no new runs until <= NOW(): S0.1 + S12 entry
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 ```
 
-> **Worker-management repair (RD-2, RD-5; gate v10 C39):** `paused_until` and `scheduled_activation_at` are typed columns, not keys inside the TEXT `settings` JSON. They are checked at S12 entry for new runs only and compared with database `NOW()`; a pause never cancels running work (the kill switch does). Existing `REAL` timestamps are unchanged.
+> **Worker-management repair (RD-2, RD-5; audit round 2 B6; gate v10 C39):** `paused_until` and `scheduled_activation_at` are typed columns, not keys inside the TEXT `settings` JSON. They are checked at S0.1 (S0–S11 ruling R-P, before any S1–S11 work) and re-checked at S12 entry, for new runs only, against database `NOW()`; a pause never cancels running work (the kill switch does). If ruling R-P lands before migration 018, R-P adds these four columns and 018 skips them. Existing `REAL` timestamps are unchanged.
 
 #### connections
 
@@ -431,8 +434,8 @@ CREATE TABLE workspaces (
     description TEXT,
     settings TEXT,                           -- JSON settings
     is_active BOOLEAN DEFAULT 1,
-    paused_until TIMESTAMPTZ,                -- C39 gate 12a (see tenants)
-    scheduled_activation_at TIMESTAMPTZ,     -- C39 gate 13a (see tenants)
+    paused_until TIMESTAMPTZ,                -- see tenants: S0.1 + S12 entry
+    scheduled_activation_at TIMESTAMPTZ,     -- see tenants: S0.1 + S12 entry
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
@@ -709,6 +712,7 @@ CREATE TABLE workers (
     last_assignment_at TIMESTAMP,
     drain_state VARCHAR(20),
     -- Worker-management columns (gate v10 C39; mutable, read only by S12 admission/selection)
+    workspace_id TEXT REFERENCES workspaces(workspace_id),  -- filter 4b; required for new registrations; NULL = legacy row, ineligible
     settings JSONB NOT NULL DEFAULT '{}'::jsonb,       -- contract: IDENTITY_AND_TENANCY §5
     assigned_user_id TEXT REFERENCES users(user_id),   -- filter 14; NULL = any user
     paused_until TIMESTAMPTZ,                          -- filter 12b
@@ -721,9 +725,10 @@ CREATE TABLE workers (
 CREATE INDEX idx_workers_tenant ON workers(tenant_id);
 CREATE INDEX idx_workers_state ON workers(state);
 CREATE INDEX idx_workers_assigned_user ON workers(assigned_user_id) WHERE assigned_user_id IS NOT NULL;
+CREATE INDEX idx_workers_workspace ON workers(workspace_id);
 ```
 
-> **Worker-management repair (RD-1, RD-2, RD-4, RD-10; gate v10 C39):** owner ruling: `worker_id` and every column that references it are `TEXT`, like every other key in this schema. This overrides the gate §7.3 default (change the referencing column). `tenant_id` also changes to `TEXT`: the former `UUID` could not reference `tenants.tenant_id TEXT`. The management columns are additive; `runtime_type` is the only worker-type enum (plan/event/hybrid is derived from `event_subscriptions`), and its CHECK is generated from `RuntimeType` (DATA_CONTRACTS §50, C28). Pause and activation are not states: a paused worker stays `ACTIVE` and is filtered out of worker selection for **new** leases only. Deferred and **not** added in this phase: `max_sub_agents`, `parent_worker_id`, `depth_level` (spawning).
+> **Worker-management repair (RD-1, RD-2, RD-4, RD-10; gate v10 C39):** owner ruling: `worker_id` and every column that references it are `TEXT`, like every other key in this schema. This overrides the gate §7.3 default (change the referencing column). `tenant_id` also changes to `TEXT`: the former `UUID` could not reference `tenants.tenant_id TEXT`. The management columns are additive; `runtime_type` is the only worker-type enum (plan/event/hybrid is derived from `event_subscriptions`), and its CHECK is generated from `RuntimeType` (DATA_CONTRACTS §50, C28). Pause and activation are not states: a paused worker stays `ACTIVE` and is filtered out of worker selection for **new** leases only. `workspace_id` (audit round 2 B7; WORKER_LIFECYCLE §3 and DATA_CONTRACTS `WorkerIdentity` already had it) restores the workspace boundary: a worker is eligible only for runs in its own workspace (filter 4b); it is nullable only so that legacy rows, if preflight finds any, stay ineligible until backfilled. This restores the `idx_workers_workspace` index that C33 removed for lack of the column. Deferred and **not** added in this phase: `max_sub_agents`, `parent_worker_id`, `depth_level` (spawning).
 
 > **S12–S15 gate v9 repair (C33):** `idx_workers_workspace` was removed: this definition has no `workspace_id` column (WORKER_LIFECYCLE §3 has one; add the index only together with the column).
 
@@ -967,15 +972,17 @@ CREATE TABLE operation_quotas (
     is_hard BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (used_count >= 0 AND limit_value >= 0),
+    CHECK (used_count <= limit_value),                        -- I17 by construction; blocks lowering a limit below usage (audit B9)
     CHECK (period_end > period_start),
-    CHECK (worker_id IS NULL OR workspace_id IS NOT NULL),   -- a worker quota sits inside a workspace scope
+    CHECK (worker_id IS NULL),                                -- worker-level quotas out of phase: worker unknown at entry (audit A3)
     UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type, period_start)  -- PostgreSQL 15+
 );
 CREATE INDEX idx_quotas_lookup ON operation_quotas(tenant_id, resource_type, period_start, period_end);
 ```
 
 **Consumption** (once per run, inside the durable-admission transaction, gate §7.2; levels in the
-fixed order tenant → workspace → worker; zero rows at any level rolls the transaction back):
+fixed order tenant → workspace; zero rows at any level rolls the transaction back; there is no
+per-step quota check, audit A1):
 
 ```sql
 UPDATE operation_quotas
@@ -987,8 +994,10 @@ UPDATE operation_quotas
 RETURNING quota_id;
 ```
 
-Hard quota with zero rows → DENY `quota_exhausted`; soft quota → QUEUE. `used_count` never
-exceeds `limit_value` for a hard quota (invariant I17). A refund (run CANCELLED with no step
+Hard quota with zero rows → DENY `quota_exhausted`; soft quota → bounded retry of the transaction,
+then DENY `quota_exhausted` with `retry_after_ms` (audit A4). `used_count` never exceeds
+`limit_value` on any row: the CHECK enforces it (invariant I17), and an `UPDATE` lowering
+`limit_value` below `used_count` fails — put a lower limit on the next period's row. A refund (run CANCELLED with no step
 COMPLETED) is `used_count = used_count - 1` in the transaction that consolidates the run, recorded
 as a ledger event.
 
@@ -1032,7 +1041,7 @@ Where NNN is a zero-padded sequence number (001, 002, ...).
 | `015_worker_versions.sql` | Worker version lifecycle tables |
 | `016_worker_deployments.sql` | Worker runtime instance tracking |
 | `017_execution_ownership.sql` | Execution ownership and fencing |
-| `018_worker_management.sql` | Gate v10 C39: worker key types to `TEXT` (RD-1), management columns on `workers`, `tenants`, `workspaces`, `operation_quotas` with RLS |
+| `018_worker_management.sql` | Gate v10 C39: worker key types to `TEXT` (RD-1), management columns on `workers` (incl. `workspace_id`), `tenants`, `workspaces` (skipped if ruling R-P added them), `bindings.required_runtime_types`, `operation_quotas` with RLS |
 
 > **Worker-management repair (gate v10 C39):** `018` is additive except for the RD-1 type changes, which are safe only while the affected tables are empty or hold text-compatible values; preflight items 15 and P3 report the actual state. The migration tool (Alembic or other) is decided by preflight item 11.
 
@@ -1746,8 +1755,9 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 
 | Constraint | Rule |
 |------------|------|
-| `operation_quotas.used_count` | `0 <= used_count`, and `used_count <= limit_value` for every hard quota (gate v10 C39, invariant I17) |
-| Enforcement | Conditional UPDATE `... AND used_count < limit_value RETURNING` in the durable-admission transaction; no `ON DELETE CASCADE` from any parent |
+| `operation_quotas.used_count` | `0 <= used_count <= limit_value` on every row (gate v10 C39, invariant I17) |
+| Enforcement | `CHECK (used_count <= limit_value)`; conditional UPDATE `... AND used_count < limit_value RETURNING` in the durable-admission transaction; an admin UPDATE lowering `limit_value` below `used_count` fails; no `ON DELETE CASCADE` from any parent |
+| `operation_quotas.worker_id` | Must be NULL in this phase (`CHECK (worker_id IS NULL)`) |
 
 ---
 

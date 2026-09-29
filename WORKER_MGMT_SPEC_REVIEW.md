@@ -343,3 +343,43 @@ Also applied (RD-16 reference sweep): `REPAIRS_APPLIED.md:138` "§13/§38" → "
 | Skill Factory compile path for data-defined skill compositions | Register WM-O3 |
 | `COMPONENTS_BLUEPRINT.md`, `EXECUTION_PLAN.md`, `RESOLVE_LAYER.md`, `RELIABILITY.md` not touched: no worker-management content required for S12–S15 (C39 changes no directory, resolution or guard rule) | — |
 | Re-pin on the VPS only after S0–S11 certification | Plan §1 item 3 |
+
+---
+
+## Part G — Audit round 2 (2026-09-29): findings, owner decisions and fixes
+
+A cross-document audit after propagation found 34 items. All were fixed in one pass on 2026-09-29 except those marked otherwise. Register: §19.5. Change log: `REPAIRS_APPLIED.md` "Audit round 2".
+
+### G.1 Logic bugs in the round-1 rulings (fixed)
+
+| # | Bug | Fix |
+|---|---|---|
+| A1 | The per-step quota precheck counted the run's own consumption: at `limit_value = 5` with 5 admitted runs, every admitted run's next step was rejected and cancelled | No per-step quota check exists; quota is charged once at S12 entry |
+| A2 | Pause gates were in the per-step order, so a mid-run pause would cancel running work (contradicting RD-5) | Pause and activation are entry checks only (S0.1 + S12 entry) |
+| A3 | Worker-level quotas cannot be charged at entry (the worker is chosen per step) | `CHECK (worker_id IS NULL)` in this phase |
+| A4 | A soft-quota QUEUE at entry had no run row to queue | Bounded retry of the entry transaction, then DENY with `retry_after_ms` |
+| A5 | "Every admission decision is a ledger event" vs "entry denials write nothing" | Entry denials are logged and counted, not ledger events |
+| A6 | M8a golden tests needed M12/M14/M16 | Mid-run pause test → M14; refund test → M16 |
+
+### G.2 Owner decisions (round 2)
+
+| # | Decision (as applied) | Notes on the applied form |
+|---|---|---|
+| B1 | `bindings.required_runtime_types` (empty = any), validated at registration; filter 17c | Not in `FrozenBindingIdentity`; read from the binding row at S12 entry. A binding no worker can serve is a readiness warning |
+| B2 | `restricted_capabilities` enforced by filter 17b; missing/empty = unrestricted | It is a per-worker deny-list, not a binding property |
+| B3 | Admin bypass = the run's original principal's live `owner`/`admin` membership in the run's workspace | Uses the existing `PrincipalChain.original_principal_id`; no new field |
+| B4 | Assignment (filter 14) only for human-submitted, non-event runs | Replaces the proposed `execution_mode` field; delegation keeps the human's assignment |
+| B5 | Worker groups post-S15, not evaluated | — |
+| **B6** | **Pause checked at S0.1**, S12 entry keeps a safety net | S0 builds the ExecutionContext (the run row is created at S12 entry), so S0.1 writes nothing. It is an S0–S11 change: new ruling **R-P** with six tests and SAB-12; gate preflight item 17 STOPs without it |
+| B7 | `workers.workspace_id` + filter 4b; NULL (legacy) = ineligible | Restores `idx_workers_workspace` |
+| B8 | Per-worker policy in scope, minimal: `execution_policy.max_mutation` (filter 17d) | Retry/timeout keys reserved; MUTATION_SAFETY `worker_policy_ceiling` inert |
+| B9 | I17 holds by construction via `CHECK (used_count <= limit_value)` | Replaces the proposed conditional UPDATE, whose first condition was always true; a lower limit goes on the next period's row |
+
+### G.3 Consistency and pre-existing defects (fixed)
+
+C1 FINAL §26 DDL (`TEXT` keys, management columns) · C2 I-001…I-029 in FINAL §50 and VALIDATION · C3 DATA_CONTRACTS §31 `lease_epoch` · C4 "Historical Memory" · C5 I-029 citation · C6 gate §17 order and §20 template · **C7 vector guard: scans every file and no longer flags its own sabotage data (the first draft would have failed once installed)** · D1 eight "Upstream contracts" headers · D2 README lists · D3 BUILD_READINESS rows · D4 REPAIRS_APPLIED outcome · D5 VOCABULARY duplicates and L3 · D6 IDENTITY links · D7 DATA_CONTRACTS TOC (duplicate §31 recorded as WM-O1) · D8 I-029 in EXECUTION_PLAN · D9 SECURITY §4/§11/§13 and I-022 · D10 invariant numbering note · D11 Session 0 P1/P2 · D12 gate §0 register pointer.
+
+### G.4 New findings, not fixed (decisions required; register §19.5)
+
+- **SEC-HMAC:** `webhook_credentials` stores only a hash of the HMAC secret, so webhook signatures cannot be verified as designed.
+- **SEC-NONCE:** SECURITY §11 cites `event_subscriptions.nonce` / `last_sequence`, which do not exist.

@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-26
 **Scope**: 18-document cross-document consistency & dependency audit
-**Outcome**: Document set is now fully implementation-ready after repairs
+**Outcome**: Document set is now fully implementation-ready after repairs *(historical claim of 2026-09-26; open items are tracked in the blocker register, §18–§20 — audit round 2 D4)*
 
 ---
 
@@ -175,3 +175,25 @@ per piece of state; (4) leaves a machine-readable reason for every decision.
 | BUILD_READINESS_MATRIX.md → 1.1.0 | Rows 9, 10 updated; rows 25–26 | C39 |
 | SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Section 19 | all |
 | WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md → v1.2.0 | Corrected per review Part A and the rulings | all |
+
+---
+
+## AUDIT ROUND 2 REPAIRS (2026-09-29)
+
+**Scope**: fixes from the cross-document audit recorded in `WORKER_MGMT_SPEC_REVIEW.md` Part G (A1–A6, B1–B9, C1–C7, D1–D12), with owner decisions on B1–B9. New S0–S11 ruling: `s0_s11_autopilot/RULING_R-P_pause_check.md`. Register: §19.5.
+
+| Document | Repairs | Items |
+|---|---|---|
+| S12_S15_EXECUTION_GATE.md (v10, round 2) | C39 rewritten (entry checks, filters 4b/12b/13b/14/17a–d, quota at entry only, soft-quota retry, entry denials logged); §1; preflight item 17; §7.1–§7.3; §8; §14; suite 20; I14 order; I17, I18; §20 | A1–A5, B1–B9, C6, D12 |
+| S12_S15_IMPLEMENTATION_PLAN.md | Precondition 7 (R-P); M0 item 17; M8a rewritten; mid-run pause → M14; refund → M16; guard counts | A6, B6 |
+| s0_s11_autopilot/RULING_R-P_pause_check.md | New ruling: pause/activation at S0.1, six tests, sabotage SAB-12 | B6 |
+| WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md | §10 rows removed and note; §11; §13 filters; §16.1–§16.7; header | A1–A5, B1–B9, D1 |
+| DATABASE.md | `workers.workspace_id`; `bindings.required_runtime_types`; quota CHECKs; comments; migration 018 | A3, B1, B7, B9 |
+| DATA_CONTRACTS.md | TOC §38–§49; §31 `lease_epoch`; §50–§52 | A1, A3, B1, B2, B7, B8, C3, D7 |
+| IDENTITY_AND_TENANCY.md | Settings keys; admin roles; §6 rules 5, 5b; §8.4; related links; invariant-copy note | B2–B4, B6–B8, D6, D10 |
+| PIPELINE_STAGES.md | S0 step 8 (S0.1); §14 pointer; §19 rows; header | A1, A2, A4, B6, D1 |
+| WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md → 1.2.1 | F4, F6, F12, F16; §3; Appendix A, B, C; §9 exception; §10 | all A and B |
+| FINAL_ARCHITECTURE.md → 4.5.1 | §26 DDL; §50 I-029 range and numbering-scheme note; §51 row 16; I-029 citation | C1, C2, C5, D10 |
+| MUTATION_SAFETY.md, SECURITY.md, STATE_TRANSITIONS.md, EVENT_GATEWAY_AND_ROUTER.md, RELIABILITY.md, RESOLVE_LAYER.md | Headers; worker ceiling inert; SECURITY §4/§11/§13 headings, I-022, admin bypass; I-9, I-10; event §14.7 | B3, B4, B6, B8, D1, D9 |
+| VALIDATION.md, VOCABULARY_INDEX.md, MEMORY_ARCHITECTURE.md, EXECUTION_PLAN.md, BUILD_READINESS_MATRIX.md, README.md, S12_SESSION0_PREFLIGHT_PROMPT.md | Test index; duplicates and terms; "Historical Memory"; I-029; ABSENT rows and renumbering; document lists; item 17 and P1/P2 | C2, C4, D2, D3, D5, D8, D11 |
+| s12_s15_golden/ (guard) | Scans every file; 22 sabotage cases; **fixed self-flagging** (the draft failed on its own sabotage data) | C7 |

@@ -881,6 +881,32 @@ Sub-agent spawning and `worker_spawn_audit`; batch processing (C40); replanning 
 | WM-O2 | FINAL_ARCHITECTURE TOC listed "§42 Schema and API Compatibility During Rolling Upgrades", which has no section | RECORDED (covered by §48) |
 | WM-O3 | Skill Factory "Skill" vs data-defined skill composition: compile path when the Skill Factory lands | OPEN (post-S15) |
 
+### 19.5 Audit round 2 (2026-09-29)
+
+Source: `WORKER_MGMT_SPEC_REVIEW.md` Part G. Status of every audit item after the owner's decisions on B1–B9:
+
+| IDs | Subject | Status |
+|---|---|---|
+| A1–A6 | Per-step quota check cancelled admitted runs; per-step pause; worker-level quota at entry; soft-quota QUEUE at entry; ledger vs entry denials; M8a ordering | DECIDED and PROPAGATED — IMPLEMENTATION_REQUIRED (suite 20, M8a, M14, M16) |
+| B1 | `bindings.required_runtime_types` (empty = any; validated at registration) | DECIDED and PROPAGATED |
+| B2 | `restricted_capabilities` enforced in filter 17b | DECIDED and PROPAGATED |
+| B3 | Admin bypass = run's original principal's live `owner`/`admin` membership | DECIDED and PROPAGATED |
+| B4 | Assignment only for human-submitted, non-event runs; delegation keeps it | DECIDED and PROPAGATED |
+| B5 | Worker groups post-S15, not evaluated | DECIDED and PROPAGATED |
+| **B6** | **Pause at S0.1 — S0–S11 ruling R-P**; S12 entry keeps a safety net | DECIDED — **S0–S11 IMPLEMENTATION AND RE-CERTIFICATION REQUIRED** (gate preflight item 17 STOPs without it) |
+| B7 | `workers.workspace_id` + filter 4b (NULL = ineligible) | DECIDED and PROPAGATED |
+| B8 | `execution_policy.max_mutation` live (filter 17d); retry/timeout keys reserved | DECIDED and PROPAGATED |
+| B9 | `CHECK (used_count <= limit_value)`; I17 by construction | DECIDED and PROPAGATED |
+| C1–C7 | Propagation inconsistencies (incl. the vector guard flagging itself) | FIXED |
+| D1–D12 | Pre-existing documentation defects | FIXED, except D7's duplicate §31 (WM-O1, recorded) |
+
+New pre-existing findings (not fixed; decisions required):
+
+| ID | Finding | Status |
+|---|---|---|
+| **SEC-HMAC** | `webhook_credentials` stores only `secret_hash` (SHA-256 of the HMAC secret), but HMAC signature validation (SECURITY §11, EVENT_GATEWAY §11) needs the secret itself. As designed, webhook signatures cannot be verified. Options: store the secret encrypted (via `CredentialProvider`), or keep a hash only for lookup plus an encrypted secret | DECISION_REQUIRED |
+| SEC-NONCE | SECURITY §11 replay protection cites `event_subscriptions.nonce` and `last_sequence`, which do not exist in DATABASE.md; nonces belong per event source, not per subscription | DECISION_REQUIRED |
+
 ---
 
 ## SECTION 20: MEMORY / RAG GROUP (target phase: post-S15, memory / LLM layer)

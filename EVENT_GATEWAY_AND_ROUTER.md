@@ -1,6 +1,6 @@
 # Event Gateway & Event Router — Data Contracts
 
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §7 Execution Kernel (S0 Entry point), §14 A2A Communication (outbox/inbox pattern), §21 Observability (trace_id, correlation). [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §28 OutboxEvent, §30 OutboxRecord/InboxRecord, §31 EventIdentity. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — §8 Authorization Chain (tenant from auth context, never from payload), §9 Time/Clock (server-authoritative, 5-minute skew tolerance). [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S0 Entry (generates trace_id, request_id, execution_id), S8 Safety Gate (8 deterministic checks). [SECURITY.md](SECURITY.md) — §3 Input Validation (signature validation, replay protection), §5 Secret Handling (per-tenant webhook secrets). [DATABASE.md](DATABASE.md) — RLS policies, event_log table, canonical roles. [RELIABILITY.md](RELIABILITY.md) — 5-layer reliability guard, circuit breaker, outbox atomicity.
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §6a Event Gateway & External Event Routing, §12 Durable Execution Kernel (S0 entry), §23 Multi-Agent Communication (outbox/inbox pattern), §27 Observability & Tracing (trace_id, correlation). *(section numbers corrected in audit round 2, D1)*  [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §28 OutboxEvent, §30 OutboxRecord/InboxRecord, §31 EventIdentity. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — §8 Authorization Chain (tenant from auth context, never from payload), §9 Time/Clock (server-authoritative, 5-minute skew tolerance). [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S0 Entry (generates trace_id, request_id, execution_id), S8 Safety Gate (8 deterministic checks). [SECURITY.md](SECURITY.md) — §3 Input Validation (signature validation, replay protection), §5 Secret Handling (per-tenant webhook secrets). [DATABASE.md](DATABASE.md) — RLS policies, event_log table, canonical roles. [RELIABILITY.md](RELIABILITY.md) — 5-layer reliability guard, circuit breaker, outbox atomicity.
 **Status**: DESIGN_PROPOSED, NOT YET LOCKED
 **Worker-management update (2026-09-29)**: §14.7–§14.8 added per gate v10 C39 and rulings RD-4, RD-5, RD-10 (`WORKER_MGMT_SPEC_REVIEW.md` Part E).
 **Purpose**: Define the event ingress layer that normalizes all external events (webhooks, schedules, MCP, API) into the existing S0–S15 pipeline. Events are a fifth activation mode alongside human request, schedule, API, and internal trigger.
@@ -1083,11 +1083,11 @@ Subscriptions are NOT ephemeral worker-process state. They are database-persiste
 
 ### 14.6 Correlation Links to Existing trace_id
 
-`EventEnvelope.correlation_id` becomes `ExecutionContext.trace_id` at S0. This links event-driven executions to the existing trace infrastructure (FINAL_ARCHITECTURE §21).
+`EventEnvelope.correlation_id` becomes `ExecutionContext.trace_id` at S0. This links event-driven executions to the existing trace infrastructure (FINAL_ARCHITECTURE §27).
 
 ### 14.7 Pause, Activation and Assignment Do Not Change Routing
 
-> **Worker-management repair (RD-4, RD-5; gate v10 C39):** the router keeps matching subscriptions of paused, not-yet-active or assigned workers; it never reads worker-management columns. Enforcement happens in S12: a paused tenant/workspace denies the run at entry (`tenant_paused`, `workspace_paused`, `not_yet_active`), and a paused worker is removed by the eligibility filters. The event is never lost: it stays in `event_log` with its processing status and can be replayed after the pause (FINAL_ARCHITECTURE §47). Quota is charged only when S12 admits the run.
+> **Worker-management repair (RD-4, RD-5; audit round 2 B4, B6; gate v10 C39):** the router keeps matching subscriptions of paused, not-yet-active or assigned workers; it never reads worker-management columns. Enforcement happens downstream: a paused or not-yet-active tenant/workspace is denied at **S0.1** (S0–S11 ruling R-P, before any S1–S11 work; `tenant_paused`, `workspace_paused`, `not_yet_active`) and again at S12 entry; a paused worker is removed by the S12 eligibility filters. Assignment (filter 14) does not apply to event-driven runs. The event is never lost: it stays in `event_log` with its processing status and can be replayed after the pause (FINAL_ARCHITECTURE §47). Quota is charged only when S12 admits the run.
 
 ### 14.8 Plan / Event / Hybrid Workers Are Derived
 
@@ -1115,7 +1115,8 @@ Subscriptions are NOT ephemeral worker-process state. They are database-persiste
 | `test_circuit_breaker_buffers_events()` | Events buffered when tenant circuit is OPEN |
 | `test_s0_entry_event_driven()` | S0 Entry correctly creates ExecutionContext from EventEnvelope |
 | `test_event_driven_execution_same_as_human()` | Event-driven execution follows same S1-S15 path |
-| `test_router_ignores_worker_pause()` | Router matching is unchanged by pause/activation/assignment; S12 enforces them (§14.7) |
+| `test_router_ignores_worker_pause()` | Router matching is unchanged by pause/activation/assignment; S0.1 and S12 enforce them (§14.7) |
+| `test_assignment_skipped_for_event_runs()` | An assigned worker still serves an event-driven run (filter 14 skipped) |
 | `test_paused_event_replayable()` | An event denied at S12 entry for a pause stays in `event_log` and replays after the pause |
 
 ---

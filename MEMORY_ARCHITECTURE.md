@@ -180,7 +180,7 @@ class LongTermMemory:
     domain_knowledge: dict[str, Any] # Domain-specific knowledge
     provider_knowledge: dict[str, Any] # Provider-specific learnings
 
-    # Episodic Memory
+    # Historical Memory (MR-10: renamed from "Episodic Memory", which is the name of layer L0)
     significant_events: list[Event]  # Important past events
 ```
 

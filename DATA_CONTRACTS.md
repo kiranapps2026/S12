@@ -45,12 +45,24 @@
 35. [VerificationResult — Independent Verification Outcome](#35-verificationresult--independent-verification-outcome)
 36. [AdmissionDecision — Admission Control Outcome](#36-admissiondecision--admission-control-outcome)
 37. [ExecutionOwnership — Execution Ownership Tracking](#37-executionownership--execution-ownership-tracking)
+38. [IntentSpecification](#38-intentspecification)
+39. [ExecutionLedgerEvent](#39-executionledgerevent)
+40. [AcceptanceCriteria](#40-acceptancecriteria)
+41. [AutonomyBounds](#41-autonomybounds)
+42. [RuntimeRoutingDecision](#42-runtimeroutingdecision)
+43. [ReplayContext](#43-replaycontext)
+44. [CorrelationRule](#44-correlationrule)
+45. [ProcessorDefinition](#45-processordefinition)
+46. [EventEnvelope](#46-eventenvelope)
+47. [WorkerSubscription](#47-workersubscription)
+48. [ConfigurationVersion](#48-configurationversion)
+49. [LayerResult — Single Verification Layer Outcome](#49-layerresult--single-verification-layer-outcome)
 50. [WorkerManagementProfile — Worker Management Settings](#50-workermanagementprofile--worker-management-settings)
 51. [OperationQuota — Count-Based Quota](#51-operationquota--count-based-quota)
 52. [Worker-Management Reason Codes](#52-worker-management-reason-codes)
 53. [SkillDefinition and SkillStep (DEFERRED)](#53-skilldefinition-and-skillstep-deferred)
 
-> **Worker-management repair (RD-16 family):** §38–§49 exist in the body but were never added to this table of contents; new sections start at §50 so no existing number is reused (the file also has two §31 headings — a pre-existing defect recorded, not renumbered, because other documents cite these numbers).
+> **Worker-management repair (RD-16 family):** §38–§49 exist in the body but were never added to this table of contents; new sections start at §50 so no existing number is reused; the §38–§49 entries were added in audit round 2 (D7) (the file also has two §31 headings — a pre-existing defect recorded, not renumbered, because other documents cite these numbers).
 
 ---
 
@@ -2013,7 +2025,7 @@ class WorkerIdentity:
     state: WorkerIdentityState        # Current lifecycle state
     capacity: int                     # Max concurrent executions
     current_load: int                 # Current in-flight executions
-    lease_epoch: int                  # Current fencing token
+    lease_epoch: int                  # Newest fence token issued to this worker (gate C25; the fence is checked per execution)
     heartbeat_at: float | None        # Last heartbeat timestamp
     last_assignment_at: float | None  # Last execution assignment
     created_at: float                 # Registration timestamp
@@ -2023,7 +2035,7 @@ class WorkerIdentity:
 ### Invariants
 
 1. `current_load <= capacity` at all times
-2. `lease_epoch` changes on every lease renewal — stale workers cannot commit
+2. `lease_epoch` changes on every lease acquisition and renewal and records the newest fence token issued to this worker. The write fence is checked **per execution** against `execution_ownership.fencing_token` (gate C25), so a stale owner cannot commit for that execution while other executions on the worker are unaffected. *(Worker-management repair, audit round 2 C3: the former text implied a per-worker check.)*
 3. `state` transitions must pass `WorkerIdentityStateValidator` (defined in WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md §1)
 4. `capability_profile` is set at registration and never changes
 
@@ -2716,6 +2728,7 @@ class RuntimeType(StrEnum):
 class WorkerManagementProfile:
     worker_id: str                         # TEXT key (RD-1)
     tenant_id: str
+    workspace_id: str | None               # Filter 4b; None only on legacy rows, which are ineligible
     runtime_type: RuntimeType              # Selects routing, binding family, eligibility; never skips a stage
     assigned_user_id: str | None           # Compared with PrincipalChain.original_principal_id
     paused_until: datetime | None          # TIMESTAMPTZ, compared with database NOW()
@@ -2727,7 +2740,8 @@ class WorkerManagementProfile:
 1. Read only by S12 admission and worker selection; never by S0–S11; never part of the ExecutionManifest.
 2. Changes apply to leases acquired afterwards (I-017).
 3. `RuntimeType` is the only worker-type enum. Plan/event/hybrid is derived from active `WorkerSubscription` (§47) rows, not stored. `worker_class` is unchanged.
-4. `settings` may only restrict: `restricted_capabilities` narrows grants, `execution_policy` may only lower retry ceilings and timeouts (IDENTITY_AND_TENANCY §5).
+4. `settings` may only restrict. Live in this phase: `restricted_capabilities` (filter 17b) and `execution_policy.max_mutation` (filter 17d, one of `R`, `W`, `D`, `IRREVERSIBLE`). Reserved and inert until post-S15: `execution_policy.max_retries`, `timeout_seconds`, `retry_backoff` (IDENTITY_AND_TENANCY §5; gate v10 C39).
+5. Bindings declare `required_runtime_types` (DATABASE `bindings`; empty = any runtime); it is not part of `FrozenBindingIdentity`.
 
 ---
 
@@ -2742,20 +2756,21 @@ class OperationQuota:
     quota_id: str
     tenant_id: str                 # NOT NULL, RLS
     workspace_id: str | None       # None = tenant level
-    worker_id: str | None          # None = tenant/workspace level
+    worker_id: str | None          # Must be None in this phase (worker-level quotas out of phase)
     resource_type: str             # "executions" in this phase
     period_start: datetime         # TIMESTAMPTZ
     period_end: datetime
     limit_value: int               # >= 0
-    used_count: int                # >= 0, <= limit_value when is_hard (I17)
+    used_count: int                # 0 <= used_count <= limit_value on every row (CHECK; I17)
     is_hard: bool
 ```
 
 **Rules**:
-1. Consumed once per run, in the durable-admission transaction (gate §7.2), updating every applicable level in the order tenant → workspace → worker; zero rows at any level rolls back.
-2. Hard → DENY `quota_exhausted`; soft → `AdmissionDecision(status="QUEUE")` with upgrade guidance in `detail`.
-3. Refund only when the run ends CANCELLED with no step COMPLETED, as a ledger event.
-4. The per-step admission gate 16 reads, never writes.
+1. Consumed once per run, in the durable-admission transaction (gate §7.2), updating every applicable level in the order tenant → workspace; zero rows at any level rolls back.
+2. Hard → DENY `quota_exhausted`; soft → bounded retry of the transaction, then DENY `quota_exhausted` with `retry_after_ms` and upgrade guidance. Nothing is written on a DENY.
+3. Refund only when the run ends CANCELLED with no step COMPLETED, in the consolidation transaction, as a ledger event.
+4. **There is no per-step quota check** (audit round 2 A1: it would count the run's own consumption and cancel admitted runs).
+5. Lowering `limit_value` below `used_count` is rejected by the database; a lower limit goes on the next period's row.
 
 ---
 
@@ -2765,12 +2780,12 @@ class OperationQuota:
 
 | Code | Carried by | Meaning |
 |---|---|---|
-| `tenant_paused`, `workspace_paused` | S12 entry DENY | `paused_until > NOW()` at tenant/workspace level |
-| `not_yet_active` | S12 entry DENY | `scheduled_activation_at > NOW()` at tenant/workspace level |
-| `quota_exhausted` | S12 entry DENY; `AdmissionDecision.reason` | Hard quota exhausted |
-| `worker_paused`, `worker_not_yet_active`, `not_assigned`, `capability_mismatch` | `no_worker` ledger event | Eligibility filter that removed a candidate |
+| `tenant_paused`, `workspace_paused` | S0.1 DENY (ruling R-P); S12 entry DENY (safety net) | `paused_until > NOW()` at tenant/workspace level |
+| `not_yet_active` | S0.1 DENY; S12 entry DENY | `scheduled_activation_at > NOW()` at tenant/workspace level |
+| `quota_exhausted` | S12 entry DENY | Quota exhausted (hard at once; soft after bounded retry, with `retry_after_ms`) |
+| `workspace_mismatch`, `worker_paused`, `worker_not_yet_active`, `not_assigned`, `capability_mismatch`, `mutation_ceiling` | `no_worker` ledger event | Eligibility filter that removed a candidate (4b, 12b, 13b, 14, 17a–c, 17d) |
 
-No `StepTerminalReason` value is added: entry denials create no steps, and filter exhaustion ends the step with the existing `no_worker`.
+No `StepTerminalReason` value is added: entry denials create no steps, and filter exhaustion ends the step with the existing `no_worker`. None of these is an `AdmissionDecision` reason: pause and quota are entry checks, not per-step gates. Entry denials are logged, not ledger events (gate C39).
 
 ---
 

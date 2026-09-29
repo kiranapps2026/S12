@@ -658,16 +658,20 @@ def test_confirmation_expires():
 
 | Test | Tier | Validates |
 |---|---|---|
-| `test_entry_denies_tenant_workspace_pause()` | Integration | 12a/13a deny at S12 entry, zero rows written |
-| `test_pause_mid_run_cancels_nothing()` | Integration | Drain semantics (RD-5) |
-| `test_ineligible_worker_never_leased()` | Integration | I18 / STATE_TRANSITIONS I-9 |
-| `test_admin_bypass_workspace_scoped()` | Integration | `owner`/`admin` in the run's workspace only, read live |
-| `test_assignment_uses_original_principal()` | Unit | Filter 14 |
-| `test_reject_gates_before_capacity_queue()` | Unit | C39 evaluation order |
+| `test_s0_denies_paused_tenant()` and five sibling tests | S0–S11 (ruling R-P) | Pause/activation denied at S0.1 with zero S1/S2 calls; database time; fail closed |
+| `test_entry_safety_net_denies_pause()` | Integration | S12 entry re-check denies a pause set after S0.1; zero rows written |
+| `test_pause_mid_run_cancels_nothing()` | Integration (M14) | Drain semantics (RD-5): no step cancelled, no held lease revoked |
+| `test_ineligible_worker_never_leased()` | Integration | I18 / STATE_TRANSITIONS I-9: filters 4b, 12b, 13b, 14, 17a–d |
+| `test_admin_bypass_original_principal_live()` | Integration | Bypass only via the original principal's live `owner`/`admin` membership in the run's workspace; only 12b, 13b, 14 |
+| `test_assignment_scope()` | Unit | Filter 14 applies to human, non-event runs; skipped for event-driven and system runs; kept for worker-delegated runs |
+| `test_empty_required_runtime_types_accepts_any()` | Unit | Filter 17c default |
 | `test_quota_concurrent_exactly_limit()` | Concurrency (×5) | 20 entries, limit 5 → 5 admitted (I17) |
-| `test_soft_quota_queues_with_detail()` | Integration | Soft quota → QUEUE |
+| `test_admitted_run_never_rejected_by_quota()` | Integration | No per-step quota check (audit A1) |
+| `test_soft_quota_retries_then_denies()` | Integration | Bounded retry, then DENY with `retry_after_ms`; zero rows |
 | `test_duplicate_request_consumes_no_quota()` | Integration | Duplicate check precedes consumption |
-| `test_quota_refund_only_cancelled_without_completed()` | Integration | Refund rule |
+| `test_quota_limit_below_usage_rejected()` | Schema | `CHECK (used_count <= limit_value)` blocks lowering a limit below usage |
+| `test_worker_level_quota_rejected()` | Schema | `CHECK (worker_id IS NULL)` |
+| `test_quota_refund_only_cancelled_without_completed()` | Integration (M16) | Refund rule |
 | `test_no_adapter_choice_from_runtime_type()` | Architecture | S12 never reads `runtime_type` to choose an adapter (RD-9) |
 | `test_no_deferred_worker_tables()` | Architecture | No spawn/batch/group/webhook tables or `parent_execution_id` in this phase |
 | `test_worker_fk_types_text()` | Schema | Every worker foreign key is `TEXT` (RD-1) |
@@ -794,7 +798,7 @@ Destroy infrastructure and verify the system recovers.
 
 ### Purpose
 
-Every architecture invariant I-001 through I-021 must have a named test that verifies it, a CI gate that runs that test on every commit, and a failure mode that halts the pipeline if the invariant is violated.
+Every architecture invariant I-001 through I-029 must have a named test that verifies it, a CI gate that runs that test on every commit, and a failure mode that halts the pipeline if the invariant is violated.
 
 ### Invariant Test Suite
 

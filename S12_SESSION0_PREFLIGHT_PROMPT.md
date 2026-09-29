@@ -29,6 +29,7 @@ from or write to it.
 | Document | Role in this phase | What to do with it |
 |---|---|---|
 | `S12_S15_EXECUTION_GATE.md` | **Binding.** Must be Revision **v10**. | Governs everything. If the header is not v10, STOP and report. |
+| `s0_s11_autopilot/RULING_R-P_pause_check.md` | S0–S11 ruling (pause at S0.1). | Must be implemented and certified before this session; gate item 17. |
 | `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` | **Reference only.** Gate C39–C41 govern. | Implement nothing outside C39. |
 | `XS-1_REGISTER_ENTRY.md` | Already incorporated as gate ruling **C22**. | Do not treat it as a separate source. At commit B, file XS-1 in the register as "RESOLVED BY C22". |
 | `LAYA_DECISION_ADAPTER.md` | **Deferred design note.** Its own header says it must not be implemented, migrated or tested in this phase. | Reference only. At commit B, file its entries LB1–LB11 in the register with target phase "LLM layer". Implement nothing from it. |
@@ -57,8 +58,11 @@ Owner confirmation: gate decisions D1–D6 (Section 6) are confirmed as written.
 
 ## 5. Preflight items
 
-Answer gate Section 2 items 3–16 (items 15–16 cover the C39 worker-management
-columns, tables and key types), then these prompt items P1–P6:
+Answer gate Section 2 items 3–17 (items 15–16 cover the C39 worker-management
+columns, tables and key types; item 17 is the S0.1 pause check of S0–S11 ruling R-P —
+STOP if it is absent), then these prompt items P1–P6. Where a gate item already
+answers a prompt item (gate 9 ↔ P1, gate 11 ↔ P2), reference it and add only what it
+does not cover (audit round 2 D11):
 
 P1. **Environment.** Python environment path and version, OS, asyncio event loop,
     and whether asyncpg works under that loop. Compare `pip freeze` with

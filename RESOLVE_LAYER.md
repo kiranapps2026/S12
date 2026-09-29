@@ -1,6 +1,6 @@
 # RESOLVE Layer — Capability → Kernel → Binding → Adapter
 
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §8 Resolution, §10 Execution Safety. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, PrincipalChain. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §14 Binding, §13 CapabilityMetadata, §21 FrozenBindingIdentity, §5 ExecutionContext. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S5 Provider Resolution. [SECURITY.md](SECURITY.md) — §3 Authorization Model, §10 Guardrail Level 4. [DATABASE.md](DATABASE.md) — bindings, capabilities, kernel_ops tables.
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §14 Capability Model, §16 Registry, §18 Safety Model. *(section numbers corrected in audit round 2, D1)*  [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, PrincipalChain. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §14 Binding, §13 CapabilityMetadata, §21 FrozenBindingIdentity, §5 ExecutionContext. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S5 Provider Resolution. [SECURITY.md](SECURITY.md) — §3 Authorization Model, §10 Guardrail Level 4. [DATABASE.md](DATABASE.md) — bindings, capabilities, kernel_ops tables.
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
 **Purpose**: Defines the canonical resolution contract that transforms a classified intent into an immutable, authorized, executable binding. This is the most failure-prone layer in the architecture — it must be deterministic, fail-closed, and produce a single immutable artifact consumed by all downstream stages.
 

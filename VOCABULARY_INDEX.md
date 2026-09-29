@@ -3,6 +3,7 @@
 **Purpose**: Canonical terminology for all AiagentsOS design documents.
 **Rule**: Use these exact terms. Do not introduce synonyms in design docs.
 **Date**: 2026-09-25
+**Audit round 2 (2026-09-29)**: duplicate "Execution Plan" and malformed duplicate "Task vs Job" rows removed; Long-term Memory aligned to L3; Pause, Eligibility Filter and Operation Quota updated.
 **Worker-management update (2026-09-29)**: terms from gate v10 C39–C41 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E) added; the `User` roles example and the "Skill" conflict entry corrected. Changed rows carry *(worker-management, RD-n)*.
 
 ---
@@ -26,7 +27,6 @@
 | **Lease** | A time-bounded claim on a resource or task. Leases expire automatically and must be renewed by the worker. | lock, claim, reservation, hold | DATA_CONTRACTS.md, RELIABILITY.md | "The worker renews its lease every 30 seconds." |
 | **State Machine** | A formal model of valid states and transitions for a kernel object. Invalid transitions are rejected at runtime. | lifecycle, status flow, state chart | DATA_CONTRACTS.md, PIPELINE_STAGES.md | "The Task state machine defines 10 states with valid transitions." |
 | **Capability Graph** | The directed graph of capabilities, their dependencies, and bindings to providers. Used for discovery and resolution. | dependency graph, capability map, binding graph | RESOLVE_LAYER.md, DATA_CONTRACTS.md | "The capability graph resolves nested capability chains." |
-| **Execution Plan** | A pre-computed, typed sequence of PlanSteps with dependencies, budgets, and timeouts. Plans are immutable once created. | workflow, runbook, script, pipeline | DATA_CONTRACTS.md, EXECUTION_PLAN.md | "The planner produces an ExecutionPlan with 7 PlanSteps." |
 
 ---
 
@@ -48,11 +48,11 @@
 | **Retry** | Re-execution of a failed operation with backoff. Configured per operation with max_retries and backoff strategy. | reattempt, retry attempt | RELIABILITY.md, PIPELINE_STAGES.md | "Failed mutations retry with exponential backoff up to max_retries." |
 | **runtime_type** | How a Worker executes: `llm`, `rules`, `vision`, `browser`, `rpa`, `data`, `rag`, `code`, `human` (`RuntimeType`, DATA_CONTRACTS §50). Selects routing (S7), binding family (S5) and worker eligibility (S12); never removes a pipeline stage. The only worker-type enum. *(worker-management, RD-10.)* | worker type, WorkerType, worker_type | DATA_CONTRACTS §50, DATABASE workers | "The browser worker's runtime_type makes it eligible for steps bound to the browser adapter." |
 | **Worker Group** | A tenant-scoped set of Workers managed together (bulk pause, schedule, assign). Post-S15. *(worker-management.)* | pool, fleet, team | FINAL_ARCHITECTURE §34 | "Pausing the group pauses every member for new leases." |
-| **Pause** | A time-bounded block on **new** runs (tenant/workspace) or **new** leases (worker/group) via `paused_until`. Running work continues (drain semantics). Not a state. *(worker-management, RD-5.)* | suspend, freeze, disable | WORKER_LIFECYCLE §16, IDENTITY_AND_TENANCY §8.4 | "The workspace is paused until 18:00; runs already RUNNING finish." |
+| **Pause** | A time-bounded block on **new** runs (tenant/workspace, checked at S0.1 and S12 entry) or **new** leases (worker) via `paused_until`. Running work continues (drain semantics). Not a state. Worker groups are post-S15. *(worker-management, RD-5; audit round 2 B6.)* | suspend, freeze, disable | WORKER_LIFECYCLE §16, IDENTITY_AND_TENANCY §8.4, S0–S11 ruling R-P | "The workspace is paused until 18:00; runs already RUNNING finish." |
 | **Kill Switch** | An emergency stop that cancels remaining steps now (`kill_switch_engaged`, gate C23). Distinct from Pause. | pause, halt flag | IDENTITY_AND_TENANCY §8.4 | "The kill switch cancelled the remaining steps." |
 | **Scheduled Activation** | `scheduled_activation_at`: before this time no new runs (tenant/workspace) or new leases (worker) are allowed. Not a state. *(worker-management, RD-5.)* | dormant state, go-live flag | WORKER_LIFECYCLE §16 | "The worker becomes eligible at 09:00." |
-| **Eligibility Filter** | A pure predicate applied to candidate workers in S12 worker selection, before locality scoring (pause, activation, assignment, runtime/capability match). No candidate left → `no_worker`. *(worker-management, RD-4.)* | admission gate (for worker checks) | WORKER_LIFECYCLE §13, gate C39 | "The assignment filter removed two candidates." |
-| **Operation Quota** | A count-based limit per tenant, workspace or worker and period (`operation_quotas`), consumed once per run at durable admission. Hard → deny; soft → queue. Distinct from Budget (cost). *(worker-management, RD-6.)* | quota (alone), rate limit, budget | DATA_CONTRACTS §51, DATABASE | "The hard quota of 1,000 executions per month was reached." |
+| **Eligibility Filter** | A pure predicate applied to candidate workers in S12 worker selection, before locality scoring: workspace match (4b), worker pause (12b), activation (13b), assignment (14), capability/restriction/runtime match (17a–c), mutation ceiling (17d). No candidate left → `no_worker`. *(worker-management, RD-4; audit round 2.)* | admission gate (for worker checks) | WORKER_LIFECYCLE §13, gate C39 | "The assignment filter removed two candidates." |
+| **Operation Quota** | A count-based limit per tenant or workspace and period (`operation_quotas`; worker-level quotas are out of phase), consumed once per run at durable admission and never re-checked per step. Hard → deny; soft → bounded retry, then deny. Distinct from Budget (cost). *(worker-management, RD-6; audit round 2.)* | quota (alone), rate limit, budget | DATA_CONTRACTS §51, DATABASE | "The hard quota of 1,000 executions per month was reached." |
 | **Stability Tier** | One of T1–T7 in FINAL_ARCHITECTURE §30, ranking how stable a concern must be. Not a layer. *(worker-management, RD-15.)* | layer (for tiers), seven-layer architecture | FINAL_ARCHITECTURE §30 | "Worker routing is a T4, evolving, concern." |
 | **Circuit Breaker** | A state machine (CLOSED → OPEN → HALF_OPEN) that prevents cascading failures when a provider is unhealthy. | breaker, fault blocker, trip | RELIABILITY.md, DATA_CONTRACTS.md | "The circuit breaker opens after 5 consecutive failures." |
 
@@ -90,7 +90,7 @@
 |------|----------------------|------------|----------|---------------|
 | **Short-term Memory** | L0: Current execution state. In-memory, volatile. | context, working set, scratch | MEMORY_ARCHITECTURE.md | "Short-term memory holds recent observations and intermediate results." |
 | **Working Memory** | L1: Current task/session context. In-memory with TTL. | scratchpad, temp memory | MEMORY_ARCHITECTURE.md | "Working memory decays exponentially over the session." |
-| **Long-term Memory** | L2-L4: Persistent worker/project/organizational knowledge. Stored in PostgreSQL + LanceDB. | persistent memory, stored memory, knowledge base | MEMORY_ARCHITECTURE.md | "Long-term memory is searched via semantic vector search." |
+| **Long-term Memory** | Layer L3 (FINAL_ARCHITECTURE §21; the former "L2-L4" predated the unified L0–L3 taxonomy, audit round 2 D5): Persistent worker/project/organizational knowledge. Stored in PostgreSQL + LanceDB. | persistent memory, stored memory, knowledge base | MEMORY_ARCHITECTURE.md | "Long-term memory is searched via semantic vector search." |
 | **Episodic Memory** | L5-L6: Execution history and immutable audit/provenance. Stored in PostgreSQL. | history, log, trace | MEMORY_ARCHITECTURE.md | "Episodic memory records complete execution outcomes with full provenance." |
 | **Memory Consolidation** | Periodic merging of related memories into higher-level abstractions. | memory merge, memory summarization | MEMORY_ARCHITECTURE.md | "Memory consolidation runs daily to extract patterns." |
 | **Memory Decay** | Gradual reduction of memory quality/access priority over time. | forgetting, TTL, expiration | MEMORY_ARCHITECTURE.md | "Working memory uses exponential decay to prioritize recent context." |
@@ -187,5 +187,4 @@
 | "Mutation" vs "Action" | Mutation is the kernel-level side effect. Action is the model-level choice. | RESOLVED |
 | "Trace" vs "Log" | Trace is the distributed execution record. Log is a structured event record. | RESOLVED |
 | "Lease" vs "Lock" | Lease is time-bounded and auto-expiring. Lock is indefinite until released. | RESOLVED |
-| "Task" vs "Job" | Task is the kernel execution object. Job is the scheduled task (cron). | work item, unit, execution | IDENTITY_AND_TENANCY.md, FINAL_ARCHITECTURE.md | "The task_id identifies a kernel task; a cron job is a scheduled trigger that creates tasks." |
 | "HITL" vs "Approval" | HITL is the pattern. Approval is one specific HITL interaction type. | RESOLVED |

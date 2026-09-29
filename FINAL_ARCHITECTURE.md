@@ -1,7 +1,8 @@
 # SuprAgents — Final Architecture Document
 
-**Version**: 4.5.0 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**Version**: 4.5.1 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
 **4.4.0 (2026-09-28)**: absorbs the decisions of the later documents (WORKER_LIFECYCLE_VERIFICATION_ADMISSION, SUPERSESSION_AWARE_BLOCKER_REGISTER, XS-1) and the S12–S15 gate v9 rulings, so no document contradicts this one (I-015). Each changed passage carries a `S12–S15 gate v9 repair` marker; the full list is gate C38.
+**4.5.1 (2026-09-29, audit round 2)**: §26 `workers` DDL uses `TEXT` keys and shows the management columns; §50 acceptance gate and harness cover I-001…I-029 and a note maps the four invariant numbering schemes; §51 row 16 follows the revised gate C39 (pause at S0.1 by S0–S11 ruling R-P; no per-step pause or quota check).
 **4.5.0 (2026-09-29)**: worker-management propagation from `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md`, per the owner-confirmed rulings RD-1…RD-18 in `WORKER_MGMT_SPEC_REVIEW.md` Part E and gate v10 C39–C41. Section numbering cleaned up (RD-16): the orphaned duplicate sections are renumbered §37b, §37c, §37d, §50 and §51; every number cited by another document (§38 Runtime Contract, §39, §40, §41 Event Correlation, §43, §45, §46) is unchanged. Each changed passage carries a `Worker-management repair (RD-n)` marker.
 **Date**: 2026-09-26 | **Source**: `rebuild/` design documents + 10-repo gap analysis + P0+P1 audit
 **Purpose**: Single, authoritative architecture document that absorbs best patterns from 10 studied repositories, resolves all known conflicts, and serves as the single source of truth for implementation.
@@ -1451,12 +1452,13 @@ Tenant
 
 ### Worker Identity Model
 
-> **Worker-management repair (RD-1):** key type ruling — `workers.worker_id` and every column that references it are `TEXT`, like every other key in DATABASE.md (`tenant_id`, `user_id`, `workspace_id`, `execution_id`). The `UUID` below is superseded; the owner ruling overrides the gate §7.3 default of changing the referencing column. Timestamps in new columns are `TIMESTAMPTZ` (RD-2). Management columns added by gate v10 C39 are listed in WORKER_LIFECYCLE §16.1.
+> **Worker-management repair (RD-1; audit round 2 C1, B7):** key type ruling — `workers.worker_id` and every column that references it are `TEXT`, like every other key in DATABASE.md (`tenant_id`, `user_id`, `workspace_id`, `execution_id`); the owner ruling overrides the gate §7.3 default of changing the referencing column. Timestamps in new columns are `TIMESTAMPTZ` (RD-2). DATABASE.md is authoritative for this table; the DDL below mirrors it.
 
 ```sql
 CREATE TABLE workers (
-    worker_id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    worker_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    workspace_id TEXT REFERENCES workspaces(workspace_id),  -- gate v10 C39 filter 4b; NULL = legacy, ineligible
     worker_class VARCHAR(100) NOT NULL,
     runtime_version VARCHAR(50),
     capability_profile JSONB NOT NULL,
@@ -1467,6 +1469,12 @@ CREATE TABLE workers (
     heartbeat_at TIMESTAMP,
     last_assignment_at TIMESTAMP,
     drain_state VARCHAR(20),
+    -- worker-management columns (gate v10 C39; WORKER_LIFECYCLE §16.1)
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    assigned_user_id TEXT REFERENCES users(user_id),
+    paused_until TIMESTAMPTZ,
+    scheduled_activation_at TIMESTAMPTZ,
+    runtime_type TEXT NOT NULL DEFAULT 'llm',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -2741,7 +2749,18 @@ class ArchitectureComplianceSuite:
 | **I-026** | FROZEN INTENT SPECIFICATION | IntentSpecification is frozen at S3. It cannot be modified by any LLM output. Execution success is measured against acceptance_criteria, not just API success. |
 | **I-027** | EXECUTION LEDGER APPEND ONLY | Ledger events are never updated, deleted, or soft-deleted. Every execution event is permanently recorded. |
 | **I-028** | BOUNDED AUTONOMY | Every autonomous loop has explicit bounds (iterations, budget, duration, risk). No unrestricted execution loops exist. |
-| **I-029** | ONE EXECUTION PATH | Every execution, whatever its trigger or `runtime_type`, follows S0→S15 and passes S8. No bypass path exists (§37a Principle 8; gate v10 RD-8). |
+| **I-029** | ONE EXECUTION PATH | Every execution, whatever its trigger or `runtime_type`, follows S0→S15 and passes S8. No bypass path exists (§37a Principle 8; ruling RD-8 in `WORKER_MGMT_SPEC_REVIEW.md` Part E). |
+
+### Invariant Numbering Schemes
+
+> **Repair (audit round 2 D10):** four numbering schemes coexist. This table (I-001…I-029) is the architecture-level one and is authoritative.
+
+| Scheme | Where | Scope |
+|---|---|---|
+| I-001 … I-029 | This section | Architecture invariants (authoritative) |
+| I-001 … I-014 | IDENTITY_AND_TENANCY.md "Architecture Invariants" | A copy of I-001…I-014 above |
+| I-1 … I-10 | STATE_TRANSITIONS.md §12 | Cross-state-machine invariants |
+| I1 … I18 | S12_S15_EXECUTION_GATE.md §17 | The S12–S15 invariant checker (`assert_system_invariants`) |
 
 ### Guardrail Precedence Order
 
@@ -2807,7 +2826,7 @@ The architecture has clean extension points for worker platform concepts **witho
 | 13 | **Worker Autonomy Levels** | Autonomy level is a runtime configuration. Kernel authorization and risk rules are unaffected. |
 | 14 | **Marketplace Package + Certification** | Certification uses the existing E0-E4 evidence framework. Kernel does not need to know about marketplace mechanics. |
 | 15 | **Subscription / Entitlement Model** | Kernel only needs to know "is this deployment entitled to execute this capability?" Entitlement check is added to the authorization chain. |
-| 16 | **Worker Management Settings** (spec F1–F6) | Pause, scheduled activation, assignment and operation quotas. Tenant/workspace checks run in admission; worker checks are eligibility filters at worker selection; quota is consumed once per run at durable admission (gate v10 C39). Settings changes affect new leases only (I-017). |
+| 16 | **Worker Management Settings** (spec F1–F6, F12, F16) | Pause, scheduled activation, assignment, workspace boundary, restrictions and operation quotas. Tenant/workspace pause is checked at S0.1 (S0–S11 ruling R-P) and again at S12 entry, never per step; worker checks are eligibility filters at worker selection; quota is consumed once per run at durable admission, tenant and workspace levels only (gate v10 C39). Settings changes affect new leases only (I-017). |
 | 17 | **Batch Processing** (spec F9) | BATCH strategy producing ordinary PlanSteps at S9 (§15, gate v10 C40). Post-S15. |
 | 18 | **Sub-Agent Delegation** (spec F7, F28) | Child workers get ⊆ parent capabilities and grants; PrincipalChain records the parent; replans and delegations are child executions (RD-11, RD-13). Post-S15. |
 | 19 | **Runtime-Type Routing** (spec F19, F32–F36) | Adapters and bindings per runtime; same pipeline (I-029). Post-S15. |
@@ -2821,7 +2840,7 @@ Before any component moves to E2 (Contract Validated), it must pass all 7 accept
 | Criterion | Requirement | Test |
 |-----------|-------------|------|
 | **A. Contract Complete** | All data contracts (inputs, outputs, errors) are specified | Contract test suite passes |
-| **B. Invariant Preserved** | No implementation violates any I-001 through I-021 | `test_architecture_invariants()` |
+| **B. Invariant Preserved** | No implementation violates any I-001 through I-029 | `test_architecture_invariants()` |
 | **C. State Machine Valid** | All state transitions are enumerated and valid | State transition test suite |
 | **D. Failure Paths Covered** | Every failure mode has a defined handler | Negative-path matrix test |
 | **E. Negative Path Tested** | Every failure path has a passing test | `test_negative_path_matrix()` |
@@ -2839,7 +2858,7 @@ class ArchitectureTestHarness:
     """Validates architecture invariants before implementation proceeds."""
 
     def test_all_invariants_hold(self) -> None:
-        """I-001 through I-021 must all pass."""
+        """I-001 through I-029 must all pass."""
         for invariant in ARCHITECTURE_INVARIANTS:
             assert invariant.validate(), f"{invariant.id} violated"
 

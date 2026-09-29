@@ -15,7 +15,9 @@ DELETION CONTRACT: when MR-1 is decided, delete this file and the gate §1 entry
 listed in s12_s15_golden/README.md "Deletion contract". Neither may outlive the other.
 
 Static checks only: files are read with ast/regex, and no project code is imported,
-so import-time side effects cannot hide a violation.
+so import-time side effects cannot hide a violation. Every file in the repository is
+scanned except the EXCLUDED_DIRS (virtual environments, caches, .git), so imports in
+scripts/, top-level files and nested packages are caught too (audit round 2 C7).
 
 Repository root: the S12_REPO_ROOT environment variable, or four levels above this
 file (tests/golden/s12/<this file> -> repository root).
@@ -36,13 +38,12 @@ EXCLUDED_DIRS = frozenset({
     ".git", ".venv", "venv", "env", "__pycache__", "node_modules",
     "site-packages", ".mypy_cache", ".pytest_cache", ".ruff_cache",
 })
-CODE_DIRS = ("src", "tests", "migrations", "alembic", "tools")
 MIGRATION_DIRS = ("migrations", "alembic", "src/migrations", "src/db/migrations")
-MANIFEST_GLOBS = (
+MANIFEST_NAMES = frozenset({
     "pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "Pipfile.lock",
     "poetry.lock", "uv.lock", "environment.yml", "environment.yaml",
-    "requirements*.txt", "requirements/*.txt", "constraints*.txt",
-)
+})
+MANIFEST_PREFIXES = ("requirements", "constraints")  # requirements*.txt, constraints*.txt, requirements/*.txt
 
 _PACKAGE_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])(" + "|".join(FORBIDDEN_PACKAGES) + r")(?![A-Za-z0-9_-])",
@@ -60,14 +61,36 @@ def repo_root() -> Path:
     return Path(env).resolve() if env else Path(__file__).resolve().parents[3]
 
 
-def _walk(base: Path, suffixes: tuple[str, ...]):
+SELF_RELPATH = Path("tests/golden/s12") / Path(__file__).name
+
+
+def _is_self(path: Path, base: Path) -> bool:
+    """This guard file: its sabotage data contains the very strings it forbids."""
+    try:
+        if path.resolve() == Path(__file__).resolve():
+            return True
+    except OSError:
+        pass
+    return path.relative_to(base) == SELF_RELPATH
+
+
+def _walk(base: Path, suffixes: tuple[str, ...] | None = None):
+    """Every file under `base` (optionally filtered by suffix), skipping EXCLUDED_DIRS and this file."""
     if not base.is_dir():
         return
     for path in sorted(base.rglob("*")):
-        if path.is_file() and path.suffix in suffixes and not (
+        if path.is_file() and (suffixes is None or path.suffix in suffixes) and not (
             EXCLUDED_DIRS & set(path.relative_to(base).parts)
-        ):
+        ) and not _is_self(path, base):
             yield path
+
+
+def _is_manifest(path: Path) -> bool:
+    if path.name in MANIFEST_NAMES:
+        return True
+    return path.suffix == ".txt" and (
+        path.name.startswith(MANIFEST_PREFIXES) or path.parent.name == "requirements"
+    )
 
 
 def _top(module: str | None) -> str:
@@ -105,28 +128,24 @@ def _import_violations(path: Path, root: Path) -> list[str]:
 
 def _manifest_violations(root: Path) -> list[str]:
     found = []
-    seen: set[Path] = set()
-    for pattern in MANIFEST_GLOBS:
-        for path in sorted(root.glob(pattern)):
-            if path in seen or not path.is_file():
-                continue
-            seen.add(path)
-            for lineno, line in enumerate(
-                path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
-            ):
-                match = _PACKAGE_RE.search(line)
-                if match:
-                    found.append(
-                        f"{path.relative_to(root)}:{lineno}: dependency {match.group(1)!r}"
-                    )
+    for path in _walk(root):
+        if not _is_manifest(path):
+            continue
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+        ):
+            match = _PACKAGE_RE.search(line)
+            if match:
+                found.append(
+                    f"{path.relative_to(root)}:{lineno}: dependency {match.group(1)!r}"
+                )
     return found
 
 
 def _migration_violations(root: Path) -> list[str]:
     found = []
-    code_files = [p for d in CODE_DIRS for p in _walk(root / d, (".py", ".sql"))]
     migration_files = {p for d in MIGRATION_DIRS for p in _walk(root / d, (".py", ".sql"))}
-    for path in dict.fromkeys(code_files + sorted(migration_files)):
+    for path in _walk(root, (".py", ".sql")):
         text = path.read_text(encoding="utf-8", errors="replace")
         rel = path.relative_to(root)
         for lineno, line in enumerate(text.splitlines(), 1):
@@ -140,9 +159,8 @@ def _migration_violations(root: Path) -> list[str]:
 def scan(root: Path) -> list[str]:
     """Every violation of the no-vector-code rule under `root`, as 'file:line: what'."""
     violations: list[str] = []
-    for directory in CODE_DIRS:
-        for path in _walk(root / directory, (".py",)):
-            violations.extend(_import_violations(path, root))
+    for path in _walk(root, (".py",)):  # every Python file in the repository (audit C7)
+        violations.extend(_import_violations(path, root))
     violations.extend(_manifest_violations(root))
     violations.extend(_migration_violations(root))
     return violations
@@ -183,6 +201,10 @@ SABOTAGE = {
     "alembic_py": ("alembic/versions/019_vec.py", 'op.execute("CREATE EXTENSION vector")\n'),
     "alembic_column": ("alembic/versions/019_vec.py", 'op.execute("ALTER TABLE m ADD e VECTOR(768)")\n'),
     "unparseable": ("src/memory/vec.py", "import lancedb as\n"),
+    "scripts_dir": ("scripts/seed_vectors.py", "import lancedb\n"),
+    "root_file": ("manage.py", "from pgvector.psycopg import register_vector\n"),
+    "nested_pyproject": ("packages/memory/pyproject.toml", '[project]\ndependencies = ["lancedb"]\n'),
+    "root_sql": ("db/019_vec.sql", "CREATE EXTENSION vector;\n"),
 }
 
 CLEAN = {
@@ -213,6 +235,12 @@ def test_selftest_sabotage_is_caught(tmp_path: Path, case: str) -> None:
 def test_selftest_clean_repository_passes(tmp_path: Path) -> None:
     for rel, text in CLEAN.items():
         _write(tmp_path, rel, text)
+    assert scan(tmp_path) == []
+
+
+def test_selftest_guard_does_not_flag_itself(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    _write(tmp_path, str(SELF_RELPATH), Path(__file__).read_text(encoding="utf-8"))
     assert scan(tmp_path) == []
 
 

@@ -1,6 +1,6 @@
 # Worker Lifecycle, Independent Verification & Admission Control
 
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §12 Execution Kernel, §13 Worker Lifecycle, §22 Scheduler. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — Worker Lifecycle section. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §9 ExecutionResult, §9 ExecutionStatus, §22 RetryDecision. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S12 Execute, S13 Verify. [RELIABILITY.md](RELIABILITY.md) — Backpressure and Admission Control, 5-layer guard. [DATABASE.md](DATABASE.md) — workers, worker_leases tables.
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §12 Durable Execution Kernel, §10 Layer Communication Rules (Worker State Machine, Lease Management), §22 Scheduler, §33 Worker Capacity & Scale. *(section numbers corrected in audit round 2, D1)*  [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — Worker Lifecycle section. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §9 ExecutionResult, §9 ExecutionStatus, §22 RetryDecision. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S12 Execute, S13 Verify. [RELIABILITY.md](RELIABILITY.md) — Backpressure and Admission Control, 5-layer guard. [DATABASE.md](DATABASE.md) — workers, worker_leases tables.
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
 **Worker-management update (2026-09-29)**: §16 added and §3, §10, §11, §13, §15 amended per gate v10 C39 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E). Each changed passage carries a `Worker-management repair (RD-n)` marker.
 **Purpose**: Three P0 additions to close the gaps identified in the architecture review.
@@ -777,11 +777,8 @@ Each gate is checked in sequence. The first gate that rejects stops evaluation.
 | 9 | DB pool utilization | `db_pool_pressure` |
 | 10 | Budget remaining | `budget_exhausted` |
 | 11 | System load | `system_overloaded` |
-| 12a | Tenant / workspace paused (`paused_until > NOW()`) | `tenant_paused` / `workspace_paused` |
-| 13a | Tenant / workspace not yet active (`scheduled_activation_at > NOW()`) | `not_yet_active` |
-| 16 | Operation quota precheck (read-only) | `quota_exhausted` (hard) — QUEUE (soft) |
 
-> **Worker-management repair (RD-4, RD-5, RD-6; gate v10 C39):** gates 12a, 13a and 16 are phase-1 admission gates: they need no worker. **Evaluation order:** 1–6, 12a, 13a, 16, 8–11, then 7 last, so that a REJECT is never masked by a capacity QUEUE. Gate numbers are unchanged because C30 maps REJECTs by number. Worker-level checks (worker pause 12b, worker activation 13b, assignment 14, runtime/capability match 17) are **not** admission gates: admission runs before a worker is chosen, so they are eligibility filters in §13 (see §16.3). Gates 12a and 13a are decided at S12 entry for new runs only (§16.2); gate 16 consumes nothing (§16.4). All comparisons use database `NOW()` (I-019).
+> **Worker-management repair (RD-4…RD-6; audit round 2 A1, A2, B6; gate v10 C39):** per-step admission is unchanged (gates 1–11). Tenant/workspace pause and scheduled activation are **entry checks**: at S0.1 (S0–S11 ruling R-P, before any S1–S11 work) and again at S12 entry as a safety net (§16.2). They are never per-step gates, so a pause never cancels running work. Quota is consumed once at S12 entry and **never re-checked per step** (§16.4): a per-step check would count the run's own consumption and cancel admitted runs. Worker-level checks are eligibility filters in worker selection (§13). All comparisons use database `NOW()` (I-019).
 
 > **S12–S15 gate v9 repair (C30):** S12 maps a REJECT by `gate_failed`: gate 1 → kill-switch revocation path (run CANCELLED, `kill_switch_engaged`); gate 3 → revocation path (`authorization_revoked`); gate 10 → budget-exhaustion path (run CANCELLED, `budget_exhausted`); gate 7 is a QUEUE, never a REJECT; every other gate → remaining steps CANCELLED with `admission_rejected` and the run consolidated. Every decision is recorded as a ledger event.
 
@@ -850,7 +847,7 @@ class AdmissionDecision:
 | `REJECT` | Permanently denied | Return error to user |
 | `DEGRADE` | Accepted with reduced features | Proceed with `degraded_features` disabled |
 
-> **Worker-management repair (RD-6; gate v10 C39):** new `reason` codes: `tenant_paused`, `workspace_paused`, `not_yet_active`, `quota_exhausted`. A soft-quota QUEUE puts upgrade guidance in `detail`; no field is added to this contract.
+> **Worker-management repair (RD-6; audit round 2; gate v10 C39):** no new `AdmissionDecision` reason. Pause, activation and quota are entry checks (§16.2, §16.4) and never produce a per-step `AdmissionDecision`; their entry denials (`tenant_paused`, `workspace_paused`, `not_yet_active`, `quota_exhausted`) are `StageStatus.DENY` reasons. No field is added to this contract.
 
 ### Degrade Mode Rules
 
@@ -1043,14 +1040,15 @@ class WorkerSelector:
 
 ### Worker-Eligibility Filters (before scoring)
 
-> **Worker-management repair (RD-4, RD-7; gate v10 C39):** before locality scoring, candidates are filtered by pure predicates evaluated against live state and database `NOW()`:
+> **Worker-management repair (RD-4, RD-7; audit round 2 B1–B5, B7, B8; gate v10 C39):** before locality scoring, candidates are filtered by pure predicates evaluated against live state and database `NOW()`:
 >
-> 1. worker or any of its groups paused (`paused_until > NOW()`) → filter reason `worker_paused` (12b);
-> 2. worker not yet active (`scheduled_activation_at > NOW()`) → `worker_not_yet_active` (13b);
-> 3. `assigned_user_id` set and ≠ `PrincipalChain.original_principal_id` → `not_assigned` (14); membership role `owner`/`admin` in the run's workspace, read live, bypasses 1–3;
-> 4. `runtime_type` cannot run the step's frozen binding, or the step capability is not in `capability_profile` → `capability_mismatch` (17).
+> - **4b** `workers.workspace_id` ≠ the run's workspace, or NULL (legacy row) → `workspace_mismatch`. No bypass.
+> - **12b** `workers.paused_until > NOW()` → `worker_paused`. Worker groups are post-S15 and are not evaluated in this phase.
+> - **13b** `workers.scheduled_activation_at > NOW()` → `worker_not_yet_active`.
+> - **14** only when the run's original principal (`PrincipalChain.original_principal_id`) is a human user and the activation mode is not EVENT_DRIVEN: `assigned_user_id` set and ≠ that principal → `not_assigned`. Event-driven and system runs skip it; worker-delegated runs keep the human's assignment.
+> - **17** (a) step capability not in `capability_profile`, (b) in `settings.restricted_capabilities`, or (c) binding `required_runtime_types` non-empty and not containing `runtime_type` → `capability_mismatch`; (d) `settings.execution_policy.max_mutation` set and below the step's frozen `effective_mutation` (`R` < `W` < `D` < `IRREVERSIBLE`) → `mutation_ceiling`.
 >
-> If no candidate remains, the step is handled as `no_worker` (gate §8 step 2), and the ledger event records every filter reason that removed a candidate. Filters never choose an adapter: the adapter comes from the binding frozen at S5 (RD-9).
+> **Admin bypass** for 12b, 13b and 14 only: the run's original principal holds membership role `owner` or `admin` in the run's workspace, read live at selection; each bypass is a ledger event. If no candidate remains, the step is handled as `no_worker` (gate §8 step 2), and the ledger event records every filter reason that removed a candidate. Filters never choose an adapter: the adapter comes from the binding frozen at S5 (RD-9).
 
 ### Locality Is Advisory, Not Binding
 
@@ -1250,30 +1248,31 @@ with an old token cannot commit any state change for the execution.
 
 | Column | Type | Default | Scope |
 |---|---|---|---|
-| `settings` | JSONB | `'{}'` | In scope (read by S12 only; contract in IDENTITY §5) |
+| `workspace_id` | TEXT NULL, FK `workspaces` | — | In scope (filter 4b); required for new registrations; NULL only on legacy rows, which are ineligible (audit B7) |
+| `settings` | JSONB | `'{}'` | In scope, read by S12 only (contract in IDENTITY §5): `restricted_capabilities` (filter 17b) and `execution_policy.max_mutation` (filter 17d) are live; `execution_policy` retry/timeout keys are reserved |
 | `assigned_user_id` | TEXT NULL, FK `users(user_id)` | NULL | In scope (filter 14) |
 | `paused_until` | TIMESTAMPTZ NULL | NULL | In scope (filter 12b) |
 | `scheduled_activation_at` | TIMESTAMPTZ NULL | NULL | In scope (filter 13b) |
 | `runtime_type` | TEXT NOT NULL, CHECK in (llm, rules, vision, browser, rpa, data, rag, code, human) | `'llm'` | In scope (filter 17) |
 | `max_sub_agents`, `parent_worker_id` (TEXT FK), `depth_level` | — | — | **Deferred** (spawning, RD-13) |
 
+Also on `bindings`: `required_runtime_types JSONB NOT NULL DEFAULT '[]'` (filter 17c; empty = any runtime; values validated against `RuntimeType` at binding registration; a binding no current worker can serve is a readiness warning, not an error).
+
 Tenant and workspace `paused_until` / `scheduled_activation_at` are typed `TIMESTAMPTZ NULL` columns on `tenants` and `workspaces`, not keys inside their TEXT `settings` JSON (review A-9). These columns are mutable management state (invariant 5), are read only by S12 admission and worker selection, are never read by S0–S11, and are never part of the ExecutionManifest.
 
-### 16.2 Phase-1 admission additions (no worker needed)
+### 16.2 Tenant and workspace pause (entry checks)
 
-Gates 12a (tenant/workspace paused) and 13a (tenant/workspace not yet active) are evaluated at **S12 entry** (gate §7.1): a new run is denied with the specific reason and nothing is written. A pause or activation time set while a run is RUNNING does **not** cancel its steps (drain semantics, RD-5). The hard stop remains the kill switch (C23).
+Tenant and workspace `paused_until` / `scheduled_activation_at` are checked at **S0.1** (S0–S11 ruling R-P), right after S0 builds the ExecutionContext and before any S1–S11 work: a paused or not-yet-active tenant or workspace gets `StageStatus.DENY` (`tenant_paused`, `workspace_paused`, `not_yet_active`) with nothing written. **S12 entry** re-checks the same values (gate §7.1 item 7) as a safety net for runs that passed S0.1 before a pause was set. They are **never** checked per step: a pause never cancels running work (drain semantics, RD-5), and the kill switch (C23) remains the hard stop. No admin bypass applies to a tenant or workspace pause. Entry denials are logged, not ledger events (gate C39).
 
-Gate 16 is a read-only quota precheck, evaluated with the other gates before each step. It never consumes quota.
+### 16.3 Worker-eligibility filters
 
-### 16.3 Phase-2 worker-eligibility filters
-
-Defined in §13 "Worker-Eligibility Filters". Filters 12b, 13b and 14 apply to **new leases** only; a lease already held is never revoked by a pause (RD-5). Admin bypass: membership role `owner` or `admin` in the run's workspace, read live (RD-7). Filter 14 compares against `PrincipalChain.original_principal_id`, so worker-to-worker delegation keeps the human's assignment.
+Defined in §13 "Worker-Eligibility Filters" (4b, 12b, 13b, 14, 17a–d). Filters 12b, 13b and 14 apply to **new leases** only; a lease already held is never revoked by a pause (RD-5). The admin bypass (12b, 13b, 14 only) uses the run's original principal's `owner`/`admin` membership in the run's workspace, read live.
 
 ### 16.4 Operation quota
 
-Table `operation_quotas` (tenant_id TEXT NOT NULL + RLS; workspace_id and worker_id TEXT NULL; `resource_type`; `period_start`, `period_end` TIMESTAMPTZ; `limit_value`, `used_count` INTEGER with `CHECK (used_count >= 0 AND limit_value >= 0)`; `is_hard`; `UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type, period_start)`).
+Table `operation_quotas` (tenant_id TEXT NOT NULL + RLS; workspace_id TEXT NULL; `worker_id` TEXT that must be NULL in this phase (`CHECK (worker_id IS NULL)`: the worker is chosen per step, after entry, so worker-level quotas cannot be charged at entry); `resource_type`; `period_start`, `period_end` TIMESTAMPTZ; `limit_value`, `used_count` INTEGER with `CHECK (used_count >= 0 AND limit_value >= 0)` and `CHECK (used_count <= limit_value)`; `is_hard`; `UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type, period_start)`).
 
-**Consumption (RD-6):** once per run, inside the durable-admission transaction (gate §7.2), after the `(tenant_id, request_id)` duplicate check. Every applicable level is updated in the fixed order tenant → workspace → worker:
+**Consumption (RD-6):** once per run, inside the durable-admission transaction (gate §7.2), after the `(tenant_id, request_id)` duplicate check. Every applicable level is updated in the fixed order tenant → workspace. **There is no per-step quota check** (audit A1):
 
 ```sql
 UPDATE operation_quotas
@@ -1284,11 +1283,11 @@ UPDATE operation_quotas
 RETURNING quota_id;
 ```
 
-Zero rows at any level rolls the whole transaction back: hard → DENY `quota_exhausted` (nothing written), soft → QUEUE with upgrade text in `detail`. **Refund:** only when the run ends CANCELLED with no step COMPLETED; the refund is a ledger event. Invariant **I17** (gate §17): `used_count ≤ limit_value` for every hard quota.
+Zero rows at any level rolls the whole transaction back: hard → DENY `quota_exhausted` (nothing written); soft → retry the transaction up to `quota_retry_max` with backoff, then DENY `quota_exhausted` with `retry_after_ms` and upgrade text in `detail` (audit A4). **Refund:** only when the run ends CANCELLED with no step COMPLETED, in the consolidation transaction; the refund is a ledger event. Invariant **I17** (gate §17): consumption never exceeds the limit — `CHECK (used_count <= limit_value)` holds on every row, so an admin cannot lower a limit below current usage; a lower limit goes on the next period's row (audit B9).
 
 ### 16.5 Timestamp precedence
 
-`effective_paused_until = GREATEST(tenant, workspace, every group of the worker, worker)` with NULL meaning "not paused"; the same rule applies to `scheduled_activation_at`. Tenant and workspace values are decided in phase 1, group and worker values in phase 2. Time is database `NOW()` (I-019).
+Tenant and workspace values are decided at S0.1 and S12 entry (§16.2); the worker's own value is decided by filters 12b and 13b. Each level is compared with database `NOW()` on its own (I-019); NULL means "not paused" / "already active". Worker groups are post-S15 and are not evaluated in this phase; when they land, a worker in several groups takes the latest `paused_until` of all of them.
 
 ### 16.6 Deferred (post-S15; recorded in gate §14)
 
@@ -1298,9 +1297,9 @@ Sub-agent spawning (G15 becomes a check inside `spawn_child_worker()`, not an ad
 
 | Code | Where | Outcome |
 |---|---|---|
-| `tenant_paused`, `workspace_paused`, `not_yet_active` | S12 entry (12a, 13a) | DENY, nothing written |
-| `quota_exhausted` | S12 entry (consumption) | DENY (hard) / QUEUE (soft) |
-| `worker_paused`, `worker_not_yet_active`, `not_assigned`, `capability_mismatch` | Filter reasons in the `no_worker` ledger event | Step → `no_worker` path |
+| `tenant_paused`, `workspace_paused`, `not_yet_active` | S0.1 (R-P) and S12 entry | DENY, nothing written, logged |
+| `quota_exhausted` | S12 entry (consumption) | DENY (hard at once; soft after bounded retry, with `retry_after_ms`) |
+| `workspace_mismatch`, `worker_paused`, `worker_not_yet_active`, `not_assigned`, `capability_mismatch`, `mutation_ceiling` | Filter reasons in the `no_worker` ledger event | Step → `no_worker` path |
 
 ---
 

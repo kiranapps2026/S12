@@ -384,12 +384,12 @@ class CapabilityGrant:
 |---|---|---|
 | `skills_prompt` | string | Consumed at S2 (the LLM call). S2 is certified S0–S11, so this key is **inert** until an S0–S11 change is certified. |
 | `rules` | list[string] | Business rules for the worker's LLM behavior; never an authorization input (I-007). |
-| `restricted_capabilities` | list[capability_id] | Narrows the worker's grants; never widens them. Enforced at S12 eligibility in this phase. |
+| `restricted_capabilities` | list[capability_id] | Narrows the worker's grants; never widens them. **Live:** S12 eligibility filter 17b (gate v10 C39). Missing or empty = unrestricted. |
 | `llm_model` | string | Must be in a tenant model allow-list that `TenantPolicy` does not have yet; **inert** until that field exists. Routing stays frozen per execution (DATA_CONTRACTS §42). |
-| `execution_policy` | object | `timeout_seconds` and `max_retries` may only **lower** MUTATION_SAFETY/RELIABILITY limits; never enable retries for IRREVERSIBLE or non-idempotent D. No per-worker circuit-breaker threshold: breakers are per provider. |
+| `execution_policy` | object | **Live:** `max_mutation` (`R`, `W`, `D` or `IRREVERSIBLE`): the worker is ineligible for a step whose frozen `effective_mutation` exceeds it (filter 17d). **Reserved, inert until post-S15:** `timeout_seconds`, `max_retries`, `retry_backoff` — when they land they may only lower MUTATION_SAFETY/RELIABILITY limits and never enable retries for IRREVERSIBLE or non-idempotent D. No per-worker circuit-breaker threshold: breakers are per provider. |
 | `memory_policy`, `browser_policy`, `is_listed`, `listing_config`, `custom_fields` | object | Deferred features (post-S15). Not read in S12–S15. |
 
-**Admin roles.** Worker-management bypasses (pause, activation, assignment) apply to membership role `UserRole.OWNER` or `UserRole.ADMIN` **in the run's workspace**, read live. The spec's `TENANT_ADMIN` / `TENANT_OWNER` do not exist; VOCABULARY_INDEX's `TENANT_ADMIN`/`TENANT_OPERATOR`/`TENANT_VIEWER` must be aligned to `UserRole`.
+**Admin roles.** Worker-management bypasses (worker pause, worker activation, assignment — filters 12b, 13b, 14) apply when **the run's original principal** (`PrincipalChain.original_principal_id`) holds membership role `UserRole.OWNER` or `UserRole.ADMIN` **in the run's workspace**, read live at worker selection (audit round 2 B3). There is no bypass for a tenant or workspace pause. The spec's `TENANT_ADMIN` / `TENANT_OWNER` do not exist; VOCABULARY_INDEX uses `UserRole`.
 
 **Autonomy.** The spec's per-grant `autonomy_level` (F20) is **not** added to `CapabilityGrant`, which is a frozen S0–S11 contract. `AutonomyLevel` (DATA_CONTRACTS §38) stays the only autonomy enum; a per-capability refinement, if added post-S15, is restrict-only (RD-14).
 
@@ -569,7 +569,8 @@ class WorkerAuthorizationContext:
 2. A worker's capabilities are determined by its `CapabilityGrant` records, NOT by the user's grants
 3. `serving_user_id` is for audit and billing — it does NOT expand worker capabilities
 4. If a worker lacks a grant for a capability, the execution is DENIED regardless of the user's grants
-5. **Assignment** (`workers.assigned_user_id`) restricts which `PrincipalChain.original_principal_id` a worker may serve; it never grants a capability. It is checked by the S12 eligibility filter 14 (gate v10 C39), with the admin bypass above.
+5. **Assignment** (`workers.assigned_user_id`) restricts which `PrincipalChain.original_principal_id` a worker may serve; it never grants a capability. S12 eligibility filter 14 (gate v10 C39) applies it only when the original principal is a human user and the run is not EVENT_DRIVEN: event-driven and system runs skip it, and worker-delegated runs keep the human's assignment (audit round 2 B4). The admin bypass above applies.
+5b. **Workspace boundary.** A worker serves only runs in its own workspace (`workers.workspace_id`, filter 4b; audit round 2 B7).
 6. **Sub-agents** (post-S15): a child worker's `capability_profile` and grants are subsets of its parent's, and the PrincipalChain records the parent as `delegating_worker_id`.
 
 > **Worker-management repair (RD-7, RD-13):** rules 5 and 6 added.
@@ -856,7 +857,7 @@ def check_kill_switch(context: AuthorizationContext) -> CheckResult:
     return CheckResult(passed=True)
 ```
 
-> **Worker-management repair (RD-5):** **pause ≠ kill switch.** A pause (`paused_until` on tenant, workspace, group or worker) blocks **new** runs and new leases and never cancels running work (drain semantics). The kill switch stops now: remaining steps are CANCELLED with `kill_switch_engaged` (gate C23). Pause and activation times are compared with database `NOW()` (§11 Rule 1).
+> **Worker-management repair (RD-5; audit round 2 B6):** **pause ≠ kill switch.** A tenant or workspace pause (`paused_until`) is checked at **S0.1** (S0–S11 ruling R-P, before any S1–S11 work) and again at S12 entry, and blocks **new** runs; a worker pause blocks **new** leases. A pause never cancels running work (drain semantics). The kill switch stops now: remaining steps are CANCELLED with `kill_switch_engaged` (gate C23). Pause and activation times are compared with database `NOW()` (§11 Rule 1). Worker groups are post-S15.
 
 ### 8.5 Feature Flags
 
@@ -1169,14 +1170,18 @@ Capability Grant links → Actor ↔ Capability ↔ Scope
 
 | Document | Purpose |
 |----------|---------|
-| [MASTER_ARCHITECTURE.md](../MASTER_ARCHITECTURE.md) | System architecture, layer model |
-| [DATA_CONTRACTS.md](../DATA_CONTRACTS.md) | All data structures including ExecutionContext |
-| [PIPELINE_STAGES.md](../PIPELINE_STAGES.md) | S0 (Entry), S8 (Safety Gate) stages |
-| [RESOLVE_LAYER.md](../RESOLVE_LAYER.md) | FrozenBindingIdentity, capability → kernel → binding |
-| [SECURITY.md](../SECURITY.md) | Authorization, RBAC, fail-closed |
-| [DATABASE.md](../DATABASE.md) | Schema, RLS, migrations |
+| [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) | Master architecture document (I-015); invariants §50 |
+| [DATA_CONTRACTS.md](DATA_CONTRACTS.md) | All data structures including ExecutionContext |
+| [PIPELINE_STAGES.md](PIPELINE_STAGES.md) | S0 (Entry), S8 (Safety Gate) stages |
+| [RESOLVE_LAYER.md](RESOLVE_LAYER.md) | FrozenBindingIdentity, capability → kernel → binding |
+| [SECURITY.md](SECURITY.md) | Authorization, RBAC, fail-closed |
+| [DATABASE.md](DATABASE.md) | Schema, RLS, migrations |
+
+> **Repair (audit round 2 D6):** links pointed to `../` paths and to `MASTER_ARCHITECTURE.md`, which does not exist in this directory; FINAL_ARCHITECTURE.md is the master document.
 
 ## Architecture Invariants
+
+> **Repair (audit round 2 D10):** this table is a copy of FINAL_ARCHITECTURE §50 I-001…I-014; §50 is authoritative and continues to I-029.
 
 These are properties that must hold true at all times. They are the fundamental contracts between components. Any code that violates an invariant is wrong, regardless of intent.
 

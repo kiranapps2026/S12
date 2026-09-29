@@ -46,6 +46,29 @@ This directory contains **only the documents required to build the implementatio
 | `BUILD_READINESS_MATRIX.md` | Closure checklist — every document must be complete before implementation |
 | `COMPONENTS_BLUEPRINT.md` | Directory structure, file ownership, module boundaries |
 
+### S12–S15 Phase (binding for the implementing agent)
+
+| File | Role |
+|------|------|
+| `S12_S15_EXECUTION_GATE.md` (v10) | **Binding** phase-locked instruction: rulings C1–C41, normative sequence, suites, invariants I1–I18 |
+| `S12_S15_IMPLEMENTATION_PLAN.md` (v3) | Milestones M0–M21 (incl. M8a), golden tests, checkpoints |
+| `S12_SESSION0_PREFLIGHT_PROMPT.md` | Session 0 (preflight) prompt for gate v10 |
+| `s0_s11_autopilot/` | S0–S11 certification kit and runbook rulings R-Z, **R-P** (pause at S0.1) |
+| `s12_s15_golden/` | Owner-owned golden-test drafts (vector-code guard) |
+| `SUPERSESSION_AWARE_BLOCKER_REGISTER.md` | Open, decided and deferred items; §18 (v9), §19 (v10 worker management), §20 (memory / RAG) |
+| `REPAIRS_APPLIED.md` | Change log of every documentation repair |
+| `XS-1_REGISTER_ENTRY.md`, `LAYA_DECISION_ADAPTER.md` | Resolved entry (C22) and a deferred design note |
+
+### Design References (not binding in S12–S15)
+
+| File | Role |
+|------|------|
+| `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` (v1.2.1) | Worker-management design and roadmap; gate C39–C41 govern |
+| `WORKER_MGMT_SPEC_REVIEW.md` | Review, owner rulings RD-1…RD-18, audit round 2 and propagation record |
+| `MEMORY_ARCHITECTURE.md` | Worker memory (deferred; repairs pending, register §20) |
+| `ADR-14_VECTOR_MEMORY_BACKEND.md` | Draft ADR: vector backend and memory tenant isolation (decision required) |
+| `ADAPTABILITY_PRINCIPLES.md` | Rationale for FINAL_ARCHITECTURE §37a |
+
 ### Traceability
 
 | File | Role |
@@ -95,3 +118,8 @@ When reading these documents for implementation, follow this order:
 16. VALIDATION.md (tests)
 17. BUILD_READINESS_MATRIX.md (closure checklist)
 18. REFAUDIT.md (reconciliation history)
+19. S12_S15_EXECUTION_GATE.md, S12_S15_IMPLEMENTATION_PLAN.md (the phase in progress)
+20. SUPERSESSION_AWARE_BLOCKER_REGISTER.md (open items)
+21. Design references above, when working on their area
+
+> **Repair (audit round 2 D2):** the document tables and this order did not list the phase gate, the plan, the register, the spec, the review, ADR-14, MEMORY_ARCHITECTURE or the golden-test drafts.

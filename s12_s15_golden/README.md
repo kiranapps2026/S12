@@ -10,8 +10,11 @@ there, pins them, and the coding agent never edits them.
 
 The guard reads files with `ast`/regex only and imports no project code. It finds the
 repository root from `S12_REPO_ROOT`, or four levels above the file. Its self-tests
-prove each violation kind is caught (18 cases) and that clean code, relative imports of
-local modules named `lance`, docstrings, and virtual-environment directories pass.
+prove each violation kind is caught (22 cases, including `scripts/`, top-level files and
+nested `pyproject.toml`), that clean code, relative imports of local modules named `lance`,
+docstrings and virtual-environment directories pass, and that the guard never flags its
+own sabotage data once installed (audit round 2 C7: the first draft did, because it
+scanned `tests/` for SQL).
 ## Deletion contract — no permanent block
 
 **When MR-1 is decided, delete this guard file and the gate §1 entry in the same change.**

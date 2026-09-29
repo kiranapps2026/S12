@@ -1,6 +1,6 @@
 # Worker Management & Evolution Specification
 
-**Version**: 1.2.0
+**Version**: 1.2.1 (audit round 2, 2026-09-29: pause at S0.1 via S0–S11 ruling R-P; no per-step pause or quota check; tenant/workspace-level quotas only; eligibility filters 4b and 17a–d; see `WORKER_MGMT_SPEC_REVIEW.md` Part G)
 **Status**: REFERENCE — propagated. The binding text is `S12_S15_EXECUTION_GATE.md` v10 (C39–C41) and the master documents listed in §5. Where this document and a master document differ, the master document wins.
 **Date**: 2026-09-29
 **Purpose**: Consolidated reference for worker-level features, their phase, and their evolution path.
@@ -63,9 +63,9 @@ v1.1.0 was reviewed in `WORKER_MGMT_SPEC_REVIEW.md` (Parts A–F). Rulings RD-1�
 | F1 | Worker config store `workers.settings` JSONB | DATABASE workers; IDENTITY §5 contract | S12–S15 (read by S12 only; restrict-only) |
 | F2 | Worker pause `workers.paused_until` | Eligibility filter 12b | S12–S15 |
 | F3 | Scheduled activation `workers.scheduled_activation_at` | Eligibility filter 13b | S12–S15 |
-| F4 | Tenant/workspace pause and activation (typed columns) | Admission gates 12a, 13a (S12 entry) | S12–S15 |
+| F4 | Tenant/workspace pause and activation (typed columns) | S0.1 check (S0–S11 ruling R-P) + S12-entry safety net | S12–S15 (R-P lands in S0–S11) |
 | F5 | Employee assignment `workers.assigned_user_id` | Eligibility filter 14 | S12–S15 |
-| F6 | Operation quota `operation_quotas` | Gate 16 precheck + consumption at durable admission | S12–S15 (hard + soft) |
+| F6 | Operation quota `operation_quotas` | Consumed once per run at durable admission; no per-step check | S12–S15 (tenant/workspace levels; hard + soft) |
 | F8 | Runtime/capability match | Eligibility filter 17 on `runtime_type` and `capability_profile` | S12–S15 |
 
 ### Moved out of P0
@@ -83,11 +83,11 @@ v1.1.0 was reviewed in `WORKER_MGMT_SPEC_REVIEW.md` (Parts A–F). Rulings RD-1�
 |----|---------|--------|
 | F10 | Worker config versioning | Reuse `ConfigurationVersion` (DATA_CONTRACTS §48); record the version on each leased step; changes affect new leases only (I-017) |
 | F11 | Worker execution analytics | Read-side aggregation of the ledger |
-| F12 | Capability deny-list `settings.restricted_capabilities` | Capability IDs; restrict-only; S12 eligibility now, S8 enforcement needs S0–S11 change control |
+| F12 | Capability deny-list `settings.restricted_capabilities` | Capability IDs; restrict-only; S12 eligibility filter 17b now (in phase), S8 enforcement needs S0–S11 change control |
 | F13 | Dry-run | A sandbox connection/binding resolved at S5 (mock adapter); no `ExecutionContext` flag (I-009) |
 | F14 | Model selection | `RuntimeRoutingDecision` (DATA_CONTRACTS §42) at S7, frozen per execution; needs a tenant model allow-list in `TenantPolicy` |
 | F15 | Worker state-change webhooks | Secret reference via `CredentialProvider`; outbox dispatch (I-020); SSRF validation |
-| F16 | Per-worker `execution_policy` | May only lower retry ceilings and timeouts; no per-worker breaker threshold |
+| F16 | Per-worker `execution_policy` | `max_mutation` live now (filter 17d); `max_retries`, `timeout_seconds`, `retry_backoff` reserved (may only lower limits when they land); no per-worker breaker threshold |
 | F17 | Worker groups | `worker_groups` + members; group pause in filter 12b |
 | F18 | L2 session memory | Needs `MemoryWriteBarrier` (I-014) first |
 | F19 | Heterogeneous workers | `runtime_type` selects routing, binding family and eligibility; never skips a stage (§6.5) |
@@ -187,41 +187,40 @@ Each lands with `tenant_id TEXT NOT NULL` + RLS and `TEXT` keys.
 
 Binding text: gate v10 C39; WORKER_LIFECYCLE §10, §13, §16.
 
-### 3.1 Why two phases
+### 3.1 Where each check runs
 
-Admission runs before a worker is selected (gate §8 steps 1 → 2). Checks that need no worker belong in admission; checks about a particular worker must filter the candidates during selection.
+Admission runs before a worker is selected (gate §8 steps 1 → 2), and the run row is created only at S12 entry (§7.2). So: checks about the tenant or workspace run as **entry checks**; checks about a particular worker **filter the candidates** during selection; quota is **charged once** when the run row is created. Per-step admission (gates 1–11) is unchanged.
 
-### 3.2 Phase 1 — admission (stateless; at S12 entry and before every step)
+### 3.2 Entry checks
 
-| Gate | Check | Outcome |
+| Check | Where | Outcome |
 |------|-------|---------|
-| 1–6 | Existing (kill switch, tenant quota, tenant active, workspace active, mode, provider) | Existing |
-| 12a | Tenant or workspace `paused_until > NOW()` | DENY at S12 entry `tenant_paused` / `workspace_paused` |
-| 13a | Tenant or workspace `scheduled_activation_at > NOW()` | DENY at S12 entry `not_yet_active` |
-| 16 | Operation quota precheck (read-only) | Hard → REJECT `quota_exhausted`; soft → QUEUE |
-| 8–11 | Existing (provider circuit, DB pool, budget, system load) | Existing |
-| 7 | Worker capacity | QUEUE (last, so it never masks a REJECT) |
+| Tenant/workspace `paused_until > NOW()` | **S0.1** (S0–S11 ruling R-P), primary; S12 entry (§7.1 item 7), safety net | DENY `tenant_paused` / `workspace_paused`; nothing written; no S1–S11 work when caught at S0.1 |
+| Tenant/workspace `scheduled_activation_at > NOW()` | S0.1; S12 entry | DENY `not_yet_active` |
+| Operation quota | S12 entry, inside the §7.2 transaction | Charged once per run (§3.5); hard → DENY; soft → bounded retry, then DENY with `retry_after_ms` |
 
-Evaluation order: 1–6, 12a, 13a, 16, 8–11, 7. Gate numbers are unchanged (C30 maps by number).
+No pause, activation or quota check runs per step (audit A1, A2): a per-step pause check would cancel running work, and a per-step quota check would count the run's own consumption and cancel admitted runs. Entry denials are logged, not ledger events.
 
-### 3.3 Phase 2 — worker-eligibility filters (pure; gate §8 step 2, before locality scoring)
+### 3.3 Worker-eligibility filters (pure; gate §8 step 2, before locality scoring)
 
-| Filter | Removes a candidate when | Filter reason |
-|--------|--------------------------|---------------|
-| 12b | Worker or any of its groups: `paused_until > NOW()` | `worker_paused` |
-| 13b | Worker `scheduled_activation_at > NOW()` | `worker_not_yet_active` |
-| 14 | `assigned_user_id` set and ≠ `PrincipalChain.original_principal_id` | `not_assigned` |
-| 17 | `runtime_type` cannot run the step's frozen binding, or the capability is not in `capability_profile` | `capability_mismatch` |
+| Filter | Removes a candidate when | Filter reason | Admin bypass |
+|--------|--------------------------|---------------|---|
+| 4b | `workers.workspace_id` ≠ the run's workspace, or NULL (legacy row) | `workspace_mismatch` | No |
+| 12b | `workers.paused_until > NOW()` (worker groups: post-S15, not evaluated) | `worker_paused` | Yes |
+| 13b | `workers.scheduled_activation_at > NOW()` | `worker_not_yet_active` | Yes |
+| 14 | Only for runs whose original principal is a human user and that are not EVENT_DRIVEN: `assigned_user_id` set and ≠ `PrincipalChain.original_principal_id` | `not_assigned` | Yes |
+| 17a–c | Step capability not in `capability_profile`; or in `settings.restricted_capabilities`; or the binding's `required_runtime_types` is non-empty and lacks `runtime_type` | `capability_mismatch` | No |
+| 17d | `settings.execution_policy.max_mutation` set and below the step's frozen `effective_mutation` | `mutation_ceiling` | No |
 
-Bypass for 12b, 13b and 14: membership role `owner` or `admin` in the run's workspace, read live and audited. No candidate left → the step ends `no_worker`, with every filter reason in the ledger event.
+Admin bypass: the run's original principal holds membership role `owner` or `admin` in the run's workspace, read live at selection, audited. No candidate left → the step ends `no_worker`, with every filter reason in the ledger event.
 
 ### 3.4 Pause semantics
 
-Pause and activation block **new** runs (12a, 13a) and **new** leases (12b, 13b). A pause never cancels a running step or a held lease. The kill switch (C23) is the hard stop.
+Pause and activation block **new** runs (S0.1, S12 entry) and **new** leases (12b, 13b). A pause never cancels a running step or a held lease. The kill switch (C23) is the hard stop. Unpausing takes effect for the next submission.
 
 ### 3.5 Quota consumption
 
-Once per run, in the durable-admission transaction (gate §7.2), after the `(tenant_id, request_id)` duplicate check; every applicable level in the order tenant → workspace → worker; `UPDATE … AND used_count < limit_value RETURNING …`; zero rows at any level rolls back (hard → DENY, soft → QUEUE with upgrade text in `detail`). Refund only when the run ends CANCELLED with no step COMPLETED. Invariant I17: `used_count ≤ limit_value` for every hard quota.
+Tenant- and workspace-level quotas only in this phase (`worker_id` must be NULL: the worker is chosen per step, after entry). Once per run, in the durable-admission transaction (gate §7.2), after the `(tenant_id, request_id)` duplicate check; levels in the order tenant → workspace; `UPDATE … AND used_count < limit_value RETURNING …`; zero rows at any level rolls back (hard → DENY; soft → bounded retry, then DENY with `retry_after_ms` and upgrade text). Refund only when the run ends CANCELLED with no step COMPLETED. Invariant I17: `CHECK (used_count <= limit_value)` on every row, so lowering a limit below current usage is rejected; a lower limit goes on the next period's row.
 
 ### 3.6 Spawning check (post-S15)
 
@@ -392,7 +391,7 @@ Build vs integrate: Playwright (self-hosted engine); session management, orchest
 
 ## 9. S0–S11 Protection List
 
-None of the following may change for worker management. A feature that needs one waits for gate §19.3 change control and re-certification.
+None of the following may change for worker management. A feature that needs one waits for gate §19.3 change control and re-certification. **One approved exception:** S0–S11 ruling R-P adds a read-only tenant/workspace pause check to the S0 handler (S0.1), with re-certification before S12 starts; it adds no stage, `StageStatus` or contract field.
 
 | Certified artifact | Why it matters here | Affected feature (status) |
 |---|---|---|
@@ -415,7 +414,8 @@ None of the following may change for worker management. A feature that needs one
 |---|---|---|
 | 1 | Owner rulings RD-1…RD-18 | Done 2026-09-29 |
 | 2 | Documents propagated (§5) | Done 2026-09-29 |
-| 3 | Session 0 preflight on gate v10 (items 1–16, P1–P6), incl. key types and worker tables | Plan M0 |
+| 2a | S0–S11 ruling R-P (pause at S0.1) implemented and S0–S11 re-certified | S0–S11 runbook; gate preflight item 17 |
+| 3 | Session 0 preflight on gate v10 (items 1–17, P1–P6), incl. key types and worker tables | Plan M0 |
 | 4 | Migration 018 with the rest of the S12–S15 schema | Plan M1 |
 | 5 | Leases, fencing, admission, selection | Plan M7, M8 |
 | 6 | Worker-management admission, eligibility filters, quota consumption (suite 20, I17, I18) | Plan **M8a** |
@@ -427,32 +427,28 @@ None of the following may change for worker management. A feature that needs one
 
 ## Appendix A: Timestamp and Quota Precedence
 
-### Pause (12a in admission, 12b in eligibility)
+### Pause and activation
+
+Each level is compared with database `NOW()` on its own; NULL means "not paused" / "already active":
 
 ```
-effective_paused_until = GREATEST(tenant.paused_until, workspace.paused_until,
-                                  every group of the worker .paused_until, worker.paused_until)
--- NULLs ignored (GREATEST in PostgreSQL skips NULL); all NULL → not paused
-IF effective_paused_until > NOW()  → blocked (new work only)
+S0.1 and S12 entry:  tenant.paused_until > NOW()  OR workspace.paused_until > NOW()        → DENY *_paused
+                     tenant.scheduled_activation_at > NOW() OR workspace.… > NOW()          → DENY not_yet_active
+Worker selection:    worker.paused_until > NOW()                                            → filter 12b
+                     worker.scheduled_activation_at > NOW()                                 → filter 13b
 ```
 
-Tenant and workspace values are decided at S12 entry (12a); group and worker values in eligibility (12b).
-
-### Activation (13a, 13b)
-
-```
-effective_activation_at = GREATEST(tenant, workspace, every group of the worker, worker)
-IF effective_activation_at > NOW() → blocked (new work only)
-```
+Worker groups are post-S15. When they land, a worker in several groups is paused if any of its groups is.
 
 ### Operation quota (16)
 
 ```
-FOR each applicable level IN (tenant, workspace, worker):   -- this order, one transaction
+FOR each applicable level IN (tenant, workspace):   -- this order, one transaction, at S12 entry only
     UPDATE ... SET used_count = used_count + 1
      WHERE ... AND used_count < limit_value RETURNING ...
-    IF 0 rows → ROLLBACK; hard → DENY quota_exhausted; soft → QUEUE
+    IF 0 rows → ROLLBACK; hard → DENY quota_exhausted; soft → retry up to quota_retry_max, then DENY with retry_after_ms
 No row at any level → no quota configured → PASS
+No per-step check.
 ```
 
 A level blocks when its own `used_count >= limit_value`; there is no single `MIN()` limit compared with one counter.
@@ -470,9 +466,10 @@ Master copy: IDENTITY_AND_TENANCY §5. All keys optional; restrict-only.
     "restricted_capabilities": ["capability_id — narrows grants"],
     "llm_model": "string — inert until TenantPolicy has a model allow-list",
     "execution_policy": {
-        "timeout_seconds": "integer — may only shorten",
-        "max_retries": "integer — may only lower (MUTATION_SAFETY §3 worker_policy_ceiling)",
-        "retry_backoff": "'exponential' | 'linear' | 'fixed'"
+        "max_mutation": "'R' | 'W' | 'D' | 'IRREVERSIBLE' — LIVE: worker ineligible above this level (filter 17d)",
+        "timeout_seconds": "integer — RESERVED (post-S15); may only shorten",
+        "max_retries": "integer — RESERVED (post-S15); may only lower (MUTATION_SAFETY §3 worker_policy_ceiling)",
+        "retry_backoff": "'exponential' | 'linear' | 'fixed' — RESERVED (post-S15)"
     },
     "memory_policy": {"session_ttl_hours": "integer", "compaction_strategy": "string", "max_session_memories": "integer"},
     "browser_policy": {"headless": "boolean", "viewport_width": "integer", "viewport_height": "integer",
@@ -496,17 +493,18 @@ Removed from v1.1.0: `execution_policy.circuit_breaker_threshold` (breakers are 
 | 2 Tenant quota | Admission | Every step | Yes | No | No | REJECT |
 | 3 Tenant active | Admission | Every step | Yes | No | No | CANCELLED `authorization_revoked` (C23) |
 | 4–6 | Admission | Every step | Yes | No | No | REJECT |
-| 12a Tenant/workspace paused | Admission | S12 entry | Yes | No | No | DENY, nothing written |
-| 13a Tenant/workspace not yet active | Admission | S12 entry | Yes | No | No | DENY, nothing written |
-| 16 Quota precheck | Admission | Every step | Yes | No | No | REJECT (hard) / QUEUE (soft) |
+| Tenant/workspace paused | Entry check | S0.1 (R-P) + S12 entry | Yes | No | No | DENY, nothing written, logged |
+| Tenant/workspace not yet active | Entry check | S0.1 (R-P) + S12 entry | Yes | No | No | DENY, nothing written, logged |
 | 8–9, 11 | Admission | Every step | Yes | No | No | REJECT |
 | 10 Budget | Admission | Every step | Yes | No | No | CANCELLED `budget_exhausted` (C15) |
 | 7 Capacity | Admission (last) | Every step | Yes | No | No | QUEUE |
-| 12b Worker/group paused | Eligibility | Selection | Yes | No | Yes | Candidate removed |
+| 4b Workspace match | Eligibility | Selection | Yes | No | No | Candidate removed |
+| 12b Worker paused | Eligibility | Selection | Yes | No | Yes | Candidate removed |
 | 13b Worker not yet active | Eligibility | Selection | Yes | No | Yes | Candidate removed |
-| 14 Assignment | Eligibility | Selection | Yes | No | Yes | Candidate removed |
-| 17 Runtime/capability match | Eligibility | Selection | Yes | No | No | Candidate removed |
-| Quota consumption | Durable admission | Once per run | No (writes) | Yes (count) | No | DENY / QUEUE |
+| 14 Assignment (human, non-event runs) | Eligibility | Selection | Yes | No | Yes | Candidate removed |
+| 17a–c Capability / restricted / runtime match | Eligibility | Selection | Yes | No | No | Candidate removed |
+| 17d Mutation ceiling | Eligibility | Selection | Yes | No | No | Candidate removed |
+| Quota consumption | Durable admission (S12 entry) | Once per run | No (writes) | Yes (count) | No | DENY (soft: after bounded retry) |
 
 No candidate after eligibility → step `no_worker` with the filter reasons in the ledger.
 
