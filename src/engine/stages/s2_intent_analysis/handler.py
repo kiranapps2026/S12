@@ -11,12 +11,17 @@ Owner: S2 / Intent Analysis
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from contracts.pipeline_state import PipelineState
 from contracts.errors import SuprAgentsError
 from contracts.stage_outputs import IntentResult
-from contracts.stage_registry import StageOutcome
+from contracts.stage_registry import StageStatus
+
+#: intent_type values that end the run at S2 (vocabulary pending an owner ruling id).
+INTENT_UNKNOWN = "unknown"
+INTENT_PROHIBITED = "prohibited"
 
 logger = logging.getLogger(__name__)
 
@@ -115,4 +120,10 @@ async def handle(state: PipelineState, llm: LLMProvider) -> PipelineState:
     if result is None:
         raise IntentAnalysisError("Intent analysis returned no result")
 
-    return state.with_stage_output("S2", result)
+    state = state.replace_context("S2", task_id=str(uuid.uuid4()))  # R-M
+    state = state.with_stage_output("S2", result)
+    if result.intent_type == INTENT_PROHIBITED:
+        return state.with_status(StageStatus.DENY, "intent_prohibited")
+    if result.intent_type == INTENT_UNKNOWN:
+        return state.with_status(StageStatus.CLARIFY, "intent_unclear")
+    return state

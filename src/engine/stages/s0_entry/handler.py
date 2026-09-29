@@ -20,12 +20,17 @@ import uuid
 
 from contracts.pipeline_state import PipelineState
 from contracts.execution_context import ExecutionContext
+from contracts.stage_registry import StageStatus
 
 logger = logging.getLogger(__name__)
 
 
 class EntryRequest:
-    """Incoming request at the entry point."""
+    """Incoming request at the entry point.
+
+    Identity fields (tenant_id, workspace_id, user_id) come from the authenticated
+    transport (API key / session), never from the payload.
+    """
     def __init__(
         self,
         raw_payload: dict,
@@ -35,6 +40,11 @@ class EntryRequest:
         connection_id: str | None = None,
         user_id: str | None = None,
         request_id: str | None = None,
+        workspace_id: str | None = None,
+        membership_id: str = "",
+        idempotency_key: str = "",
+        resource_scope: str = "",
+        tags: frozenset = frozenset(),
     ):
         self.raw_payload = raw_payload
         self.entry_channel = entry_channel
@@ -43,17 +53,30 @@ class EntryRequest:
         self.connection_id = connection_id
         self.user_id = user_id
         self.request_id = request_id
+        self.workspace_id = workspace_id
+        self.membership_id = membership_id
+        self.idempotency_key = idempotency_key
+        self.resource_scope = resource_scope
+        self.tags = tags
 
 
-async def handle(entry: EntryRequest) -> ExecutionContext:
+#: Identity values S0 must find on the entry request; absent -> DENY missing_<field>.
+_REQUIRED_IDENTITY = ("tenant_id", "workspace_id", "user_id")
+
+
+async def handle(entry: EntryRequest) -> PipelineState:
     """
     S0 handler: parse entry request, create ExecutionContext.
 
-    This is the ONLY place ExecutionContext is created.
-    After this, ExecutionContext is frozen — never mutated again.
-
-    Returns a NEW ExecutionContext instance.
+    This is the ONLY place ExecutionContext is created. Nothing is defaulted: a missing
+    tenant, workspace or user is a DENY (`missing_<field>`) and no context is created.
     """
+    for name in _REQUIRED_IDENTITY:
+        if not getattr(entry, name, None):
+            logger.warning("S0: DENY missing_%s", name)
+            return PipelineState(entry_request=entry).with_status(
+                StageStatus.DENY, f"missing_{name}")
+
     request_id = entry.request_id or str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
 
@@ -61,10 +84,14 @@ async def handle(entry: EntryRequest) -> ExecutionContext:
         trace_id=trace_id,
         request_id=request_id,
         tenant_id=entry.tenant_id,
-        workspace_id=entry.tenant_id,
-        user_id=entry.user_id or "system",
+        workspace_id=entry.workspace_id,
+        user_id=entry.user_id,
+        membership_id=entry.membership_id,
         conversation_id=entry.conversation_id,
         connection_id=entry.connection_id,
+        idempotency_key=entry.idempotency_key,
+        resource_scope=entry.resource_scope,
+        tags=frozenset(entry.tags),
     )
 
     logger.info(
@@ -72,9 +99,8 @@ async def handle(entry: EntryRequest) -> ExecutionContext:
         trace_id, request_id, entry.entry_channel,
     )
 
-    state = PipelineState(
+    return PipelineState(
         execution_context=context,
         entry_request=entry,
+        stage_status=StageStatus.NORMAL,
     )
-
-    return state

@@ -68,6 +68,7 @@ def _create_entry_request(
         raw_payload={"message": "test"},
         entry_channel="api",
         tenant_id=tenant_id,
+        workspace_id="ws-1",
         conversation_id=conversation_id,
         connection_id=connection_id,
         user_id=user_id,

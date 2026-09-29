@@ -43,6 +43,7 @@ class TestS0EntryParse:
             entry_channel="api",
             tenant_id="tenant-001",
             user_id="user-001",
+            workspace_id="ws-001",
             conversation_id="conv-001",
             connection_id="conn-001",
         )
@@ -84,13 +85,15 @@ class TestS0EntryParse:
 
         assert state.execution_context.conversation_id == "conv-001"
 
-    def test_defaults_user_id(self):
-        """S0 defaults user_id to 'system' if not provided."""
-        entry = EntryRequest(
-            raw_payload={"message": "hello"},
-            entry_channel="api",
-            tenant_id="tenant-001",
-        )
-        state = asyncio.run(s0_handle(entry))
+    def test_identity_comes_from_entry_not_defaults(self, entry_request):
+        """workspace_id is its own value, never the tenant_id (A5)."""
+        ctx = asyncio.run(s0_handle(entry_request)).execution_context
+        assert (ctx.tenant_id, ctx.workspace_id) == ("tenant-001", "ws-001")
 
-        assert state.execution_context.user_id == "system"
+    @pytest.mark.parametrize("missing", ["tenant_id", "workspace_id", "user_id"])
+    def test_missing_identity_denies(self, entry_request, missing):
+        """A missing identity value is a DENY missing_<field>; no context is created."""
+        setattr(entry_request, missing, None)
+        state = asyncio.run(s0_handle(entry_request))
+        assert state.execution_context is None
+        assert (str(state.stage_status).lower(), state.deny_reason) == ("deny", f"missing_{missing}")

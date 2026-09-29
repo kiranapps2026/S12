@@ -36,6 +36,7 @@ def run_through(
         raw_payload=request,
         entry_channel=request.get("entry_channel", "api"),
         tenant_id=request.get("tenant_id", "tenant-1"),
+        workspace_id=request.get("workspace_id", "ws-1"),
         user_id=request.get("user_id", "user-1"),
         conversation_id=request.get("conversation_id"),
         connection_id=request.get("connection_id"),

@@ -82,7 +82,7 @@ class TestCommitD_HandlerMigration:
             # S0 creates ExecutionContext from EntryRequest — special case
             if stage == "s0_entry":
                 assert "entry: EntryRequest" in text, f"{stage} handler doesn't accept EntryRequest"
-                assert "-> ExecutionContext" in text, f"{stage} handler should return ExecutionContext"
+                assert "-> PipelineState" in text, f"{stage} handler should return PipelineState"
             else:
                 assert "state: PipelineState" in text, f"{stage} handler doesn't accept PipelineState"
                 assert "-> PipelineState" in text, f"{stage} handler doesn't return PipelineState"

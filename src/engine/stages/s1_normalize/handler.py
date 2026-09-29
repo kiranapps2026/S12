@@ -13,7 +13,7 @@ import time
 
 from contracts.pipeline_state import PipelineState
 from contracts.data_sanitizer import DataSanitizer, Severity
-from contracts.stage_registry import StageOutcome
+from contracts.stage_registry import StageStatus
 from contracts.stage_outputs import NormalizedInput
 
 logger = logging.getLogger(__name__)
@@ -96,8 +96,7 @@ async def handle(state: PipelineState) -> PipelineState:
     has_critical = "prompt_injection" in patterns_found
 
     if has_critical:
-        # Set flag on NormalizedInput — pipeline runner checks S8 for cordon decisions
-        logger.warning("S1: critical injection detected — flagged in NormalizedInput")
+        logger.warning("S1: critical injection detected — DENY")
 
     normalized = NormalizedInput(
         sanitized_input=sanitized,
@@ -112,4 +111,7 @@ async def handle(state: PipelineState) -> PipelineState:
         patterns_found, any_modified, has_critical,
     )
 
-    return state.with_stage_output("S1", normalized)
+    state = state.with_stage_output("S1", normalized)
+    if has_critical:
+        return state.with_status(StageStatus.DENY, "injection_detected")
+    return state
