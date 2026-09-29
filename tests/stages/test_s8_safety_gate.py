@@ -10,6 +10,7 @@ Source: DATA_CONTRACTS §8, PIPELINE_STAGES §10
 from __future__ import annotations
 
 import asyncio
+import uuid
 import dataclasses
 import time
 import pytest
@@ -554,7 +555,7 @@ class TestContextReplacement:
         assert new_ctx is not None
         assert new_ctx.auth_passed is True
         assert new_ctx.auth_result_id is not None
-        assert new_ctx.auth_result_id.startswith("auth-")
+        uuid.UUID(new_ctx.auth_result_id)  # R-M: a new UUID
 
     def test_s8_deny_leaves_context_unchanged(self):
         """On DENY, execution_context is identical (no replacement)."""

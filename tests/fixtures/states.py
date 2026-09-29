@@ -159,92 +159,82 @@ class _ScenarioDrivenLLM:
 # Public API
 # ---------------------------------------------------------------------------
 
+_S8_KILL_SWITCH_OFF = None  # deps are built per call; see _s8_deps
+
+
+def _s8_deps():
+    from tests.fixtures.deps import make_s8_deps
+    return make_s8_deps(kill_switch=False)
+
+
+def _policy(scenario: Scenario):
+    from contracts.kernel_policy import KernelPolicy
+    return KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=scenario.risk_deny_threshold)
+
+
+def _stage_runners(scenario: Scenario):
+    """stage_id -> callable(state) running the REAL production handler."""
+    from engine.stages.s3_capability_discovery.handler import handle as s3
+    from engine.stages.s4_graph_classification.handler import handle as s4
+    from engine.stages.s5_provider_resolution.handler import handle as s5
+    from engine.stages.s6_task_profile_assembly.handler import handle as s6
+    from engine.stages.s7_path_decision.handler import handle as s7
+    from engine.stages.s8_safety_gate.handler import handle as s8
+    from engine.stages.s9_plan_creation.handler import handle as s9
+    from engine.stages.s10_confirmation.handler import handle as s10
+    from engine.stages.s11_plan_validation.handler import handle as s11
+    return {
+        "S3": lambda st: s3(st),
+        "S4": lambda st: s4(st),
+        "S5": lambda st: s5(st),
+        "S6": lambda st: s6(st),
+        "S7": lambda st: s7(st, policy=_policy(scenario)),
+        "S8": lambda st: s8(st, _s8_deps()),
+        "S9": lambda st: s9(st),
+        "S10": lambda st: s10(st, scenario.confirmation_store),
+        "S11": lambda st: s11(st),
+    }
+
+
 def state_ready_for(stage_id: str, scenario: Scenario) -> PipelineState:
-    """Run real handlers S0..stage-1, then return the PipelineState.
+    """Run real handlers S0..stage-1 and return the state as `stage_id` receives it.
 
-    Scenario configures: mock LLM output, capability metadata (mutation, cost,
-    risk components), step count, graph shape.
-    Real handlers produce every output. No dataclasses.replace for outputs.
+    A stage that stops the run (deny / clarify / error) makes the request unable to reach
+    `stage_id`; that is reported with the stage and reason instead of continuing. The one
+    exception is S10's "confirmation_required" pause, which S11 tests build on.
     """
+    from contracts.stage_registry import StageStatus
+
     target_idx = PRE_EXECUTION_SEQUENCE.index(stage_id)
-
-    # S0->S1->S2: mock LLM produces scenario-configured IntentResult (with candidates + steps)
     state = _run_s0_s2(scenario)
-
-    # S3: real handler produces CapabilityMatch from candidates in IntentResult.parameters
-    if target_idx > 3:
-        from engine.stages.s3_capability_discovery.handler import handle as s3_handle
-        state = asyncio.run(s3_handle(state))
-
-    # S4: real handler derives graph from intent.parameters["steps"] and is_workflow
-    if target_idx > 4:
-        from engine.stages.s4_graph_classification.handler import handle as s4_handle
-        state = asyncio.run(s4_handle(state))
-
-    # S5: real handler produces FrozenBindingIdentity
-    if target_idx > 5:
-        from engine.stages.s5_provider_resolution.handler import handle as s5_handle
-        state = asyncio.run(s5_handle(state))
-
-    # S6: real handler produces TaskProfile
-    if target_idx > 6:
-        from engine.stages.s6_task_profile_assembly.handler import handle as s6_handle
-        state = asyncio.run(s6_handle(state))
-
-    # S7: real handler produces PathDecision
-    if target_idx > 7:
-        from engine.stages.s7_path_decision.handler import handle as s7_handle
-        from contracts.kernel_policy import KernelPolicy
-        threshold = scenario.risk_deny_threshold
-        policy = KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=threshold)
-        state = asyncio.run(s7_handle(state, policy=policy))
-
-    # S8: real handler produces SafetyResult
-    if target_idx > 8:
-        from engine.stages.s8_safety_gate.handler import handle as s8_handle
-        from tests.fixtures.deps import make_s8_deps
-        s8_deps = make_s8_deps(kill_switch=False)
-        state = asyncio.run(s8_handle(state, s8_deps))
-
-    # S9: real handler produces PlanCreationResult
-    if target_idx > 9:
-        from engine.stages.s9_plan_creation.handler import handle as s9_handle
-        state = asyncio.run(s9_handle(state))
-
-    # S10: real handler produces Confirmation
-    if target_idx > 10:
-        from engine.stages.s10_confirmation.handler import handle as s10_handle
-        state = asyncio.run(s10_handle(state))
-
-    # S11: real handler produces ExecutionManifest + ValidationResult
-    if target_idx >= 11:
-        from engine.stages.s11_plan_validation.handler import handle as s11_handle
-        state = asyncio.run(s11_handle(state))
-
+    runners = _stage_runners(scenario)
+    for sid in PRE_EXECUTION_SEQUENCE[3:target_idx]:
+        state = asyncio.run(runners[sid](state))
+        paused = sid == "S10" and state.deny_reason == "confirmation_required"
+        if state.stage_status is not StageStatus.NORMAL and not paused:
+            raise AssertionError(
+                f"state_ready_for({stage_id}): {sid} stopped the run: "
+                f"{state.stage_status} / {state.deny_reason}")
     return state
 
 
 def run_stage(stage_id: str, state: PipelineState, scenario: Scenario) -> PipelineState:
-    """Run the REAL production handler for stage_id. No fabrication."""
-    stage = stage_id.upper()
+    """Run the REAL production handler for stage_id. No fabrication.
 
-    if stage == "S6":
-        from engine.stages.s6_task_profile_assembly.handler import handle as s6_handle
-        return asyncio.run(s6_handle(state))
-
-    elif stage == "S7":
-        from engine.stages.s7_path_decision.handler import handle as s7_handle
-        from contracts.kernel_policy import KernelPolicy
-        threshold = scenario.risk_deny_threshold
-        policy = KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=threshold)
-        return asyncio.run(s7_handle(state, policy=policy))
-
-    elif stage == "S9":
-        from engine.stages.s9_plan_creation.handler import handle as s9_handle
-        return asyncio.run(s9_handle(state))
-
-    else:
+    The returned PipelineState carries `stage_status` and `deny_reason`.
+    """
+    runners = _stage_runners(scenario)
+    sid = stage_id.upper()
+    if sid not in runners:
         raise ValueError(f"run_stage: unsupported stage_id '{stage_id}'")
+    return asyncio.run(runners[sid](state))
+
+
+def consume(scenario: Scenario, confirmation_id: str, *, user_id: str, plan_hash: str,
+            now: float) -> str:
+    """Call the production store's conditional consume; returns its result code."""
+    return scenario.confirmation_store.consume(
+        confirmation_id, user_id=user_id, plan_hash=plan_hash, now=now)
 
 
 def tamper(state: PipelineState, **fields) -> PipelineState:

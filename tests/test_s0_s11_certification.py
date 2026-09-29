@@ -240,16 +240,15 @@ class TestDataFlowInvariants:
 
     def test_confirmation_plan_hash_integrity(self):
         """confirmation.plan_hash == plan_result.plan_hash (S9→S10 integrity)."""
-        # Build a minimal pipeline via real handlers
-        state = state_ready_for("S10", make_scenario(mutation="R", risk=0.3, steps=1))
+        from tests.fixtures.states import run_stage
+        sc = make_scenario(mutation="D", risk=0.9, steps=2, graph="chain", confidence=0.8)
+        state = state_ready_for("S10", sc)
         assert state.safety_result.allowed, f"S8 denied: {state.safety_result.reason}"
-        s9 = asyncio.run(s9_handle(state))
-        plan_result = s9.plan
+        plan_result = state.plan
         assert plan_result is not None
-        assert plan_result.plan_hash is not None
-        s10 = asyncio.run(s10_handle(s9))
-        conf = s10.confirmation
-        assert conf is not None
+        s10 = run_stage("S10", state, sc)
+        assert s10.confirmation.required is True
+        conf = s10.confirmation.confirmation
         assert conf.plan_hash == plan_result.plan_hash, (
             f"S10 confirmation plan_hash ({conf.plan_hash}) != "
             f"S9 plan_hash ({plan_result.plan_hash})"

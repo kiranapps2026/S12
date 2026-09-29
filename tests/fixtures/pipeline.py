@@ -80,14 +80,14 @@ def run_through(
     # S7: Path Decision
     if target_idx >= 7:
         from engine.stages.s7_path_decision.handler import handle as s7_handle
-        state = asyncio.run(s7_handle(state))
+        from contracts.kernel_policy import KernelPolicy
+        policy = KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=0.95)
+        state = asyncio.run(s7_handle(state, policy=policy))
 
     # S8: Safety Gate (needs deps)
     if target_idx >= 8:
         from engine.stages.s8_safety_gate.handler import handle as s8_handle
-        from contracts.kernel_policy import KernelPolicy
         from tests.fixtures.deps import make_s8_deps
-        policy = KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=0.95)
         s8_deps = deps if deps is not None else make_s8_deps(kill_switch=False)
         state = asyncio.run(s8_handle(state, s8_deps))
 
@@ -99,7 +99,8 @@ def run_through(
     # S10: Confirmation
     if target_idx >= 10:
         from engine.stages.s10_confirmation.handler import handle as s10_handle
-        state = asyncio.run(s10_handle(state))
+        from engine.stages.s10_confirmation.store import ConfirmationStoreImpl
+        state = asyncio.run(s10_handle(state, ConfirmationStoreImpl()))
 
     # S11: Plan Validation
     if target_idx >= 11:

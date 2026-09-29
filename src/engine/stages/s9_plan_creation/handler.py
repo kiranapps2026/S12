@@ -25,6 +25,7 @@ from contracts.safety import TaskProfile, PathDecision
 from contracts.stage_outputs import Plan, Step, PlanCreationResult
 from contracts.frozen_binding import FrozenBindingIdentity
 from contracts.plan_hash import canonical_plan_digest
+from engine.stages.preconditions import deny_unless_safety_passed
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +39,18 @@ async def handle(state: PipelineState) -> PipelineState:
 
     Returns updated PipelineState with plan set.
     """
+    refused = deny_unless_safety_passed(state)  # R-N
+    if refused is not None:
+        return refused
+
     task_profile = state.task_profile
     path_decision = state.path_decision
     frozen = state.frozen_binding_identity
-    safety_result = state.safety_result
 
     if task_profile is None:
         raise ValueError("No TaskProfile from S6")
     if path_decision is None:
         raise ValueError("No PathDecision from S7")
-    if safety_result is None:
-        raise ValueError("No SafetyResult from S8")
-    if not safety_result.allowed:
-        raise ValueError(f"S9 blocked by safety gate: {safety_result.failed_check}")
 
     now = time.time()
     # S9 generates NEW UUIDs — distinct from request_id (which is from S0)

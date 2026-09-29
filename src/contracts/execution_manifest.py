@@ -35,6 +35,19 @@ class Confirmation:
 
 
 @dataclass(frozen=True)
+class ConfirmationOutcome:
+    """S10 output (R-R): whether confirmation is required and, if so, the record.
+
+    required=False  -> confirmation is None.
+    required=True   -> confirmation is the Confirmation saved as pending in the
+    confirmation store; it counts as consumed only once the store's conditional
+    consume has succeeded and the consumed record is written back here.
+    """
+    required: bool
+    confirmation: Confirmation | None = None
+
+
+@dataclass(frozen=True)
 class ExecutionManifest:
     """
     Frozen artifact created at S11, consumed by S12.

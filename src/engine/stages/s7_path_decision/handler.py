@@ -10,27 +10,12 @@ import logging
 from dataclasses import dataclass
 
 from contracts.pipeline_state import PipelineState
-from contracts.safety import TaskProfile, PathDecision
+from contracts.safety import TaskProfile, PathDecision, PathRoutingResult
 from contracts.stage_outputs import IntentResult, GraphAnalysis
 from contracts.kernel_policy import KernelPolicy
 from contracts.stage_registry import StageStatus
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class PathRoutingResult:
-    """S7 output: routing decision with reason."""
-    decision: PathDecision
-    reason: str | None = None
-
-    def __eq__(self, other):
-        if isinstance(other, PathDecision):
-            return self.decision == other
-        return NotImplemented
-
-    def __hash__(self):
-        return hash(self.decision)
 
 
 async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> PipelineState:
@@ -56,11 +41,8 @@ async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> Pi
     if frozen is None:
         raise PathDecisionError("No FrozenBindingIdentity from S5")
 
-    # Get risk threshold from KernelPolicy (never from user input)
-    if policy is None:
-        risk_deny_threshold = 0.95
-    else:
-        risk_deny_threshold = policy.risk_deny_threshold
+    # Risk threshold comes from KernelPolicy only; no default (R-Q row 1).
+    risk_deny_threshold = getattr(policy, "risk_deny_threshold", None)
 
     risk = frozen.effective_risk
     confidence = intent_result.confidence if isinstance(intent_result, IntentResult) else 1.0
@@ -70,18 +52,11 @@ async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> Pi
         len(set(task_profile.capabilities)) if task_profile.capabilities else 0
     )
 
-    # If S4 set candidate_count but S3 returned a single match, use the S4 count
-    # (S4 derives count from intent.parameters["candidates"] when available)
-    if distinct_caps <= 1 and isinstance(intent_result, IntentResult) and intent_result.parameters:
-        raw_candidates = intent_result.parameters.get("candidates", [])
-        if isinstance(raw_candidates, list) and len(raw_candidates) > 1:
-            distinct_caps = len(raw_candidates)
-
     # R-Q: 9-row table -- evaluate in priority order, first match wins
-    if risk_deny_threshold is None or risk_deny_threshold < 0:
+    if not isinstance(risk_deny_threshold, (int, float)) or risk_deny_threshold < 0:
         decision = PathDecision.DENY
         reason = "risk_threshold_unavailable"
-    elif risk >= risk_deny_threshold:
+    elif risk > risk_deny_threshold:
         decision = PathDecision.DENY
         reason = "risk_above_threshold"
     elif distinct_caps == 0:
@@ -114,7 +89,12 @@ async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> Pi
     else:
         logger.info("S7: %s -- risk=%.4f", decision.value, risk)
 
-    return state.with_stage_output("S7", PathRoutingResult(decision=decision, reason=reason))
+    state = state.with_stage_output("S7", PathRoutingResult(decision=decision, reason=reason))
+    if decision is PathDecision.DENY:
+        return state.with_status(StageStatus.DENY, reason)
+    if decision is PathDecision.CLARIFY:
+        return state.with_status(StageStatus.CLARIFY, reason)
+    return state
 
 
 class PathDecisionError(Exception):

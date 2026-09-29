@@ -99,7 +99,7 @@ _FIELD_TYPE_NAMES = types.MappingProxyType({
     "path_decision": "PathRoutingResult",
     "safety_result": "SafetyResult",
     "plan": "PlanCreationResult",
-    "confirmation": "Confirmation",
+    "confirmation": "ConfirmationOutcome",
     "execution_manifest": "ExecutionManifest",
     "validation_result": "ValidationResult",
 })
@@ -142,9 +142,20 @@ class PipelineState:
     path_decision: PathDecision | None = None
     safety_result: SafetyResult | None = None
     plan: PlanCreationResult | None = None
-    confirmation: Confirmation | None = None
+    confirmation: ConfirmationOutcome | None = None
     execution_manifest: ExecutionManifest | None = None
     validation_result: ValidationResult | None = None
+
+    # Result of the stage that ran last. The runner reads only these two fields to
+    # decide whether to continue; a stage that refuses sets DENY/CLARIFY/ERROR here.
+    stage_status: StageStatus | None = None
+    deny_reason: str | None = None
+
+    def with_status(self, status: StageStatus, reason: str | None = None) -> PipelineState:
+        """Record the running stage's result. Non-NORMAL statuses stop the run."""
+        if status is StageStatus.NORMAL and reason is not None:
+            raise ContractViolationError("A NORMAL status carries no reason.")
+        return replace(self, stage_status=status, deny_reason=reason)
 
     def with_stage_output(self, stage_id: str, value: object = None, **fields: Any) -> PipelineState:
         """
@@ -182,6 +193,17 @@ class PipelineState:
         else:
             allowed_fields = {STAGE_OUTPUT_FIELD[stage_id]}
 
+        # R-T: a stage may write only after the previous stage's output exists.
+        idx = PRE_EXECUTION_SEQUENCE.index(stage_id)
+        if idx > 0:
+            prev_field = STAGE_OUTPUT_FIELD[PRE_EXECUTION_SEQUENCE[idx - 1]]
+            if getattr(self, prev_field) is None:
+                raise ContractViolationError(
+                    f"{stage_id} cannot write before {PRE_EXECUTION_SEQUENCE[idx - 1]} "
+                    f"has written '{prev_field}'.",
+                    stage_id=stage_id,
+                )
+
         # Build the dict of fields to set
         updates: dict[str, Any] = {}
 
@@ -200,6 +222,8 @@ class PipelineState:
 
         # Validate each field
         for field_name, new_value in updates.items():
+            if stage_id == "S11" and field_name == "execution_manifest" and new_value is None:
+                continue  # R-F: the one permitted None (S11 denial)
             if field_name not in allowed_fields:
                 raise ContractViolationError(
                     f"Field '{field_name}' is not owned by {stage_id}. "
@@ -228,7 +252,7 @@ class PipelineState:
                     actual_type=type(new_value).__name__,
                 )
 
-        return replace(self, **updates)
+        return replace(self, stage_status=StageStatus.NORMAL, deny_reason=None, **updates)
 
     def get_stage_output(self, stage_id: str) -> object | None:
         """Get the output for a given stage. Returns None if stage hasn't run."""

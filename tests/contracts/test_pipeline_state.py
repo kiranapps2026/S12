@@ -6,6 +6,7 @@ Source: DATA_CONTRACTS.md §2, PIPELINE_STAGES.md §11
 
 from __future__ import annotations
 
+import dataclasses
 import pytest
 from dataclasses import FrozenInstanceError
 
@@ -33,6 +34,18 @@ def sample_context():
     )
 
 
+def _upto(state, stage_id):
+    """Pre-fill every owned field before `stage_id` (write order, R-T).
+
+    Only tests of PipelineState itself may build state like this; placeholders are
+    fine because dataclasses.replace performs no type check.
+    """
+    from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE
+    fields = {STAGE_OUTPUT_FIELD[s]: object()
+              for s in PRE_EXECUTION_SEQUENCE[1:PRE_EXECUTION_SEQUENCE.index(stage_id)]}
+    return dataclasses.replace(state, **fields)
+
+
 @pytest.fixture
 def initial_state(sample_context):
     """Create an initial PipelineState."""
@@ -53,6 +66,7 @@ class TestPipelineStateImmutability:
 
     def test_with_stage_output_returns_new_instance(self, initial_state):
         """with_stage_output() returns a NEW PipelineState."""
+        initial_state = _upto(initial_state, "S2")
         from contracts.stage_outputs import IntentResult
         new_state = initial_state.with_stage_output("S2", IntentResult(
             intent_type="read",
@@ -64,6 +78,7 @@ class TestPipelineStateImmutability:
 
     def test_original_unchanged_after_with_stage_output(self, initial_state):
         """Original PipelineState remains unchanged after with_stage_output()."""
+        initial_state = _upto(initial_state, "S2")
         from contracts.stage_outputs import IntentResult
         new_state = initial_state.with_stage_output("S2", IntentResult(
             intent_type="read",
@@ -93,6 +108,7 @@ class TestStageOutputFields:
 
     def test_s2_sets_intent_result(self, initial_state):
         """S2 can set intent_result."""
+        initial_state = _upto(initial_state, "S2")
         from contracts.stage_outputs import IntentResult
         intent = IntentResult(
             intent_type="read",
@@ -106,6 +122,7 @@ class TestStageOutputFields:
 
     def test_s5_sets_frozen_binding_identity(self, initial_state):
         """S5 can set frozen_binding_identity."""
+        initial_state = _upto(initial_state, "S5")
         from contracts.frozen_binding import FrozenBindingIdentity
         binding = FrozenBindingIdentity(
             binding_id="bind-001",
@@ -131,6 +148,7 @@ class TestOverwriteProtection:
 
     def test_cannot_overwrite_stage_output(self, initial_state):
         """Cannot overwrite an existing stage output."""
+        initial_state = _upto(initial_state, "S2")
         from contracts.stage_outputs import IntentResult
         from contracts.errors import ContractViolationError
         state_with_s2 = initial_state.with_stage_output("S2", IntentResult(
@@ -147,6 +165,16 @@ class TestOverwriteProtection:
                 parameters={},
             ))
 
+    def test_write_order_enforced(self, initial_state):
+        """A stage cannot write until the previous stage's owned field is set (R-T)."""
+        from contracts.stage_outputs import IntentResult
+        intent = IntentResult(intent_type="read", target_entities=(), operations=(), parameters={})
+        with pytest.raises(ContractViolationError, match="cannot write before S1"):
+            initial_state.with_stage_output("S2", intent)
+        with pytest.raises(ContractViolationError, match="cannot write before S10"):
+            _upto(initial_state, "S10").with_stage_output(
+                "S11", validation_result=object())
+
     def test_unknown_stage_raises(self, initial_state):
         """Unknown stage ID raises ValueError."""
         with pytest.raises(ValueError, match="Unknown stage"):
@@ -154,6 +182,7 @@ class TestOverwriteProtection:
 
     def test_with_stage_output_rejects_wrong_type(self, initial_state):
         """with_stage_output rejects wrong type for field."""
+        initial_state = _upto(initial_state, "S8")
         from contracts.errors import ContractViolationError
         with pytest.raises(ContractViolationError, match="expects type"):
             initial_state.with_stage_output("S8", "not_a_safety_result")
@@ -169,6 +198,7 @@ class TestOverwriteProtection:
 
     def test_with_stage_output_rejects_second_write(self, initial_state):
         """Cannot write to a field that's already set."""
+        initial_state = _upto(initial_state, "S2")
         from contracts.stage_outputs import IntentResult, NormalizedInput
         state_with_s2 = initial_state.with_stage_output("S2", IntentResult(
             intent_type="read",
@@ -187,6 +217,7 @@ class TestOverwriteProtection:
 
     def test_s11_writes_two_owned_fields(self, initial_state):
         """S11 writes both execution_manifest and validation_result."""
+        initial_state = _upto(initial_state, "S11")
         from contracts.execution_manifest import ExecutionManifest
         from contracts.stage_outputs import ValidationResult
         manifest = ExecutionManifest(

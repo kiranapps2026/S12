@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import logging
 import dataclasses
+import uuid
 
 from contracts.pipeline_state import PipelineState
 from contracts.safety import SafetyResult
+from contracts.stage_registry import StageStatus
 from engine.stages.s8_safety_gate.dependencies import S8Dependencies
 
 from .checks import (
@@ -52,9 +54,10 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
     """
     def deny(reason: str, failed_check: str) -> PipelineState:
         logger.warning("S8: DENY %s (%s)", reason, failed_check)
-        return state.with_stage_output(
+        denied = state.with_stage_output(
             "S8", SafetyResult(allowed=False, reason=reason, failed_check=failed_check)
         )
+        return denied.with_status(StageStatus.DENY, reason)
 
     # 1. Kill switch — always first. deps or policy missing -> DENY.
     try:
@@ -95,7 +98,7 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
     state = state.replace_context(
         "S8",
         auth_passed=True,
-        auth_result_id=f"auth-{state.execution_context.request_id[:8]}",
+        auth_result_id=str(uuid.uuid4()),
     )
     return state.with_stage_output(
         "S8",

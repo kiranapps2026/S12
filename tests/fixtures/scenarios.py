@@ -14,7 +14,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from engine.stages.s10_confirmation.store import ConfirmationStoreImpl
+
 from contracts.capability import CapabilityMetadata
+
+
+class RecordingConfirmationStore:
+    """Delegates to the production store and records every save call."""
+
+    def __init__(self) -> None:
+        self._inner = ConfirmationStoreImpl()
+        self.saves: list[tuple] = []
+
+    def save(self, confirmation, tenant_id, execution_id):
+        self._inner.save(confirmation, tenant_id, execution_id)
+        self.saves.append((confirmation, tenant_id, execution_id))
+
+    def consume(self, confirmation_id, *, user_id, plan_hash, now):
+        return self._inner.consume(confirmation_id, user_id=user_id, plan_hash=plan_hash, now=now)
 
 
 @dataclass(frozen=True)
@@ -32,6 +49,8 @@ class Scenario:
     confidence: float = 0.95
     capabilities: int = 1
     risk_deny_threshold: float = 0.95
+    confirmation_store: RecordingConfirmationStore = field(
+        default_factory=RecordingConfirmationStore, compare=False, repr=False)
 
     def effective_risk_floor(self) -> float:
         """When only risk is given, all three risk components equal risk."""

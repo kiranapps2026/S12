@@ -51,3 +51,20 @@ class PathDecision(enum.StrEnum):
     DENY = "deny"
     FAST = "fast"
     WORKFLOW = "workflow"
+
+
+@dataclass(frozen=True)
+class PathRoutingResult:
+    """S7 output: routing decision with reason."""
+    decision: PathDecision
+    reason: str | None = None
+
+    def __eq__(self, other):
+        if isinstance(other, PathDecision):
+            return self.decision == other
+        if isinstance(other, PathRoutingResult):
+            return (self.decision, self.reason) == (other.decision, other.reason)
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.decision)
