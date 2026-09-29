@@ -80,6 +80,42 @@ class InMemoryEvents:
         self.events.append(event)
 
 
+class StaticReferences:
+    """Fixture ReferenceSource: dictionaries per tenant/user/workspace; records every call."""
+
+    def __init__(self) -> None:
+        self.results: dict[tuple, list[str]] = {}         # (tenant, user, conversation) -> newest first
+        self.files: dict[tuple, object] = {}               # (tenant, workspace, name) -> FileInfo
+        self.variables: dict[tuple, str] = {}              # (tenant, workspace, name) -> value
+        self.time = 1_772_668_800.0                        # 2026-03-05T00:00:00Z
+        self.calls: list[tuple] = []
+        self.error: Exception | None = None
+
+    async def previous_result(self, *, tenant_id, user_id, conversation_id, index):
+        self.calls.append(("result", tenant_id, user_id, conversation_id, index))
+        if self.error:
+            raise self.error
+        items = self.results.get((tenant_id, user_id, conversation_id), [])
+        return items[index - 1] if 0 < index <= len(items) else None
+
+    async def file(self, *, tenant_id, workspace_id, name):
+        self.calls.append(("file", tenant_id, workspace_id, name))
+        if self.error:
+            raise self.error
+        return self.files.get((tenant_id, workspace_id, name))
+
+    async def variable(self, *, tenant_id, workspace_id, name):
+        self.calls.append(("variable", tenant_id, workspace_id, name))
+        if self.error:
+            raise self.error
+        return self.variables.get((tenant_id, workspace_id, name))
+
+    async def now(self):
+        if self.error:
+            raise self.error
+        return self.time
+
+
 class StaticScopes:
     """Fixture RunScopeFactory: the same scope for every tenant."""
 
@@ -104,6 +140,7 @@ def make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies
         suspended=InMemorySuspendedRuns(),
         activation=StaticActivation(),
         events=InMemoryEvents(),
+        references=StaticReferences(),
     )
 
 

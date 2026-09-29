@@ -18,6 +18,8 @@ def test_the_stored_run_holds_no_request_text_and_can_still_be_answered():
     assert "Secret Person" not in stored and "555" not in stored
     state = json.loads(stored)
     assert state["entry_request"]["raw_payload"] == {} and state["normalized_input"]["sanitized_input"] == {}
+    n = state["normalized_input"]
+    assert (n["text"], n["entities"], n["references"]) == ("", {}, {})
     assert state["intent_result"]["parameters"] == {} and state["intent_result"]["raw_llm_output"] == ""
     assert state["intent_result"]["intent_type"] and state["plan"] and state["confirmation"]   # what resume needs
     out = asyncio.run(runner.reply("tenant-1", paused.final_state.confirmation.confirmation.confirmation_id,

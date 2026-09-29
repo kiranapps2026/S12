@@ -30,6 +30,10 @@ class NormalizedInput:
     was_modified: bool = False
     has_critical_injection: bool = False
     timestamp: float = 0.0
+    text: str = ""                                         # the user's message after S1: NFC, trimmed,
+                                                           # references resolved, sanitized (what S2 reads)
+    entities: dict[str, Any] = field(default_factory=dict)      # advisory: dates/emails/files/names
+    references: dict[str, str] = field(default_factory=dict)    # reference as written -> what it stood for
 
 
 # ---------------------------------------------------------------------------

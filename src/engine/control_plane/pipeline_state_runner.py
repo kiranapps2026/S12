@@ -31,6 +31,7 @@ from contracts.capability import CapabilityRegistry
 from contracts.intent_model import IntentModel
 from contracts.errors import UnknownConfirmation
 from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE, PipelineState
+from contracts.reference_source import ReferenceSource
 from contracts.stage_events import EventSink, StageEvent
 from contracts.suspended_runs import SuspendedRunStore
 from contracts.safety import PathDecision
@@ -66,6 +67,7 @@ class PipelineDependencies:
     suspended: SuspendedRunStore
     activation: ActivationStateReader
     events: EventSink
+    references: ReferenceSource | None
 
 
 @dataclass(frozen=True)
@@ -114,7 +116,8 @@ def _minimized(state: PipelineState) -> PipelineState:
     if state.entry_request is not None:
         changes["entry_request"] = dataclasses.replace(state.entry_request, raw_payload={})
     if state.normalized_input is not None:
-        changes["normalized_input"] = dataclasses.replace(state.normalized_input, sanitized_input={})
+        changes["normalized_input"] = dataclasses.replace(
+            state.normalized_input, sanitized_input={}, text="", entities={}, references={})
     if state.intent_result is not None:
         changes["intent_result"] = dataclasses.replace(
             state.intent_result, parameters={}, raw_llm_output="")
@@ -138,7 +141,7 @@ class PipelineRunner:
         """The S1..S11 handlers bound to this run's dependencies."""
         d = self._deps
         table: dict[str, StageHandler] = {
-            "S1": s1,
+            "S1": lambda st: s1(st, d.references),
             "S2": lambda st: s2(st, d.intent_model, d.registry),
             "S3": lambda st: s3(st, d.registry),
             "S4": s4,

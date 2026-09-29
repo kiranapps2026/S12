@@ -79,7 +79,7 @@ async def handle(state: PipelineState, model: IntentModel | None,
     if model is None or registry is None:
         return state.with_status(StageStatus.ERROR, "llm_unavailable")
 
-    text = _request_text(norm.sanitized_input)
+    text = (norm.text or "").strip() or _request_text(norm.sanitized_input)
     if text is None:
         return state.with_status(StageStatus.CLARIFY, "missing_text")
 
