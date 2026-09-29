@@ -42,7 +42,7 @@ def test_missing_identity_denies(field):
 ])
 def test_future_pause_or_activation_denies_before_any_llm_call(field, reason):
     h = Harness()
-    h.activation.times[field] = h.clock.now() + 1
+    h.activation.times[field] = h.clock.current + 1
     result = h.run()
     assert (result.halt.stage, result.halt.status, result.halt.reason) == ("S0", StageStatus.DENY, reason)
     assert h.intent_model.calls == []
@@ -51,14 +51,14 @@ def test_future_pause_or_activation_denies_before_any_llm_call(field, reason):
 @pytest.mark.parametrize("offset", [None, -1, 0])
 def test_elapsed_or_absent_pause_continues(offset):
     h = Harness()
-    h.activation.times["tenant_paused_until"] = None if offset is None else h.clock.now() + offset
+    h.activation.times["tenant_paused_until"] = None if offset is None else h.clock.current + offset
     assert h.run().outcome is RunOutcome.COMPLETED
 
 
 def test_pause_check_uses_database_time():
     h = Harness()
-    h.activation.database_now = h.clock.now()
-    h.activation.times["tenant_paused_until"] = h.clock.now() + 30
+    h.activation.database_now = h.clock.current
+    h.activation.times["tenant_paused_until"] = h.clock.current + 30
     h.clock.advance(3600)  # process clock is past the pause; the database clock is not
     assert _s0(h).halt.reason == "tenant_paused"
 

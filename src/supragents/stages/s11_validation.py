@@ -94,5 +94,5 @@ async def _manifest(state: PipelineState, deps: PipelineDeps) -> ExecutionManife
         authorization_version=versions.authorization_version,
         worker_runtime_version=versions.worker_runtime_version,
         model_version=versions.model_version,
-        created_at=deps.clock.now(),
+        created_at=await deps.clock.now(),
     )

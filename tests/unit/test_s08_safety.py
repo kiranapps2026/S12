@@ -43,7 +43,7 @@ def test_kill_switch_is_checked_first(policy, reason):
     (lambda h: setattr(h.authorization, "tenant", RecordStatus.DELETED), "tenant_active", "tenant_inactive"),
     (lambda h: setattr(h.authorization, "connection", ConnectionState(RecordStatus.REVOKED, None)),
      "connection_active", "connection_inactive"),
-    (lambda h: setattr(h.authorization, "connection", ConnectionState(RecordStatus.ACTIVE, h.clock.now())),
+    (lambda h: setattr(h.authorization, "connection", ConnectionState(RecordStatus.ACTIVE, h.clock.current)),
      "connection_active", "connection_expired"),
     (lambda h: setattr(h.authorization, "grant", False), "capability_granted", "capability_denied"),
     (lambda h: setattr(h.authorization, "scope", False), "resource_scope", "resource_scope_denied"),

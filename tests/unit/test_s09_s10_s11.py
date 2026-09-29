@@ -32,7 +32,7 @@ def test_s9_plan_is_hashed_and_uses_frozen_binding():
     state = h.run_stage("S9", h.state_before("S9"))
     result, frozen = state.plan_result, state.frozen_binding
     assert result.plan_hash == plan_digest(result.plan)
-    assert result.plan.created_at == h.clock.now()
+    assert result.plan.created_at == h.clock.current
     step = result.plan.steps[0]
     assert (step.kernel_op_id, step.mutation, step.risk, step.cost) == (
         frozen.kernel_op_id, frozen.effective_mutation, frozen.effective_risk, frozen.cost_per_step)
@@ -61,7 +61,7 @@ def test_s10_confirmation_lists_exact_operations_and_expires_in_five_minutes():
     confirmation = h.run_stage("S10", h.state_before("S10")).confirmation_check.confirmation
     assert [dict(op) for op in confirmation.operations] == [
         {"step_id": "step-1", "kernel_op_id": "crm.contact_delete", "mutation": "D", "cost": 5}]
-    assert confirmation.expires_at == h.clock.now() + 300
+    assert confirmation.expires_at == h.clock.current + 300
 
 
 def test_s10_read_only_plan_needs_no_confirmation():

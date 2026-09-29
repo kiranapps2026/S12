@@ -27,7 +27,7 @@ async def run(state: PipelineState, deps: PipelineDeps) -> PipelineState:
         steps=steps,
         join_mode=JOIN_MODE,
         budget_required=sum(step.cost for step in steps),
-        created_at=deps.clock.now(),
+        created_at=await deps.clock.now(),
     )
     return state.with_output(STAGE, plan_result=PlanCreationResult(plan=plan, plan_hash=plan_digest(plan)))
 

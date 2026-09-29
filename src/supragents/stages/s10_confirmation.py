@@ -42,7 +42,7 @@ async def _request(state: PipelineState, deps: PipelineDeps) -> PipelineState:
         plan_id=plan_result.plan.id,
         plan_hash=plan_result.plan_hash,
         operations=_operations(plan_result),
-        expires_at=deps.clock.now() + CONFIRMATION_TTL_SECONDS,
+        expires_at=await deps.clock.now() + CONFIRMATION_TTL_SECONDS,
     )
     await deps.confirmations.save(
         confirmation, tenant_id=context.tenant_id, execution_id=plan_result.plan.execution_id
@@ -63,14 +63,14 @@ async def _apply_reply(state: PipelineState, deps: PipelineDeps, reply: Confirma
     if not reply.approved:
         await deps.confirmations.reject(reply.confirmation_id, **ids)
         return _stopped(state, ConfirmationStatus.REJECTED, stored.confirmation, "confirmation_rejected")
-    if stored.confirmation.expires_at <= deps.clock.now():
+    if stored.confirmation.expires_at <= await deps.clock.now():
         return _stopped(state, ConfirmationStatus.EXPIRED, stored.confirmation, "confirmation_expired")
     consumed = await deps.confirmations.consume(
         reply.confirmation_id, plan_hash=state.plan_result.plan_hash, **ids
     )
     if not consumed:
         return _stopped(state, stored.status, stored.confirmation, "confirmation_not_consumable")
-    confirmation = replace(stored.confirmation, consumed_at=deps.clock.now())
+    confirmation = replace(stored.confirmation, consumed_at=await deps.clock.now())
     return _checked(state, ConfirmationStatus.CONSUMED, confirmation)
 
 

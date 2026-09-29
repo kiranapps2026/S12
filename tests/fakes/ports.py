@@ -21,7 +21,7 @@ class FakeActivation:
         if self.error:
             raise DependencyUnavailable("activation rows unreadable")
         return ActivationState(
-            database_now=self.clock.now() if self.database_now is None else self.database_now,
+            database_now=self.clock.current if self.database_now is None else self.database_now,
             tenant_paused_until=self.times.get("tenant_paused_until"),
             tenant_activation_at=self.times.get("tenant_activation_at"),
             workspace_paused_until=self.times.get("workspace_paused_until"),
@@ -64,9 +64,9 @@ class FakeAuthorization:
             raise DependencyUnavailable(name)
         return value
 
-    async def user_status(self, user_id): return self._answer("user", self.user)
+    async def user_status(self, tenant_id, user_id): return self._answer("user", self.user)
     async def tenant_status(self, tenant_id): return self._answer("tenant", self.tenant)
-    async def connection_state(self, connection_id): return self._answer("connection", self.connection)
+    async def connection_state(self, tenant_id, connection_id): return self._answer("connection", self.connection)
 
     async def has_grant(self, tenant_id, user_id, capability_id):
         self.grant_calls.append(capability_id)

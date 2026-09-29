@@ -30,7 +30,7 @@ class InMemoryConfirmationStore:
         record = self._pending(confirmation_id, tenant_id, user_id)
         if record is None or record.confirmation.plan_hash != plan_hash:
             return False
-        if record.confirmation.expires_at <= self._clock.now():
+        if record.confirmation.expires_at <= self._clock.current:
             self._records[confirmation_id] = replace(record, status=ConfirmationStatus.EXPIRED)
             return False
         self._records[confirmation_id] = replace(record, status=ConfirmationStatus.CONSUMED)

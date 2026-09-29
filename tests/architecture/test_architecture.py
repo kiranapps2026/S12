@@ -13,7 +13,7 @@ import pytest
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 PACKAGE = "supragents"
-ENTRY_MODULE = "supragents.pipeline.runner"
+ENTRY_MODULES = ("supragents.pipeline.runner", "supragents.bootstrap", "supragents.__main__")
 MAX_FILE_LINES = 200
 MAX_FUNCTION_LINES = 40
 
@@ -25,6 +25,10 @@ ALLOWED_IMPORTS = {
     "observability": {"contracts", "observability"},
     "stages": {"contracts", "ports", "policy", "pipeline.deps", "stages.guards", "stages.s08_safety"},
     "pipeline": {"contracts", "ports", "observability", "pipeline", "stages"},
+    "adapters": {"contracts", "ports", "adapters"},
+    "settings": set(),
+    "bootstrap": {"adapters", "pipeline", "ports"},
+    "__main__": {"adapters", "settings"},
 }
 
 
@@ -52,8 +56,8 @@ def _imports(path: Path) -> set[str]:
     return {name for name in found if name in MODULES}
 
 
-def test_every_module_is_reachable_from_the_runner():
-    reachable, frontier = set(), [ENTRY_MODULE]
+def test_every_module_is_reachable_from_an_entry_point():
+    reachable, frontier = set(), list(ENTRY_MODULES)
     while frontier:
         module = frontier.pop()
         if module in reachable:
@@ -87,13 +91,17 @@ def test_units_are_small(module):
             assert length <= MAX_FUNCTION_LINES, f"{module}.{node.name} has {length} lines"
 
 
-FORBIDDEN_TEXT = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|\bprint\(|\b(Fake|Mock|Stub|InMemory)[A-Z]\w*")
+FORBIDDEN_TEXT = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|\b(Fake|Mock|Stub|InMemory)[A-Z]\w*")
+PRINT = re.compile(r"\bprint\(")
+CLI_MODULE = "supragents.__main__"  # the only module that writes to the terminal
 
 
 @pytest.mark.parametrize("module", sorted(MODULES))
 def test_no_placeholders_prints_or_test_doubles(module):
     text = MODULES[module].read_text(encoding="utf-8")
     assert not FORBIDDEN_TEXT.search(text), FORBIDDEN_TEXT.search(text)
+    if module != CLI_MODULE:
+        assert not PRINT.search(text), f"{module} prints; use logging"
 
 
 @pytest.mark.parametrize("module", sorted(MODULES))

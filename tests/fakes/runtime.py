@@ -10,7 +10,7 @@ class FakeClock:
     def __init__(self, now: float = START_TIME) -> None:
         self.current = now
 
-    def now(self) -> float:
+    async def now(self) -> float:
         return self.current
 
     def advance(self, seconds: float) -> None:

@@ -7,7 +7,7 @@ from supragents.contracts.events import StageEvent
 
 
 class Clock(Protocol):
-    def now(self) -> float:
+    async def now(self) -> float:
         """Authoritative Unix time (the database clock in production, I-019)."""
 
 

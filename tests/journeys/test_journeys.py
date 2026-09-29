@@ -114,7 +114,7 @@ class TestConfirmation:
 class TestStops:
     def test_paused_tenant_stops_at_s0_before_the_llm(self):
         h = Harness()
-        h.activation.times["tenant_paused_until"] = h.clock.now() + 60
+        h.activation.times["tenant_paused_until"] = h.clock.current + 60
         _stopped_at(h.run(), "S0", StageStatus.DENY, "tenant_paused")
         assert h.intent_model.calls == []
         assert h.events.stages == ["S0"]

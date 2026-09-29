@@ -30,7 +30,7 @@ def _active(status: RecordStatus, name: str) -> str | None:
 
 
 async def user_active(inputs: SafetyInputs, deps: PipelineDeps) -> str | None:
-    return _active(await deps.authorization.user_status(inputs.context.user_id), "user")
+    return _active(await deps.authorization.user_status(inputs.context.tenant_id, inputs.context.user_id), "user")
 
 
 async def tenant_active(inputs: SafetyInputs, deps: PipelineDeps) -> str | None:
@@ -38,7 +38,9 @@ async def tenant_active(inputs: SafetyInputs, deps: PipelineDeps) -> str | None:
 
 
 async def connection_active(inputs: SafetyInputs, deps: PipelineDeps) -> str | None:
-    connection = await deps.authorization.connection_state(inputs.context.connection_id)
+    connection = await deps.authorization.connection_state(
+        inputs.context.tenant_id, inputs.context.connection_id
+    )
     if connection.expires_at is not None and connection.expires_at <= inputs.now:
         return "connection_expired"
     return _active(connection.status, "connection")

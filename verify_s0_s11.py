@@ -2,6 +2,7 @@
 
 Usage (from the repository root, Python 3.11+ and pytest installed):
     python verify_s0_s11.py               # run every test group
+    (set TEST_DATABASE_URL to a PostgreSQL database named *_test to include the database group)
     python verify_s0_s11.py --sabotage    # also prove the tests catch 14 known bugs
     python verify_s0_s11.py --report verification.md
 
@@ -11,6 +12,7 @@ Sabotage patches are applied to a temporary copy; the files here are never modif
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -24,7 +26,9 @@ GROUPS = (
     ("unit", "tests/unit", "each stage S0–S11 on its own"),
     ("journeys", "tests/journeys", "full S0→S11 runs, every stop and the confirmation flow"),
     ("architecture", "tests/architecture", "no dead code, layering, size limits, no test doubles"),
+    ("postgres", "tests/integration", "real PostgreSQL adapters, RLS, full S0→S11 run"),
 )
+DATABASE_GROUP = "postgres"
 SABOTAGE = (
     ("runner ignores halts", "src/supragents/pipeline/runner.py",
      "            if state.halt is not None:\n                return RunResult(RunOutcome.STOPPED, state)\n", ""),
@@ -47,13 +51,18 @@ SABOTAGE = (
      "    if safety is not None and safety.allowed and context is not None and context.auth_passed:",
      "    if True:"),
     ("S10 ignores expiry", "src/supragents/stages/s10_confirmation.py",
-     "    if stored.confirmation.expires_at <= deps.clock.now():", "    if False:"),
+     "    if stored.confirmation.expires_at <= await deps.clock.now():", "    if False:"),
     ("S11 skips the confirmation check", "src/supragents/stages/s11_validation.py",
      "    return [] if check.status in _CONFIRMED else [\"confirmation_missing\"]", "    return []"),
     ("S11 skips the cycle check", "src/supragents/stages/s11_validation.py",
      "    if _has_cycle(plan):", "    if False:"),
     ("state allows overwriting a field", "src/supragents/contracts/state.py",
      "        if getattr(self, name) is not None:", "        if False:"),
+    ("confirmation consumable twice (PostgreSQL)", "src/supragents/adapters/postgres/confirmations.py",
+     "                   AND status = 'pending' AND expires_at > now()", "                   AND expires_at > now()"),
+    ("tenant scope not set (PostgreSQL)", "src/supragents/adapters/postgres/database.py",
+     '"SELECT set_config(\'app.current_tenant\', $1, true)", tenant_id or ""',
+     '"SELECT set_config(\'app.current_tenant\', $1, true)", "tenant-a"'),
 )
 
 
@@ -102,6 +111,8 @@ def _pytest(root: Path, target: str) -> subprocess.CompletedProcess[str]:
 
 
 def _run_group(name: str, path: str, about: str) -> Outcome:
+    if name == DATABASE_GROUP and not os.environ.get("TEST_DATABASE_URL"):
+        return Outcome(f"tests: {name} ({about})", True, "NOT RUN — set TEST_DATABASE_URL to include it")
     result = _pytest(ROOT, path)
     summary = (result.stdout.strip().splitlines() or ["no output"])[-1]
     return Outcome(f"tests: {name} ({about})", result.returncode == 0, summary)
@@ -115,6 +126,8 @@ def _run_sabotage() -> list[Outcome]:
 
 
 def _sabotage_case(copy: Path, name: str, relative: str, old: str, new: str) -> Outcome:
+    if "adapters/postgres" in relative and not os.environ.get("TEST_DATABASE_URL"):
+        return Outcome(f"sabotage: {name}", True, "NOT RUN — needs TEST_DATABASE_URL")
     path = copy / relative
     original = path.read_text(encoding="utf-8")
     if original.count(old) != 1:
@@ -131,7 +144,10 @@ def _render(outcomes: list[Outcome]) -> str:
     lines = ["| Result | Check | Detail |", "|---|---|---|"]
     lines += [f"| {'PASS' if o.ok else 'FAIL'} | {o.name} | {o.detail} |" for o in outcomes]
     failed = sum(not o.ok for o in outcomes)
+    not_run = any(o.detail.startswith("NOT RUN") for o in outcomes)
     verdict = "VERIFIED" if failed == 0 else f"NOT VERIFIED — {failed} check(s) failed"
+    if failed == 0 and not_run:
+        verdict += " (without the PostgreSQL group)"
     return "\n".join(["# S0–S11 verification", "", *lines, "", f"**{verdict}**"])
 
 

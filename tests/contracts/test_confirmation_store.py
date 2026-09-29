@@ -16,7 +16,7 @@ IDS = dict(tenant_id="tenant-a", user_id="user-1")
 def _store_with_one(clock=None):
     clock = clock or FakeClock()
     store = InMemoryConfirmationStore(clock)
-    confirmation = Confirmation("c-1", "user-1", "conv-1", "plan-1", "hash-1", (), clock.now() + 300)
+    confirmation = Confirmation("c-1", "user-1", "conv-1", "plan-1", "hash-1", (), clock.current + 300)
     asyncio.run(store.save(confirmation, tenant_id="tenant-a", execution_id="exec-1"))
     return store, clock
 

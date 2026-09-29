@@ -37,7 +37,7 @@ async def _first_failure(state: PipelineState, deps: PipelineDeps) -> tuple[str,
         context=state.execution_context,
         profile=state.task_profile,
         binding=state.frozen_binding,
-        now=deps.clock.now(),
+        now=await deps.clock.now(),
     )
     for name, check in CHECKS:
         try:
