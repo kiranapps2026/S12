@@ -95,7 +95,9 @@ tests/
   unit/ contracts/ journeys/ architecture/   fakes/ (test doubles live only here)
 ```
 
-Run: `pip install pytest && python -m pytest`.
+Run: `pip install pytest && python -m pytest`, or the one-file check
+`python verify_s0_s11.py --sabotage` (all test groups plus 14 sabotage patches, one verdict).
+Remaining work is split into packages in [WORK_PACKAGES.md](WORK_PACKAGES.md).
 
 **How a run works.** `PipelineRunner.run(entry)` executes S0→S11. After every stage it
 logs one line and writes one ledger event; any halt (DENY, CLARIFY, ERROR) stops the run,
