@@ -889,6 +889,8 @@ Sub-agent spawning and `worker_spawn_audit`; batch processing (C40); replanning 
 
 **Blocking rule (owner, 2026-09-29):** no vector code — no `lancedb`/`pgvector` dependency, no `VectorMemoryBackend`, no vector migration, no embedding adapter, no vector capability — is written until **MR-1 is DECIDED and propagated**. MR-2…MR-4 may be discussed in parallel but are `BLOCKED` for implementation until then.
 
+**Enforcement:** S12_S15_EXECUTION_GATE.md v10 §1 (MUST NOT), §14 (deferred list) and suite 2; owner golden guard `tests/golden/s12/test_arch_no_vector_code.py` (draft in `s12_s15_golden/`), run at every milestone exit per plan v3 §4.
+
 | ID | Item | Why | Status | Depends on |
 |---|---|---|---|---|
 | **MR-1** | **Memory scope contract and physical layout.** Every `MemoryBackend` call takes a mandatory `MemoryScope` (tenant, workspace, worker, user, layer) derived from `ExecutionContext` / `PrincipalChain`, never from LLM output; the backend enforces it (no caller filter strings, no cross-tenant API); async methods; `purge(scope)`; physical layout per store (pgvector: RLS + tenant partitions; LanceDB: one dataset per tenant, path built only by the backend). | §36 `search(vector, limit)` has no scope; LanceDB has no RLS (I-001); memory must be isolated by worker, tenant and user (§21). Retrofitting isolation onto an embedded store is harder than choosing the store with it. | DECISION_REQUIRED — **BLOCKING** | — (decided together with MR-2's store choice) |

@@ -671,6 +671,7 @@ def test_confirmation_expires():
 | `test_no_adapter_choice_from_runtime_type()` | Architecture | S12 never reads `runtime_type` to choose an adapter (RD-9) |
 | `test_no_deferred_worker_tables()` | Architecture | No spawn/batch/group/webhook tables or `parent_execution_id` in this phase |
 | `test_worker_fk_types_text()` | Schema | Every worker foreign key is `TEXT` (RD-1) |
+| `test_no_vector_code_in_repository()` | Architecture (standing guard) | No vector dependency, import or migration before register Section 20 MR-1 (gate v10 §1, §14); file `tests/golden/s12/test_arch_no_vector_code.py` with sabotage self-tests |
 
 ## 11. Architecture Test Harness
 

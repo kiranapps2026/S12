@@ -106,7 +106,9 @@ Every milestone's exit also requires, without exception:
 - concurrency golden tests pass **5 consecutive runs**;
 - the milestone's sabotage patches make their golden tests fail (§5);
 - `assert_system_invariants(db)` (grown milestone by milestone, §5.4) passes after every
-  integration test.
+  integration test;
+- the standing guard `tests/golden/s12/test_arch_no_vector_code.py` passes (no vector code before
+  register Section 20 MR-1; gate v10 §1, §14).
 
 ---
 
@@ -355,7 +357,7 @@ Every milestone's exit also requires, without exception:
 - **Golden `M21_journeys.py`:** the eight S0→S15 journeys; architecture suite (no
   re-resolution, no S8 handler import, no direct adapter calls, no writes outside
   `fenced_write`, no filesystem checkpoints, fault injection inert outside tests, no
-  hard-coded hosts, no Laya code).
+  hard-coded hosts, no Laya code, no vector code).
 - **Exit:** `owner_certify_s12.py` N/N PASS; certification report per gate §20; tag
   `s12-s15-certified` by the owner after `owner_verify_s12.ps1`.
 - **★ Review:** final.
@@ -378,7 +380,12 @@ Every milestone's exit also requires, without exception:
    gains invariants as their subject is built (I7/I8 in M7, I17/I18 in M8a, I1/I2/I12 in M9, I4 in M11, I6
    in M13, I14 in M14, I3/I11/I13 in M16–M17, I15/I16 from M12); from M19 it checks
    I1–I18.
-5. **Fable never edits a golden file.** If it believes one is wrong, it STOPs with the test
+5. **Standing guards.** `tests/golden/s12/test_arch_no_vector_code.py` is not a milestone test: it
+   must pass from M1 onward, so "red first" does not apply to it. Its sabotage
+   self-tests (18 violation cases, clean-repository and excluded-directory cases) prove
+   it can fail. Draft location in the documents repository:
+   `s12_s15_golden/tests/golden/s12/`; the owner installs and pins it with batch B1.
+6. **Fable never edits a golden file.** If it believes one is wrong, it STOPs with the test
    name, the gate section and its reasoning (gate §19.1); Claude rules; the owner re-pins.
 
 ---
@@ -424,6 +431,7 @@ invariants active, and the commit. Fable's log is evidence; the progress file is
 | Windows specifics | Preflight item 9; `Popen.kill()`; `pathlib`; no POSIX-only APIs (§21 S9) |
 | Step data flow needed by a real plan | C36 denies at entry with a clear reason; P0-B tracked in the register for the planning phase |
 | Laya creeping in | Architecture test in M21; Laya note reference-only |
+| Vector code before the memory scope contract (MR-1) | Gate v10 §1 MUST NOT; standing guard `tests/golden/s12/test_arch_no_vector_code.py` at every milestone exit |
 | Context loss in long runs | Milestone card + log are the state; session-start routine |
 | Deferred worker-management features creeping in (spawning, batch, replan, browser path) | Gate §1 MUST NOT, M1 golden asserts the deferred tables are absent, M21 architecture test |
 | Quota overshoot under concurrency | Consumption only in the §7.2 transaction; golden M8a 20-way test ×5; I17 |
