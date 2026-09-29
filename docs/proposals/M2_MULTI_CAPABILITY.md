@@ -1,6 +1,6 @@
 # Proposal — M2: plans that combine more than one capability
 
-**Status: proposal, no code. Owner rules on §6, then work proceeds stage by stage (§5).**
+**Status: §6 ruled for M2a in `M2_RULINGS.md` (R-AB…R-AL); rulings 6–8 deferred to M2b. No code yet.**
 Not a pinned document. Ruling ids below are placeholders (`R-AB…`; R-AA is the S0.1 check).
 
 ## 1. Where things stand
