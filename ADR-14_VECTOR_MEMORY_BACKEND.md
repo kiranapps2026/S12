@@ -2,7 +2,7 @@
 
 **Status**: DRAFT — PARTIALLY DECIDED (owner, 2026-09-29).
 **Decided by the owner (2026-09-29):** tier-2 object store = **Amazon S3** (Part 3; Cloudflare R2 considered and not chosen); **Q1 = Option A, pgvector only** (Part 2; Q2 is therefore moot); **Q6** = the memory service runs in the bucket's AWS region; **Q4** = erasure covers backups; **Q7** = erasure deadline **90 days** (§4a.4, §7).
-**Still open:** Part 1 (the `MemoryScope` contract, register MR-1), Q3, Q5, Q8. The block on vector code stays until MR-1 is DECIDED; the document changes in §5 are applied when the whole ADR is DECIDED.
+**Still open:** Part 1 (the `MemoryScope` contract, register MR-1; proposed owner decisions in §3.3), Q3, Q5, Q8. The block on vector code stays until MR-1 is DECIDED; the document changes in §5 are applied when the whole ADR is DECIDED.
 **Date**: 2026-09-29
 **Register**: `SUPERSESSION_AWARE_BLOCKER_REGISTER.md` Section 13 (ADR-14) and Section 20 (Memory / RAG group, items MR-1 and MR-2)
 **Target phase**: post-S15 (memory / LLM layer). Nothing here is implemented, migrated or tested in S12–S15.
@@ -79,6 +79,37 @@ Rules:
 | Inside a tenant | `workspace_id`, `worker_id`, `user_id` columns; composite B-tree index; RLS + mandatory predicates | Same columns; mandatory pre-filter built by the backend |
 | Path / injection risk | None (parameterized SQL) | `tenant_id` must match a strict pattern before any path is built (path traversal) |
 | Approximate-nearest-neighbour index | HNSW per partition, so filtering does not destroy recall | IVF-PQ / HNSW per tenant dataset |
+
+### 3.3 Proposed owner decisions for MR-1 (proposals, not decisions)
+
+**Status: PROPOSED, 2026-09-29.** Nothing in this section is decided until the owner accepts or amends it; after that it replaces the open points in §3.1 and §3.2, and MR-1 is marked DECIDED under the deletion contract (`s12_s15_golden/README.md`). The owner needs to think hard about only two items (D1, D2); the ten points below have defaults that can be accepted or amended.
+
+**D1 — Product decision: is memory private or shared within a workspace?**
+Proposal: **private.** Worker A cannot read worker B's memory; data meant for sharing is written to the workspace-wide scope.
+Why: widening later is additive (no column changes, no data moves; the contract simply allows more scopes to be read), while narrowing later is not (anything already shared cannot be un-shared, and workers and users may already rely on it). Private is therefore the reversible default. It also matches what a worker is: an execution context acting for a principal, not a shared session.
+
+**D2 — Hardening decision: RLS below the tenant boundary?**
+Proposal: **no.** RLS enforces the tenant boundary only (I-001); the workspace, worker, user and session boundaries are enforced by the backend's mandatory predicates built from `MemoryScope`.
+Why: RLS below the tenant would have to encode the four-scope read set (point 4) and the L2 `session_id` rule (point 2) in policy SQL, which duplicates the backend's rule in a second place that must be kept in step with it. The cost is not latency (`SET LOCAL` per transaction is cheap). The boundary that must never fail, the tenant, is already enforced by the database. Adding RLS for workspace and worker later needs no schema change, because the columns exist either way.
+
+**Ten points to accept or amend**
+
+| # | Proposal | Why |
+|---|---|---|
+| 1 | `workspace_id` is always required for `write`, `read`, `search` and `delete`; no cross-workspace memory. **Exception:** `purge` accepts a tenant-only scope (tenant off-boarding and erasure); no other method does. | Memory is written from a run, and the objects a run depends on (`workers`, `execution_runs`, `connections`, `capability_grants`) all carry a `workspace_id` (DATABASE.md), so every memory entry has a well-defined workspace. Not every table carries one: many are scoped by tenant only. |
+| 2 | Add `session_id` to `MemoryScope`: required when `layer = "L2"`, forbidden for L3. | L2 is session memory by definition (FINAL_ARCHITECTURE §21). |
+| 3 | `user_id` comes from the **original principal** of the `PrincipalChain`. For runs started by an event (no human principal) it is `None`, so those runs read only the `(worker, no user)` and workspace-wide scopes. | Predictable. The current principal can change through delegation; the original principal is the identity the context was created for. Same rule as the assignment filter (gate C39). |
+| 4 | Fixed read set, derived from context and nothing else: `(worker, user)`, `(worker, no user)`, `(no worker, user)`, workspace-wide `(no worker, no user)`. Writes go to exactly one scope. | Follows D1. The set is small enough to audit, and the workspace-wide scope is how data is shared. |
+| 5 | Worker A cannot read worker B's memory in the same workspace. | Follows D1 (it is a case of point 4). |
+| 6 | `MemoryFilter` narrows on tags, time range, source and minimum confidence only. | None of these fields touches a scope field, so a filter cannot widen a scope, whether by mistake or through LLM-influenced parameters. |
+| 7 | Methods: `write`, `read`, `search`, `delete(scope, entry_id)`, `purge(scope)`, `close`. `consolidate` becomes a job that uses `read` and `write`, not a backend method. | One interface replacing FINAL_ARCHITECTURE §36 and MEMORY_ARCHITECTURE §4 (MR-7). `delete` is needed for individual erasure. Consolidation is a scheduled operation and belongs in the job layer. |
+| 8 | `write` and `delete` take the caller's database transaction; `MemoryWriteBarrier` wraps it. The barrier's full design stays in MR-9. | The memory row and its ledger/outbox event then commit together (I-014, I-020), and the backend stays thin and testable. |
+| 9 | `purge` may be called only by an owner/admin member or by the system off-boarding job. Every purge is audited and recorded in the erasure register (§4a.4). | Erasure is irreversible and legally sensitive; the audit trail is the compliance evidence, and the register is what a restore replays. |
+| 10 | Partitioning threshold per tenant: a row count held in the settings object. | A setting can be tuned per deployment without a migration; a hard-coded constant cannot. |
+
+**Already settled (no decision needed):** pgvector in PostgreSQL only (Q1); RLS on `tenant_id`, with LIST partitioning for large tenants; the backend never calls an embedding provider (§3.1 rule 5, MR-3); scope comes only from `ExecutionContext` / `PrincipalChain`, never from LLM output or request parameters (§3.1 rule 1); `tenant_id` and `workspace_id` are validated against a strict pattern before they are used in any S3 key or cache key (§4a.3); every cache key contains the full `MemoryScope`, and `purge` invalidates matching entries (§4a.7).
+
+**Not part of MR-1:** the embedding contract (MR-3), pipeline rulings (MR-4), Q3, Q5, Q8, and the full design of `MemoryWriteBarrier` (MR-9).
 
 ---
 
@@ -211,6 +242,6 @@ The question numbers are stable (other documents cite them). They are listed in 
 
 | Priority | Item | Why |
 |---|---|---|
-| 1 | **Part 1 — `MemoryScope` contract (register MR-1)** | With Q1 answered, this is the only decision that still gates vector code; deciding it lifts the block under the deletion contract (`s12_s15_golden/README.md`) |
+| 1 | **Part 1 — `MemoryScope` contract (register MR-1)**: accept or amend the proposals in §3.3 (D1 private memory, D2 no RLS below the tenant, points 1–10) | With Q1 answered, this is the only decision that still gates vector code; deciding it lifts the block under the deletion contract (`s12_s15_golden/README.md`) |
 | — | Q3, Q5, Q8 | Can be answered on technical merit and do not block the next session; Q5 should be revisited after the first memory-service load test |
 | Done | Q1, Q6, Q4, Q7 (owner, 2026-09-29); Q2 moot | — |
