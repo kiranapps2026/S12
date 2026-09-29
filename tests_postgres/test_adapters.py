@@ -421,3 +421,18 @@ def test_the_registry_reports_a_kernel_operations_inverse(pg):
                 for b in await registry.list_bindings(cap)]
     assert pg(body, "UPDATE kernel_ops SET inverse = 'crm.contact_delete' WHERE kernel_op_id = 'crm.contact_create'"
               ) == [("crm.contact_create", "crm.contact_delete"), ("crm.contact_list", None)]
+
+
+def test_the_binding_reader_returns_the_registry_version_for_active_bindings_only(pg):
+    async def body(db):
+        from adapters.postgres.registry import PostgresBindingVersionReader
+        reader = PostgresBindingVersionReader(db)
+        return (await reader.binding_version("bind.contact.list"), await reader.binding_version("bind.nothing"))
+    assert pg(body) == ("bind-3", None)
+
+
+def test_an_inactive_binding_has_no_version(pg):
+    async def body(db):
+        from adapters.postgres.registry import PostgresBindingVersionReader
+        return await PostgresBindingVersionReader(db).binding_version("bind.contact.list")
+    assert pg(body, "UPDATE bindings SET is_active = false WHERE binding_id = 'bind.contact.list'") is None

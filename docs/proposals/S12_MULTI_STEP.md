@@ -37,7 +37,22 @@ Building S12 around a single binding now would be built twice.
 | G7 | §7.1 item 5 plan digest | unchanged: `plan_hash` already covers every step |
 | G8 | failure of step *n* after step *n-1* succeeded | S13's compensation policy; `Step.inverse` (R-AF) is now available per step when the registry declares one |
 
-## What I will build once the gate is open
+## Built ahead of the gate (owner instruction: "start the S12 entry checks")
 
-The S12 entry checks (§7.1) as a pure function over `PipelineState`, with tests for single and
-multi-step plans first, then durable admission, one milestone at a time as the plan orders them.
+`engine/stages/s12_entry/checks.py::check_entry` implements gate §7.1 items 1, 1a, 2, 3, 4, 5, 5a, 5b
+and 7 in the gate's order, as a pure decision (writes nothing, re-authorises nothing), for single-step
+plans and, following G1/G2/G7 above, multi-step plans. It is not wired into the runner: S12 does not
+exist yet. Item 6 (verifiers, D1) is not built. `PostgresBindingVersionReader` reads a binding's
+version once by `binding_id` (active rows only).
+
+Points the gate owner should know:
+- **1a will deny every run without a conversation.** The API accepts requests without
+  `conversation_id`, and `context_incomplete` is what the gate specifies for that (C33). Either S0
+  must supply one, or the gate must drop it from the required list.
+- **5a has no reference form to match**: S9 has none, so the check is deliberately broad (the
+  reference dataclasses, a `{step_id, output_field}` mapping, `${steps.N.x}`, `{{steps.N.x}}`,
+  `step-N.output`, anything nested too deep to inspect). A user parameter that merely looks like one is
+  denied; that is the fail-closed side.
+- Reason names not fixed by the gate: `plan_not_validated` (item 1), `binding_missing` (item 3),
+  `binding_unavailable` (registry unreadable, 5b).
+- Next, per the gate order: verifiers (item 6), then durable admission (§7.2).

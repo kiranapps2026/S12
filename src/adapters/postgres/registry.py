@@ -97,3 +97,18 @@ class PostgresCapabilityRegistry(CapabilityRegistry):
             )
             for r in rows
         ]
+
+
+class PostgresBindingVersionReader:
+    """S12 entry (gate C32): the binding's version, read once by binding_id. The version is the
+    registry's current binding version; a missing or inactive binding row has none."""
+
+    def __init__(self, database: Database) -> None:
+        self._db = database
+
+    async def binding_version(self, binding_id: str) -> str | None:
+        async with self._db.transaction() as connection:
+            row = await connection.fetchrow(
+                "SELECT rv.binding_version FROM bindings b, registry_versions rv"
+                " WHERE b.binding_id = $1 AND b.is_active", binding_id)
+        return None if row is None else row["binding_version"]
