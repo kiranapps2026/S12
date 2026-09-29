@@ -63,10 +63,22 @@ class PostgresAuthorizationState:
             user_id, workspace_id)["ok"])
 
     def budget_available(self, tenant_id: str, amount: float) -> bool:
-        """Precheck against the tenant pool; S12 adds reservations to this sum (gate C33)."""
+        """Pool minus the reservations of the current period (database time, UTC) >= amount.
+
+        Reserved, locked and committed reservations count; released ones do not. A precheck
+        only: S12's atomic reserve (row lock on the tenant) is the authority.
+        """
         self._require_own(tenant_id)
-        pool = self._one("SELECT budget_pool FROM tenants WHERE tenant_id = $1", tenant_id)["budget_pool"]
-        return pool >= amount
+        available = self._one("""
+            SELECT t.budget_pool - COALESCE((
+                SELECT SUM(r.cost) FROM budget_reservations r
+                 WHERE r.tenant_id = t.tenant_id
+                   AND r.status IN ('reserved', 'locked', 'committed')
+                   AND r.created_at >= date_trunc(
+                        CASE t.budget_period WHEN 'daily' THEN 'day' WHEN 'weekly' THEN 'week' ELSE 'month' END,
+                        now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'), 0) AS available
+              FROM tenants t WHERE t.tenant_id = $1""", tenant_id)["available"]
+        return available >= amount
 
     def _require_own(self, tenant_id: str) -> None:
         """A provider bound to one tenant refuses to answer for another."""

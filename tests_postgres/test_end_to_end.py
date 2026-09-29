@@ -293,3 +293,17 @@ def test_a_run_leaves_an_ordered_event_trail_per_tenant(pg):
     assert [(r["stage"], r["status"], r["reason"]) for r in rows["tenant-b"]][-1] == ("S2", "clarify", "intent_unclear")
     assert not any(r["stage"] == "S3" for r in rows["tenant-b"])
 
+
+
+def _reservation(tenant, cost):
+    return ("INSERT INTO budget_reservations (reservation_id, tenant_id, user_id, execution_id, step_id, cost)"
+            f" VALUES ('r-{tenant}', '{tenant}', 'u', 'e', 's', {cost})")
+
+
+def test_open_reservations_shrink_the_budget_a_run_may_use(pg):
+    """The pool is 10000; a contact.list costs 1. With 10000 already reserved nothing is left."""
+    code, j, _ = _scenario(pg, "contact.list", _reservation("tenant-a", 10000))
+    assert (j["status"], j["final_stage"], j["reason"]) == ("DENY", "S8", "budget_available_denied"), j
+    # another tenant's reservations do not matter
+    code, j, _ = _scenario(pg, "contact.list", _reservation("tenant-b", 10000))
+    assert (j["status"], j["final_stage"]) == ("NORMAL", "S11"), j

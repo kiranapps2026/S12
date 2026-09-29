@@ -369,3 +369,44 @@ def test_an_invalid_status_is_rejected_by_the_database(pg):
         with pytest.raises(Exception):
             await PostgresEventSink(db).emit(_event(status="approved"))
     pg(body)
+
+
+def _reserve(tenant, cost, status="reserved", age="0 seconds", rid=[0]):
+    rid[0] += 1
+    return (f"INSERT INTO budget_reservations (reservation_id, tenant_id, user_id, execution_id, step_id,"
+            f" cost, status, created_at) VALUES ('r{rid[0]}', '{tenant}', 'u', 'e', 's{rid[0]}', {cost},"
+            f" '{status}', now() - interval '{age}')")
+
+
+def test_budget_subtracts_open_reservations_but_not_released_ones(pg):
+    async def body(db):
+        auth = PostgresAuthorizationState(db, A, LoopBridge.current())
+        return tuple([await _in_thread(auth.budget_available, A, n) for n in (4000, 4001, 9000)])
+    assert pg(body, _reserve(A, 3000), _reserve(A, 2000, "locked"), _reserve(A, 1000, "committed"),
+              _reserve(A, 9000, "released")) == (True, False, False)
+
+
+def test_budget_ignores_other_tenants_and_reservations_from_earlier_periods(pg):
+    async def body(db):
+        auth = PostgresAuthorizationState(db, A, LoopBridge.current())
+        return await _in_thread(auth.budget_available, A, 10000), await _in_thread(auth.budget_available, A, 10001)
+    assert pg(body, _reserve("tenant-b", 9000), _reserve(A, 5000, age="400 days")) == (True, False)
+
+
+def test_budget_period_decides_which_reservations_count(pg):
+    async def body(db):
+        auth = PostgresAuthorizationState(db, A, LoopBridge.current())
+        return await _in_thread(auth.budget_available, A, 10000)
+    # a 40-day-old reservation is outside every period: the whole pool is available
+    assert pg(body, "UPDATE tenants SET budget_period = 'daily' WHERE tenant_id = 'tenant-a'",
+              _reserve(A, 5000, age="40 days")) is True
+    # a reservation made just now is inside every period
+    assert pg(body, "UPDATE tenants SET budget_period = 'daily' WHERE tenant_id = 'tenant-a'",
+              _reserve(A, 5000)) is False
+
+
+def test_an_unknown_budget_period_cannot_be_stored(pg):
+    async def body(db):
+        return None
+    with pytest.raises(Exception, match="budget_period"):
+        pg(body, "UPDATE tenants SET budget_period = 'yearly' WHERE tenant_id = 'tenant-a'")
