@@ -410,3 +410,14 @@ def test_an_unknown_budget_period_cannot_be_stored(pg):
         return None
     with pytest.raises(Exception, match="budget_period"):
         pg(body, "UPDATE tenants SET budget_period = 'yearly' WHERE tenant_id = 'tenant-a'")
+
+
+def test_the_registry_reports_a_kernel_operations_inverse(pg):
+    async def body(db):
+        from adapters.postgres.registry import PostgresCapabilityRegistry
+        registry = PostgresCapabilityRegistry(db)
+        return [(b.kernel_op_id, b.inverse_kernel_op_id)
+                for cap in ("cap.contact.create", "cap.contact.list")
+                for b in await registry.list_bindings(cap)]
+    assert pg(body, "UPDATE kernel_ops SET inverse = 'crm.contact_delete' WHERE kernel_op_id = 'crm.contact_create'"
+              ) == [("crm.contact_create", "crm.contact_delete"), ("crm.contact_list", None)]

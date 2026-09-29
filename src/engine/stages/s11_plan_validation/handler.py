@@ -64,6 +64,7 @@ def _chain_matches(state: PipelineState, plan) -> bool:
                 or step.risk != item.binding.effective_risk
                 or step.mutation != item.binding.effective_mutation
                 or step.cost != item.match.estimated_cost_units
+                or step.inverse != item.binding.inverse_kernel_op_id
                 or tuple(step.depends_on) != tuple(item.step_data.get("depends_on", ()))):
             return False
     return True

@@ -43,3 +43,6 @@ class FrozenBindingIdentity:
     binding_version: str = "1.0.0"          # Binding version
     risk_policy_version: str = "1.0.0"      # Risk policy version
     authorization_version: str = "1.0.0"    # Authorization version
+
+    # === Compensation (R-AF; R-O approved extension) ===
+    inverse_kernel_op_id: str | None = None  # kernel op that undoes this one, if the registry declares it

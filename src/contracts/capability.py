@@ -79,6 +79,7 @@ class BindingRow:
     selection_rank: int = 0
     is_active: bool = True
     metadata: dict[str, str] = field(default_factory=dict)
+    inverse_kernel_op_id: str | None = None   # kernel op that undoes this one (R-AF)
 
 
 class CapabilityRegistry:

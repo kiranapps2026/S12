@@ -38,13 +38,14 @@ CONFIRMATION_REQUIRED = "confirmation_required"
 
 def _operations(steps) -> tuple[dict, ...]:
     """What the user is shown. A multi-capability plan (R-AB) lists EVERY step with the exact
-    parameters it will run with (R-AE): the values plan_hash covers."""
+    parameters it will run with (R-AE) and whether the registry can undo it (R-AF): the values
+    plan_hash covers."""
     if len(steps) == 1:
         s = steps[0]
         return ({"step_id": s.id, "kernel_op_id": s.kernel_op_id, "mutation": s.mutation},)
     return tuple(
         {"step_id": s.id, "kernel_op_id": s.kernel_op_id, "mutation": s.mutation,
-         "params": dict(s.params)}
+         "params": dict(s.params), "undoable": s.inverse is not None}
         for s in steps
     )
 

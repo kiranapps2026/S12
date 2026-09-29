@@ -55,6 +55,7 @@ async def _freeze(match: CapabilityMatch, registry: CapabilityRegistry) -> Froze
         binding_version=row.binding_version,
         risk_policy_version=row.risk_policy_version,
         authorization_version=row.authorization_version,
+        inverse_kernel_op_id=row.inverse_kernel_op_id,
     )
 
 

@@ -1,5 +1,15 @@
-"""M2a: heterogeneous linear chains (rulings R-AB..R-AL). Single-capability behaviour is covered
-by the existing golden files and must not change; these tests cover only the new path."""
+"""GOLDEN (owner-pinned, docs/gates/spec_pins.sha256) — M2a: heterogeneous linear chains.
+
+Rulings R-AB..R-AL (docs/proposals/M2_RULINGS.md), promoted to golden on the owner's instruction
+"authorise the R-O extension and add golden tests". Covers only the new multi-capability path:
+single-capability behaviour stays in the older golden files, which must not change.
+
+  R-AB  per-step bindings (singular fields None for 2-5 steps), S8 per binding, S11 per step
+  R-AC  at most 5 steps counting item expansion      R-AK  items expand N + N within that cap
+  R-AD  0.85 confidence floor for 2+ steps           R-AE  parameters bound at S9, shown at S10
+  R-AF  inverse comes from the registry (FrozenBindingIdentity.inverse_kernel_op_id, R-O extension)
+  R-AJ  chain naming / ambiguity                     R-AL  3+ distinct providers need confirmation
+"""
 import asyncio
 import dataclasses
 
@@ -36,8 +46,8 @@ def test_two_different_capabilities_become_a_two_step_chain():
 def test_each_step_carries_its_own_properties_and_bound_parameters():
     steps = run_chain(CREATE_THEN_EMAIL)[0].final_state.plan.plan.steps
     a, b = steps
-    assert (a.mutation, a.risk, a.cost) == ("W", 0.2, 3)
-    assert (b.mutation, b.risk, b.cost) == ("W", 0.3, 2)
+    assert (a.mutation, a.risk, a.cost, a.inverse) == ("W", 0.2, 3, "op.contact.delete")
+    assert (b.mutation, b.risk, b.cost, b.inverse) == ("W", 0.3, 2, None)
     assert a.params == {"name": "Ana", "email": "ana@x.com"}            # R-AE: bound at S9
     assert b.params == {"to": "ana@x.com", "subject": "Invoice"}
     assert (a.depends_on, b.depends_on) == ((), (a.id,))
@@ -165,6 +175,7 @@ def test_any_delete_step_needs_confirmation_and_the_chain_stops_at_s10():
     conf = result.final_state.confirmation.confirmation
     assert [o["kernel_op_id"] for o in conf.operations] == ["op.contact.create", "op.contact.delete"]
     assert conf.operations[1]["params"] == {"id": "c1"}                  # R-AE: the user sees the params
+    assert [o["undoable"] for o in conf.operations] == [True, False]     # R-AF
     assert conf.plan_hash == result.final_state.plan.plan_hash
 
 
@@ -242,7 +253,7 @@ def _tamper(state, index, **changes):
 
 @pytest.mark.parametrize("changes", [
     {"kernel_op_id": "op.contact.create"},           # step 2 runs step 1's operation
-    {"mutation": "R"}, {"risk": 0.0}, {"cost": 1}, {"depends_on": ()},
+    {"mutation": "R"}, {"risk": 0.0}, {"cost": 1}, {"inverse": "op.x"}, {"depends_on": ()},
 ])
 def test_a_step_that_differs_from_its_own_binding_is_refused_even_with_a_matching_hash(changes):
     state = _tamper(_through_s10(), 1, **changes)

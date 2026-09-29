@@ -73,7 +73,7 @@ class PostgresCapabilityRegistry(CapabilityRegistry):
                 "  FROM registry_versions")
             rows = await connection.fetch("""
                 SELECT b.binding_id, b.capability_id, b.kernel_op_id, b.provider, b.engine_module,
-                       b.adapter_class, b.priority, b.is_active, k.risk_floor
+                       b.adapter_class, b.priority, b.is_active, k.risk_floor, k.inverse
                   FROM bindings b
                   JOIN kernel_ops k ON k.kernel_op_id = b.kernel_op_id
                   JOIN capabilities c ON c.capability_id = b.capability_id
@@ -93,7 +93,7 @@ class PostgresCapabilityRegistry(CapabilityRegistry):
                 authorization_version=versions["authorization_version"],
                 effective_risk=r["risk_floor"], kernel_op_id=r["kernel_op_id"],
                 engine_module=r["engine_module"], selection_rank=r["priority"],
-                is_active=r["is_active"],
+                is_active=r["is_active"], inverse_kernel_op_id=r["inverse"],
             )
             for r in rows
         ]

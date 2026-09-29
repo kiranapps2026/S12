@@ -20,11 +20,12 @@ class Cap:
     risk: float = 0.2
     cost: int = 3
     provider: str = "crm"
+    inverse: str | None = None
     alternatives: int = 1          # >1: the registry offers several capabilities for the intent
 
 
 DEFAULT_CAPS = {
-    "contact.create": Cap("W", 0.2, 3, "crm"),
+    "contact.create": Cap("W", 0.2, 3, "crm", inverse="op.contact.delete"),
     "email.send": Cap("W", 0.3, 2, "mail"),
     "contact.list": Cap("R", 0.1, 1, "crm"),
     "contact.delete": Cap("D", 0.5, 5, "crm"),
@@ -66,7 +67,8 @@ class ChainRegistry(CapabilityRegistry):
             binding_id=f"bind.{capability_id}", capability_id=capability_id, provider=cap.provider,
             adapter_class="Adapter", capability_version="cap-v7", binding_version="bind-v3",
             policy_version="p", risk_policy_version="risk-v2", authorization_version="auth-v4",
-            effective_risk=0.0, kernel_op_id=f"op.{intent}", engine_module="engines.x",)]
+            effective_risk=0.0, kernel_op_id=f"op.{intent}", engine_module="engines.x",
+            inverse_kernel_op_id=cap.inverse)]
 
 
 class ChainModel:

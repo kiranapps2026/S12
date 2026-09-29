@@ -74,8 +74,8 @@ async def handle(state: PipelineState) -> PipelineState:
         return state.with_status(StageStatus.DENY, "binding_mismatch")   # S6 and S9 must agree
 
     if chain is not None:
-        # Every step carries ITS OWN binding's operation, mutation and risk and its own
-        # registry cost (R-AB); the parameters are S4's, bound here and covered by plan_hash (R-AE).
+        # Every step carries ITS OWN binding's operation, mutation, risk and inverse and its own
+        # registry cost (R-AB, R-AF); the parameters are S4's, bound here and covered by plan_hash (R-AE).
         for item in chain:
             steps.append(Step(
                 id=item.step_data["step_id"],
@@ -86,6 +86,7 @@ async def handle(state: PipelineState) -> PipelineState:
                 risk=item.binding.effective_risk,
                 cost=item.match.estimated_cost_units,
                 retry_policy=item.step_data.get("retry_policy", {}),
+                inverse=item.binding.inverse_kernel_op_id,
             ))
     elif graph_analysis and graph_analysis.execution_steps:
         for step_data in graph_analysis.execution_steps:
@@ -98,6 +99,7 @@ async def handle(state: PipelineState) -> PipelineState:
                 risk=frozen.effective_risk,
                 cost=per_step_cost,
                 retry_policy=step_data.get("retry_policy", {}),
+                inverse=frozen.inverse_kernel_op_id,
             )
             steps.append(step)
 
@@ -112,6 +114,7 @@ async def handle(state: PipelineState) -> PipelineState:
             risk=frozen.effective_risk,
             cost=per_step_cost,
             retry_policy={},
+            inverse=frozen.inverse_kernel_op_id,
         ))
 
     # Branch ID: only for AGENTIC path; None for FAST/WORKFLOW
