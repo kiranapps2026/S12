@@ -1,6 +1,7 @@
 # Identity & Tenancy Model
 
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY — inherits FINAL_ARCHITECTURE.md status
+**Worker-management update (2026-09-29)**: §5, §6, §7 and §8.4 amended per gate v10 C39 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E); changed passages carry a `Worker-management repair (RD-n)` marker.
 **Purpose**: Defines every identity in the system, their formats, scopes, ownership relationships, and lifecycle states. These are frozen NOW — before any runtime code is written — so that adding thousands of tools, AI workers, parallel execution, and enterprise features is additive rather than requiring engine redesign.
 
 ---
@@ -243,9 +244,12 @@ Tenant Policy
       └── User Role (RBAC)
            └── User Capability Grants
                 └── Worker Capability Grants
-                     └── Execution Mode (FAST/WORKFLOW/AGENTIC)
-                          └── SafetyGate (S8)
+                     └── Worker Management Settings (restrict-only; gate v10 C39)
+                          └── Execution Mode (FAST/WORKFLOW/AGENTIC)
+                               └── SafetyGate (S8)
 ```
+
+> **Worker-management repair (RD-7, spec F1/F12):** "Worker Management Settings" is added below Worker Capability Grants. It can only restrict. In S12–S15 its only enforcement points are the S12 eligibility filters (WORKER_LIFECYCLE §13, §16); enforcing `restricted_capabilities` at S8 is an S0–S11 change and waits for change control.
 
 ### Tenant Policy
 
@@ -371,6 +375,23 @@ class CapabilityGrant:
     expires_at: str | None = None     # None = permanent
     is_active: bool = True
 ```
+
+### Worker Management Settings Contract (`workers.settings` JSONB)
+
+> **Worker-management repair (spec Appendix B, corrected by review A-19 and RD-6):** every key is optional; a missing key falls back to tenant or global defaults; new keys need no migration.
+
+| Key | Type | Rule |
+|---|---|---|
+| `skills_prompt` | string | Consumed at S2 (the LLM call). S2 is certified S0–S11, so this key is **inert** until an S0–S11 change is certified. |
+| `rules` | list[string] | Business rules for the worker's LLM behavior; never an authorization input (I-007). |
+| `restricted_capabilities` | list[capability_id] | Narrows the worker's grants; never widens them. Enforced at S12 eligibility in this phase. |
+| `llm_model` | string | Must be in a tenant model allow-list that `TenantPolicy` does not have yet; **inert** until that field exists. Routing stays frozen per execution (DATA_CONTRACTS §42). |
+| `execution_policy` | object | `timeout_seconds` and `max_retries` may only **lower** MUTATION_SAFETY/RELIABILITY limits; never enable retries for IRREVERSIBLE or non-idempotent D. No per-worker circuit-breaker threshold: breakers are per provider. |
+| `memory_policy`, `browser_policy`, `is_listed`, `listing_config`, `custom_fields` | object | Deferred features (post-S15). Not read in S12–S15. |
+
+**Admin roles.** Worker-management bypasses (pause, activation, assignment) apply to membership role `UserRole.OWNER` or `UserRole.ADMIN` **in the run's workspace**, read live. The spec's `TENANT_ADMIN` / `TENANT_OWNER` do not exist; VOCABULARY_INDEX's `TENANT_ADMIN`/`TENANT_OPERATOR`/`TENANT_VIEWER` must be aligned to `UserRole`.
+
+**Autonomy.** The spec's per-grant `autonomy_level` (F20) is **not** added to `CapabilityGrant`, which is a frozen S0–S11 contract. `AutonomyLevel` (DATA_CONTRACTS §38) stays the only autonomy enum; a per-capability refinement, if added post-S15, is restrict-only (RD-14).
 
 ### Effective Policy Derivation
 
@@ -548,6 +569,10 @@ class WorkerAuthorizationContext:
 2. A worker's capabilities are determined by its `CapabilityGrant` records, NOT by the user's grants
 3. `serving_user_id` is for audit and billing — it does NOT expand worker capabilities
 4. If a worker lacks a grant for a capability, the execution is DENIED regardless of the user's grants
+5. **Assignment** (`workers.assigned_user_id`) restricts which `PrincipalChain.original_principal_id` a worker may serve; it never grants a capability. It is checked by the S12 eligibility filter 14 (gate v10 C39), with the admin bypass above.
+6. **Sub-agents** (post-S15): a child worker's `capability_profile` and grants are subsets of its parent's, and the PrincipalChain records the parent as `delegating_worker_id`.
+
+> **Worker-management repair (RD-7, RD-13):** rules 5 and 6 added.
 
 ### Delegation and Impersonation Boundaries
 
@@ -634,7 +659,7 @@ INVITED → ACTIVE → SUSPENDED → REMOVED
 ### Worker Lifecycle
 
 ```
-REGISTERED → ACTIVE ←→ DRAINING → STOPPED → DELETED
+REGISTERED → ACTIVE ←→ DRAINING → DRAINED → TERMINATED
 ```
 
 | State | Meaning |
@@ -642,8 +667,10 @@ REGISTERED → ACTIVE ←→ DRAINING → STOPPED → DELETED
 | `REGISTERED` | Created but not yet started |
 | `ACTIVE` | Accepting executions |
 | `DRAINING` | Finishing current executions, not accepting new |
-| `STOPPED` | Not running |
-| `DELETED` | Permanently removed |
+| `DRAINED` | All work complete, ready to terminate |
+| `TERMINATED` | Removed from pool (terminal) |
+
+> **Worker-management repair (pre-existing defect found in review):** the former states STOPPED and DELETED contradicted STATE_TRANSITIONS §4, WORKER_LIFECYCLE §1 and gate Appendix A.5, which are authoritative. Pause and scheduled activation are **not** states: they are management columns checked at worker selection (gate v10 C39), so a paused worker stays ACTIVE.
 
 ### Connection Lifecycle
 
@@ -828,6 +855,8 @@ def check_kill_switch(context: AuthorizationContext) -> CheckResult:
         return CheckResult(passed=False, reason="Workspace kill switch active")
     return CheckResult(passed=True)
 ```
+
+> **Worker-management repair (RD-5):** **pause ≠ kill switch.** A pause (`paused_until` on tenant, workspace, group or worker) blocks **new** runs and new leases and never cancels running work (drain semantics). The kill switch stops now: remaining steps are CANCELLED with `kill_switch_engaged` (gate C23). Pause and activation times are compared with database `NOW()` (§11 Rule 1).
 
 ### 8.5 Feature Flags
 

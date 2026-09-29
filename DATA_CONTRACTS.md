@@ -45,6 +45,12 @@
 35. [VerificationResult — Independent Verification Outcome](#35-verificationresult--independent-verification-outcome)
 36. [AdmissionDecision — Admission Control Outcome](#36-admissiondecision--admission-control-outcome)
 37. [ExecutionOwnership — Execution Ownership Tracking](#37-executionownership--execution-ownership-tracking)
+50. [WorkerManagementProfile — Worker Management Settings](#50-workermanagementprofile--worker-management-settings)
+51. [OperationQuota — Count-Based Quota](#51-operationquota--count-based-quota)
+52. [Worker-Management Reason Codes](#52-worker-management-reason-codes)
+53. [SkillDefinition and SkillStep (DEFERRED)](#53-skilldefinition-and-skillstep-deferred)
+
+> **Worker-management repair (RD-16 family):** §38–§49 exist in the body but were never added to this table of contents; new sections start at §50 so no existing number is reused (the file also has two §31 headings — a pre-existing defect recorded, not renumbered, because other documents cite these numbers).
 
 ---
 
@@ -2205,6 +2211,9 @@ This means admission can be retried without cleanup.
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+# Worker-management repair (RD-14): AutonomyLevel is the only autonomy enum.
+# The spec's per-grant values (observed/assisted/limited/expanded/high_trust) are not
+# added; any per-capability refinement is restrict-only, under a different name, post-S15.
 class AutonomyLevel(StrEnum):
     FULLY_AUTONOMOUS = "fully_autonomous"
     SUPERVISED = "supervised"
@@ -2677,6 +2686,125 @@ class ExecutionOwnership:
 
 ### Ownership Transfer Rule
 
-Fencing tokens are strictly monotonically increasing. A stale worker
-with an old token cannot commit any state change. The `worker_leases.fence_token`
-table is the authoritative source for the current token.
+Fencing tokens are strictly monotonically increasing. A stale owner
+with an old token cannot commit any state change for the execution.
+
+> **Worker-management repair (review E5; gate C25):** the former text named `worker_leases.fence_token` as the authority. Tokens come from the database sequence `fence_token_seq`; `worker_leases.fence_token` records the token issued with each lease; the write fence is checked per execution against `execution_ownership.fencing_token` (WORKER_LIFECYCLE §14, §15 Rule 7).
+
+---
+
+## 50. WorkerManagementProfile — Worker Management Settings
+
+**Owner**: [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §16; gate v10 C39
+**Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+
+> **Worker-management repair (RD-1, RD-4, RD-10):** a read model of the mutable management columns. `WorkerIdentity` (§31) is frozen and is not modified.
+
+```python
+class RuntimeType(StrEnum):
+    LLM = "llm"
+    RULES = "rules"
+    VISION = "vision"
+    BROWSER = "browser"
+    RPA = "rpa"
+    DATA = "data"
+    RAG = "rag"
+    CODE = "code"
+    HUMAN = "human"
+
+@dataclass(frozen=True)
+class WorkerManagementProfile:
+    worker_id: str                         # TEXT key (RD-1)
+    tenant_id: str
+    runtime_type: RuntimeType              # Selects routing, binding family, eligibility; never skips a stage
+    assigned_user_id: str | None           # Compared with PrincipalChain.original_principal_id
+    paused_until: datetime | None          # TIMESTAMPTZ, compared with database NOW()
+    scheduled_activation_at: datetime | None
+    settings: Mapping[str, Any]            # Read-only view; schema in IDENTITY_AND_TENANCY §5
+```
+
+**Rules**:
+1. Read only by S12 admission and worker selection; never by S0–S11; never part of the ExecutionManifest.
+2. Changes apply to leases acquired afterwards (I-017).
+3. `RuntimeType` is the only worker-type enum. Plan/event/hybrid is derived from active `WorkerSubscription` (§47) rows, not stored. `worker_class` is unchanged.
+4. `settings` may only restrict: `restricted_capabilities` narrows grants, `execution_policy` may only lower retry ceilings and timeouts (IDENTITY_AND_TENANCY §5).
+
+---
+
+## 51. OperationQuota — Count-Based Quota
+
+**Owner**: [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §16.4; gate v10 C39
+**Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+
+```python
+@dataclass(frozen=True)
+class OperationQuota:
+    quota_id: str
+    tenant_id: str                 # NOT NULL, RLS
+    workspace_id: str | None       # None = tenant level
+    worker_id: str | None          # None = tenant/workspace level
+    resource_type: str             # "executions" in this phase
+    period_start: datetime         # TIMESTAMPTZ
+    period_end: datetime
+    limit_value: int               # >= 0
+    used_count: int                # >= 0, <= limit_value when is_hard (I17)
+    is_hard: bool
+```
+
+**Rules**:
+1. Consumed once per run, in the durable-admission transaction (gate §7.2), updating every applicable level in the order tenant → workspace → worker; zero rows at any level rolls back.
+2. Hard → DENY `quota_exhausted`; soft → `AdmissionDecision(status="QUEUE")` with upgrade guidance in `detail`.
+3. Refund only when the run ends CANCELLED with no step COMPLETED, as a ledger event.
+4. The per-step admission gate 16 reads, never writes.
+
+---
+
+## 52. Worker-Management Reason Codes
+
+**Owner**: gate v10 C39
+
+| Code | Carried by | Meaning |
+|---|---|---|
+| `tenant_paused`, `workspace_paused` | S12 entry DENY | `paused_until > NOW()` at tenant/workspace level |
+| `not_yet_active` | S12 entry DENY | `scheduled_activation_at > NOW()` at tenant/workspace level |
+| `quota_exhausted` | S12 entry DENY; `AdmissionDecision.reason` | Hard quota exhausted |
+| `worker_paused`, `worker_not_yet_active`, `not_assigned`, `capability_mismatch` | `no_worker` ledger event | Eligibility filter that removed a candidate |
+
+No `StepTerminalReason` value is added: entry denials create no steps, and filter exhaustion ends the step with the existing `no_worker`.
+
+---
+
+## 53. SkillDefinition and SkillStep (DEFERRED)
+
+**Owner**: FINAL_ARCHITECTURE.md §51 extension points #5–#7
+**Status**: DEFERRED (post-S15) — nothing is implemented, migrated or tested in S12–S15
+
+```python
+@dataclass(frozen=True)
+class SkillStep:
+    step_id: str
+    capability_id: str              # Resolved through the registry at S3/S5
+    input_mapping: Mapping[str, str]
+    output_mapping: Mapping[str, str]
+    depends_on: tuple[str, ...]
+    condition: str | None
+
+@dataclass(frozen=True)
+class SkillDefinition:
+    skill_id: str
+    tenant_id: str
+    name: str
+    runtime_type: RuntimeType       # replaces the spec's worker_type (RD-10)
+    composition: tuple[SkillStep, ...]
+    input_schema: Mapping[str, Any]
+    output_schema: Mapping[str, Any]
+    capabilities_required: tuple[str, ...]
+    is_active: bool
+```
+
+**Rules**:
+1. A composition is planned at **S9** (not S7) into ordinary PlanSteps; it never bypasses S8, S10 or S11 (FINAL_ARCHITECTURE I-029).
+2. Recorded browser/RPA workflows are skill compositions of browser capabilities; there is no separate browser execution context or path (RD-8).
+3. The VOCABULARY_INDEX "Skill" definition must be reconciled with data-only compositions before this lands.
+
+Contracts deliberately **not** added: `BatchSplit` (would change the certified `NormalizedInput`; batch is BATCH-strategy PlanSteps, gate C40), `BatchConsolidation` (consolidation is gate §10), `BrowserExecutionContext` (one execution path, RD-8).

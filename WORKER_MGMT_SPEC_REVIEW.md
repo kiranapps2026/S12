@@ -5,7 +5,7 @@
 `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md`, `DATA_CONTRACTS.md`, `IDENTITY_AND_TENANCY.md`, `PIPELINE_STAGES.md`,
 `S12_SESSION0_PREFLIGHT_PROMPT.md`, `DATABASE.md`
 **Date**: 2026-09-29
-**Status**: REVIEW — no master document has been edited. Part C lists the per-file changes to apply after the owner rules on Part B. Part E is the rulings draft from owner review round 1.
+**Status**: RULINGS CONFIRMED AND PROPAGATED (2026-09-29). The owner confirmed RD-1…RD-18 (Part E, with the round-2 corrections) and instructed propagation. Part C was applied to the eight target documents; **Part F records what was applied and what remains**. The spec itself (Part A → v1.2.0) and the Part D documents are not yet updated.
 
 ---
 
@@ -75,7 +75,7 @@ or the S12–S15 phase lock:
 |---|---|---|
 | **WM-1** | Are worker-specific checks admission gates or worker-selection eligibility filters? | **Filters.** Tenant/workspace pause and activation (G12a/G13a) and the quota precheck (G16) stay in admission (no worker needed). Worker pause/activation (G12b/G13b), assignment (G14) and capability/runtime match (G17) filter candidates in gate §8 step 2. If none remain → REJECT, with the specific filter reason recorded in the ledger. |
 | **WM-2** | What does a pause do to runs already RUNNING? | Pause blocks **new runs only**, with drain semantics like `DRAINING`: G12/G13 are evaluated at S12 entry and at worker selection for new leases, never as a mid-run REJECT that cancels steps. A hard stop stays the existing kill switch (C23). Otherwise a pause would cancel half-finished runs with `admission_rejected`. |
-| **WM-3** | Which items are in S12–S15 scope? | **In, as gate v10 C39:** additive schema seams (§2.1 columns with defaults/NULL, `execution_runs.parent_execution_id`, `operation_quotas`), WM-1 checks, G16 hard quota at durable admission, new `StepTerminalReason` values. **Deferred (post-S15, register):** batch (F9), replanning (F31), spawning (F7), groups, webhooks, config versions, L2 memory, heterogeneous routing, autonomy, browser, skills, policy engine, templates, plans, marketplace. |
+| **WM-3** | Which items are in S12–S15 scope? | **In, as gate v10 C39:** additive schema seams (§2.1 columns with defaults/NULL, `operation_quotas`), WM-1 checks, G16 hard quota at durable admission. *(Round 2: `parent_execution_id` deferred — RD-11; no new `StepTerminalReason` value was needed — gate C39.)* **Deferred (post-S15, register):** batch (F9), replanning (F31), spawning (F7), groups, webhooks, config versions, L2 memory, heterogeneous routing, autonomy, browser, skills, policy engine, templates, plans, marketplace. |
 | **WM-4** | Browser/RPA: adapter under S0–S15, or amend I-023/Principle 8? | **Adapter under S0–S15.** Amending the invariant re-opens S0–S11 certification and removes S8 from browser executions. |
 | **WM-5** | Batch model | A batch is **N ordinary PlanSteps** produced at S9 by the existing BATCH strategy (FINAL_ARCH §15, PIPELINE §21), each with its own `plan_step_id`. That gives a distinct idempotency key per batch plus the full step state machine, probe and recovery path, and the §10 consolidation (PARTIAL already exists). `execution_batches` becomes a read model, or is dropped; it gets no new state machine (gate §1 forbids new state names). |
 | **WM-6** | Replanning model | Replan = a **new child execution** (`parent_execution_id`) that goes through S0→S15 with its own manifest. The parent consolidates normally (e.g. PARTIAL) and records the link. The kernel stays unchanged; I-006 and I-017 hold. |
@@ -106,7 +106,7 @@ Conventions: **APPEND** = new text. **CORRECT** = change existing text. Every pr
 - §10 "Admission Gates (in order)" (line 756): add G12a, G13a and G16 rows, with a note that worker-level checks live in §16.3. Keep gate numbers stable, because C30 maps REJECTs by gate number.
 - §3 Invariant 4 and §15 Rule 1 ("No WorkerIdentity Mutation After Creation", line 1165): reword to "`capability_profile`, `worker_class` and `tenant_id` are immutable. Management columns (§16.1) are mutable and versioned; a change affects only leases acquired after it (I-017)."
 - §11 AdmissionDecision: list the new reason codes. Soft-quota upgrade guidance goes in `detail`; no new field.
-- Pre-existing stale text found during this review (fix in the same pass): §15 Rule 7 (line 1209) still describes per-worker `max(fence_token)` in `worker_leases`, which C25 superseded with `fence_token_seq` checked per execution. §3 schema types (`TEXT`/`REAL`) differ from DATABASE.md (`UUID`/`TIMESTAMP`, no `workspace_id`).
+- Pre-existing stale text found during this review (fix in the same pass): §15 Rule 7 (line 1209) names the maximum `worker_leases.fence_token` per worker as the authority. C25 changed where tokens come from (the `fence_token_seq` sequence) and what they are checked against (`execution_ownership.fencing_token`, per execution); `worker_leases.fence_token` still exists and records the token issued with each lease. The same stale sentence is in DATA_CONTRACTS §37. §3 schema types (`TEXT`/`REAL`) differ from DATABASE.md (`UUID`/`TIMESTAMP`, no `workspace_id`).
 
 ### C.2 `FINAL_ARCHITECTURE.md`
 
@@ -127,18 +127,18 @@ Conventions: **APPEND** = new text. **CORRECT** = change existing text. Every pr
 - Two "## 38." headings, and "38.." at line 1884.
 - The §26 `workers` DDL (UUID/TIMESTAMP) disagrees with WORKER_LIFECYCLE §3 (TEXT/REAL).
 
-**Do not import** the spec's §7 "Seven-Layer" model under that name (collision with §6). If kept, call it "Platform Maturity Tiers T1–T7" and put it in §30 Evolution Path.
+**Do not import** the spec's §7 "Seven-Layer" model under that name (collision with §6). If kept, call it "Stability Tiers T1–T7" (round 2) and put it in §30 Evolution Path.
 
 ### C.3 `S12_S15_EXECUTION_GATE.md` → v10
 
 - **C39 (new)** Worker management in S12: WM-1, WM-2, WM-7, WM-8, the corrected admission order, quota consumption at §7.2, and the C30 mapping for new gates. C30 mapping: tenant/workspace pause → REJECT at entry (writes nothing), never a mid-run cancel. Quota → deny at entry. Filters → `no_worker` with the filter reason in the ledger.
 - **C40 (new)** Batch: rule it **out of this phase**, and record the WM-5 model for the planning phase. It sits alongside the existing "parallel step execution" entry in §14 "Still deferred" (line 1638).
-- **C41 (new)** Replanning: rule it **out of this phase**. The only seam is `execution_runs.parent_execution_id` (nullable, unused by S12 logic). Record WM-6.
+- **C41 (new)** Replanning: rule it **out of this phase**. *(Round 2: `parent_execution_id` is not added in this phase — RD-11.)* Record WM-6.
 - **C22 extension:** add `StepTerminalReason` values, or state that they map to existing ones: `worker_paused`, `worker_not_yet_active`, `not_assigned`, `quota_exhausted`, `capability_mismatch`. Recommend: entry denials carry them as `StageStatus.DENY` reasons (no step rows exist yet); selection-filter exhaustion stays `no_worker`, with the detail in the ledger. Update the C28 CHECK list.
 - **§2 Preflight (correct the spec's references):** the spec's "item 3" and "item 16" don't match this gate. Item 3 is the S12–S15 file list, and the gate has items 1–14. Add **item 15** (for `workers`, `tenants`, `workspaces`, `execution_runs`: which §16.1/§2.2 columns exist, their types, and the FK type of every referenced key) and **item 16** (whether `operation_quotas`, `worker_spawn_audit`, `worker_groups`, `worker_group_members` or `execution_batches` exist; `file:line` or "not present in code").
 - **§1 MAY:** add the C39 schema and filters. **MUST NOT:** add spawning, batch, replan and browser path explicitly.
 - **§7.1 / §7.2:** entry checks G12a, G13a, and the quota consumption statement.
-- **§7.3 Additive schema:** the §2.1 columns (with defaults), `parent_execution_id`, `operation_quotas` (tenant_id + RLS), and `execution_steps.worker_config_version_id` (if WM-3 keeps F10 as a seam).
+- **§7.3 Additive schema:** the §2.1 columns (with defaults), `operation_quotas` (tenant_id + RLS). *(Round 2: `parent_execution_id` deferred — RD-11; `worker_config_version_id` deferred with F10.)*
 - **§8 step 2:** eligibility filters before locality scoring.
 - **§14 Still deferred:** F7, F9, F10, F15, F17–F20, F22–F36.
 - **§16 suites:** add a suite 20, "worker management" (tests listed under C.4).
@@ -229,15 +229,13 @@ Conventions: **APPEND** = new text. **CORRECT** = change existing text. Every pr
 
 ## Part E — Rulings draft (owner review round 1, 2026-09-29)
 
-**Status**: DRAFT. These consolidate Parts A–C with the owner's first-round suggestions and the corrections to them.
-None of them is binding until the owner confirms it. Once confirmed, each RD entry becomes gate v10 ruling text
-(C39–C41) or a spec v1.2.0 correction, as the "Lands in" column says.
+**Status**: CONFIRMED by the owner on 2026-09-29, with the round-2 corrections marked *(round 2)* below. RD-1, RD-11, RD-15 and RD-16 were revised in round 2 after the owner's cross-check. Each RD entry has been written into gate v10 (C39–C41) or the master documents as the "Lands in" column says; Part F lists the result.
 
 ### E.1 Draft rulings
 
 | ID | Ruling | Replaces / resolves | Lands in |
 |---|---|---|---|
-| **RD-1** Key types | Every foreign-key column in a new table or column takes the **exact type of the referenced key in the actual schema** (preflight item 11/15, not the docs). Per DATABASE.md, that means `TEXT` for `tenant_id`, `user_id`, `workspace_id`, `execution_id`. `workers.worker_id` is `UUID` in DATABASE.md and `TEXT` in WORKER_LIFECYCLE §3, so it is decided by the preflight result. | Part A-2; summary #7 | Spec v1.2.0 §2; gate C39; DATABASE.md |
+| **RD-1** Key types | Every foreign-key column takes the type of the referenced key: `TEXT` for `tenant_id`, `user_id`, `workspace_id`, `execution_id`. *(Round 2)* **Owner choice: `workers.worker_id` and every column that references it are `TEXT`.** DATABASE.md declares `UUID` in `workers`, `worker_leases` and `worker_assignments` but `TEXT` in `worker_versions`, `worker_deployments`, `execution_ownership` and `event_subscriptions`; `TEXT` is the majority and matches every other key. This overrides the gate §7.3 default of changing the referencing column to match the referenced one. Preflight items 15/P3 report every mismatch in the real schema. | Part A-2; summary #7 | Spec v1.2.0 §2; gate C39; DATABASE.md |
 | **RD-2** Timestamps | New time columns stay **`TIMESTAMPTZ`**, compared only with database `NOW()` (I-019). They are **not** converted to `REAL`: timestamps take no FK, and `REAL` would contradict C33 and the M1 "no TEXT timestamps" trap. Existing `REAL` columns are left as they are. | Owner suggestion "TIMESTAMPTZ→REAL" (withdrawn) | Spec v1.2.0 §2; gate C39 |
 | **RD-3** Tenant and RLS | `tenant_id TEXT NOT NULL` + the standard RLS policy on `operation_quotas`, `worker_spawn_audit`, `worker_group_members`, `execution_batches`, `worker_config_versions` and `session_memory`. `worker_groups` and `skill_definitions` already carry `tenant_id` and need only the policy. Deferred tables get the columns in the spec now, so they're correct whenever they land. | Part A-3; summary #8; C34 | Spec v1.2.0 §2; gate C39 |
 | **RD-4** Two-phase admission | **Phase 1, admission** (stateless; runs at S12 entry and again before every step, gate §8 step 1): G1–G11, plus G12a/G13a (tenant/workspace pause and activation) and a read-only G16 quota precheck. REJECT-type gates are evaluated before G7 (capacity QUEUE). **Phase 2, worker-eligibility filters** (pure; gate §8 step 2, after the candidate pool is built and before locality scoring): worker/group pause (G12b), worker activation (G13b), assignment (G14), runtime/capability match (G17). If no candidate remains → `no_worker`, with the filter reason in the ledger event. Gate numbers stay stable for the C30 mapping. | Part B WM-1; summary #2 | Gate C39; WORKER_LIFECYCLE §10, §13, §16 |
@@ -247,12 +245,12 @@ None of them is binding until the owner confirms it. Once confirmed, each RD ent
 | **RD-8** One execution path | B0–B7 and every stage-skipping `runtime_type` route are removed. Browser/RPA/vision/human/rules/data workers run S0→S15. Recorded workflows are `SkillDefinition` compositions planned at **S9**. Speed-ups are made through FAST/REFLEX strategies with no LLM call, never by skipping stages. | WM-4; summary #1; I-023; Principle 8 | Spec v1.2.0 §6.5, §8; FINAL_ARCH §37a; PIPELINE §21 |
 | **RD-9** What `runtime_type` does | `runtime_type` influences S7 routing (`RuntimeRoutingDecision`), S5 binding choice, and the RD-4 eligibility filter. **It never makes S12 choose an adapter:** the adapter comes from the binding frozen at S5 (I-002, I-010; no re-resolution in S12). Browser providers (Playwright/Apify/BrowserUse) are separate bindings. | Summary #16; owner suggestion "runtime_type selects the adapter in S12" (corrected) | Spec v1.2.0 §6.5, §8; PIPELINE §21 |
 | **RD-10** Worker taxonomy | `runtime_type` is the **single new enum** (`llm, rules, vision, browser, rpa, data, rag, code, human`). No `WorkerType` enum exists in the documents, and none is added. Plan/event/hybrid is **derived** from active `WorkerSubscription` rows. `worker_class` is unchanged. `worker_type` is dropped from `worker_templates` and `skill_definitions`. | Part A-10/A-11; owner suggestion "merge runtime values into WorkerType" (corrected) | Spec v1.2.0 §2, §3; DATA_CONTRACTS §50 |
-| **RD-11** Replanning | Out of scope for S12–S15. The model for later: a replan starts a **new child execution** through S0→S15 with its own manifest, admission and budget; the parent consolidates normally. `execution_runs.parent_execution_id` (`TEXT`, nullable) lands now as a metadata link for F0 only, and S12 logic never reads it. F31 moves P0 → P2. | WM-6; summary #5 | Gate C41; spec v1.2.0 §1, §6.1 |
+| **RD-11** Replanning | Out of scope for S12–S15. The model for later: a replan starts a **new child execution** through S0→S15 with its own manifest, admission and budget; the parent consolidates normally. *(Round 2)* `execution_runs.parent_execution_id` is **not** added in this phase: nothing in S12–S15 would read it, so it lands together with its first consumer (replanning or delegation). F0 and F31 move out of P0 (F31 → P2). | WM-6; summary #5 | Gate C41; spec v1.2.0 §1, §6.1 |
 | **RD-12** Batch | Out of scope for S12–S15 (it depends on M11, M12, M16, M19; parallel steps are deferred; C36). Model for later: a batch = N ordinary PlanSteps from the BATCH strategy at S9, each with its own `plan_step_id`, so it gets its own idempotency key, recovery and §10 consolidation. It adds no new state machine. F9 moves P0 → post-S15. | WM-5; summary #3, #4, #12 | Gate C40; spec v1.2.0 §1, §4 |
 | **RD-13** Spawning | Out of scope for S12–S15. F7 moves P0 → post-S15. G15 becomes a check inside `spawn_child_worker()`, not an admission gate, with the Part A-7 fixes. | Part A-7 | Gate §14 deferred list; spec v1.2.0 §1, §3 |
 | **RD-14** Autonomy | The existing `AutonomyLevel` stays the only autonomy enum. Any per-grant concept is restrict-only under a distinct name, and deferred (it needs S0–S11 change control). | Part A-12; summary #10 | Spec v1.2.0 §6.6; DATA_CONTRACTS |
-| **RD-15** Layer vocabulary | The spec's §7 "Seven-Layer Architecture" is renamed **"Platform Maturity Tiers T1–T7"** and moved to FINAL_ARCHITECTURE §30 (Evolution Path). The name "Layer" stays reserved for §6. | Summary #11 | Spec v1.2.0 §7; FINAL_ARCH §30 |
-| **RD-16** FINAL_ARCHITECTURE numbering | Keep every section number that other documents cite (16 references to §38/§39/§41/§45/§46 outside FINAL_ARCHITECTURE; e.g. the DATA_CONTRACTS "Owner" lines and plan §2 "invariants §41"). Renumber only the orphaned duplicate headings, restore the missing "Future Worker Platform Compatibility" heading, remove the duplicate rows I-022…I-025, and sweep all references **in the same commit**. Re-pin only after S0–S11 certification (plan §1 item 3). | Summary; Part C.2 pre-existing defects | FINAL_ARCH; every document citing it |
+| **RD-15** Layer vocabulary | The spec's §7 "Seven-Layer Architecture" is renamed **"Stability Tiers T1–T7"** *(round 2: the spec's section ranks stability, and "Layer" is the word that collides)* and moved to FINAL_ARCHITECTURE §30 (Evolution Path). The name "Layer" stays reserved for §6. | Summary #11 | Spec v1.2.0 §7; FINAL_ARCH §30 |
+| **RD-16** FINAL_ARCHITECTURE numbering | Keep every section number that other documents cite. *(Round 2)* Of the 16 references to §38/§39/§41/§45/§46 in other documents, most are unambiguous (DATA_CONTRACTS Owner lines §39, §45, §46; DATA_CONTRACTS:2458 `CorrelationRule` → §41 Event Correlation; REPAIRS_APPLIED:21, :41, :90 refer to DATA_CONTRACTS numbers). The genuinely ambiguous ones are: LAYA_DECISION_ADAPTER:16, :164, :168, :279, :809 (§38 — intended Runtime Contract); S12_S15_EXECUTION_GATE:1224 and REPAIRS_APPLIED:138 (§38 — intended the manifest section "38.."); S12_S15_IMPLEMENTATION_PLAN:49 ("invariants §41"). Renumber only the orphaned duplicate headings, restore the missing "Future Worker Platform Compatibility" heading, remove the duplicate rows I-022…I-025, and sweep all references **in the same commit**. Re-pin only after S0–S11 certification (plan §1 item 3). | Summary; Part C.2 pre-existing defects | FINAL_ARCH; every document citing it |
 | **RD-17** Milestone references | Every milestone reference in the spec is rewritten to a plan v2/v3 milestone ID (M0–M21, M8a) or to "post-S15 phase: <name>". "W7" is removed; W-numbers belong to EXECUTION_PLAN.md. The spec has no standalone milestone table to delete: the references are scattered (§5.4, §6.2), and §10 is missing. | Summary #17 | Spec v1.2.0 |
 | **RD-18** Session 0 prompt | Gate revision check v8 → v10, or v9 if C39 is not adopted (today it STOPs against v9). "Gate items 3–9" → "3–16". The prompt's own items 10–15 are renumbered P1–P6 so they no longer clash with gate items 10–14. Add the worker-management preflight items (gate 15/16). | Part C.5; owner points A, B | S12_SESSION0_PREFLIGHT_PROMPT.md |
 
@@ -260,7 +258,7 @@ None of them is binding until the owner confirms it. Once confirmed, each RD ent
 
 | Feature | Spec tier | Draft tier | Why |
 |---|---|---|---|
-| F0 `parent_execution_id` | P0 | P0 (column only) | Cheap seam; metadata link only (RD-11) |
+| F0 `parent_execution_id` | P0 | Post-S15 *(round 2)* | No consumer in S12–S15; lands with replanning or delegation (RD-11) |
 | F1–F5 settings, pause, activation, levels, assignment | P0 | P0 | RD-4, RD-5, RD-7 |
 | F6 quota | P0 | P0 (hard quota + precheck) | RD-6 |
 | F7 spawning | P0 | Post-S15 | RD-13 |
@@ -279,3 +277,44 @@ None of them is binding until the owner confirms it. Once confirmed, each RD ent
 7. Plan v3: M1 schema additions, M8a, deferred register entries.
 8. Apply the Part C edits to the master documents, with repair markers.
 9. Re-pin, but only after S0–S11 is certified (plan §1 item 3).
+
+---
+
+## Part F — Propagation status (2026-09-29)
+
+Every edit carries a `Worker-management repair (RD-n)` marker (or `(C39–C41)` in the gate), so it can be found with `grep -n "Worker-management repair"`.
+
+### F.1 Applied — the eight target documents
+
+| Document | New version | Applied | Status |
+|---|---|---|---|
+| `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | (header note) | §3 key-type note and invariant 5; §10 gates 12a/13a/16 and evaluation order; §11 reason codes; §13 worker-eligibility filters; §15 Rule 1 scope and **Rule 7 rewritten per C25 (E5)**; new **§16 Worker Management Settings** (columns, phase-1/phase-2 checks, quota consumption, precedence, deferred list, reason codes); TOC and relationships | ✅ UPDATED |
+| `FINAL_ARCHITECTURE.md` | 4.4.0 → **4.5.0** | TOC rebuilt to match body; orphans renumbered **§37b** (manifest, was "38.."), **§37c** (conflict log, was 39), **§37d** (patterns, was 40), **§50** invariants (was the duplicate "41" ×2), **§51** extension points (heading restored); duplicate I-022…I-025 removed; **I-029** one execution path; Principle 8 reference fixed (I-024 → I-023/I-029) and browser/RPA line; §15 BATCH note; §21 memory classification (renamed "Historical"); §26 key-type note; §29 five decisions; §30 **Stability Tiers T1–T7**; §33 load note; §34 terms + restored "Documented Conflicts" heading; §51 rows 16–19 + feature mapping; unclosed code fence before Appendix A closed | ✅ UPDATED |
+| `S12_S15_EXECUTION_GATE.md` | v9 → **v10** | Header; §0 C1–C41; §1 MAY/MUST NOT; §2 items **15–16**; **C39, C40, C41**; §7.1 item 7; §7.2 quota consumption; §7.3 v10 schema; §8 steps 1–2; §14 deferred list; §16 **suite 20**; §17 **I17, I18**; §20 report line; C38 table §38 → §37b; Appendix B | ✅ UPDATED |
+| `S12_S15_IMPLEMENTATION_PLAN.md` | v2 → **v3** | Header and v3 note (M9.5, M12.5, W7 withdrawn); precondition 6; document roles (gate v10, FINAL v4.5.0, invariants §50, spec as reference only); M0 items 1–16; M1 schema + golden; **new M8a** with golden, sabotage, traps; §5 batches and invariant growth (I17/I18); ★ M8a; §7 risks; §8 owner step | ✅ UPDATED |
+| `S12_SESSION0_PREFLIGHT_PROMPT.md` | — | Gate revision v8 → **v10** (both places); gate items 3–9 → **3–16**; own items renumbered **P1–P6**; P3 table list and FK-type check; report block | ✅ UPDATED |
+| `DATA_CONTRACTS.md` | — | TOC entries §50–§53 (+ note on missing §38–§49 entries); `AutonomyLevel` canonical comment; **§37 fencing text rewritten per C25 (same defect as E5)**; new **§50 WorkerManagementProfile + RuntimeType**, **§51 OperationQuota**, **§52 reason codes**, **§53 SkillDefinition/SkillStep (DEFERRED)**; list of contracts deliberately not added | ✅ UPDATED |
+| `IDENTITY_AND_TENANCY.md` | — | §5 hierarchy level "Worker Management Settings" (restrict-only); settings JSONB contract (inert keys marked); admin roles `owner`/`admin`; autonomy note; §6 rules 5–6 (assignment, sub-agents); **§7 Worker Lifecycle fixed to DRAINED/TERMINATED**; §8.4 pause ≠ kill switch | ✅ UPDATED |
+| `PIPELINE_STAGES.md` | — | §14 "Worker Management in S12" pointer (stages S9 for batch/skills, never S7); §19 five negative-path rows; §21 `runtime_type` never removes a stage | ✅ UPDATED |
+
+Also applied (RD-16 reference sweep): `REPAIRS_APPLIED.md:138` "§13/§38" → "§13/§37b". The LAYA_DECISION_ADAPTER §38 references are now unambiguous (only one §38 remains: Runtime Contract) and were left unchanged.
+
+### F.2 Round-2 corrections to this review (applied above)
+
+| # | Correction | Where |
+|---|---|---|
+| 1 | "Platform Maturity Tiers" → **"Stability Tiers T1–T7"** | Part C.2, RD-15 |
+| 2 | `parent_execution_id` **deferred** (no consumer in this phase) | Part B WM-3, C.3, RD-11, E.2 |
+| 3 | Explicit owner choice: `workers.worker_id` and all referencing columns are **`TEXT`**, overriding the gate §7.3 default | RD-1 |
+| 4 | The genuinely ambiguous cross-references listed by file:line instead of a count | RD-16 |
+| 5 | Rule 7 description corrected: `worker_leases.fence_token` still exists; C25 changed the token source and the check target | Part C.1 |
+
+### F.3 Not yet done
+
+| Item | Why it remains |
+|---|---|
+| `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` → v1.2.0 (Part A corrections, E.2 tiers, milestone references RD-17) | Not one of the eight target documents; the masters now govern and list the spec as reference only |
+| `DATABASE.md` (authoritative DDL for C39: columns, `operation_quotas`, `worker_id` → `TEXT`) | Part D; gate C39 and WORKER_LIFECYCLE §16 state the contract, but DATABASE.md must match before M1 |
+| `STATE_TRANSITIONS.md`, `VOCABULARY_INDEX.md` (roles, Skill, WorkerGroup, runtime_type), `MUTATION_SAFETY.md`, `SECURITY.md`, `PROVIDER_ADAPTERS.md`, `EVENT_GATEWAY_AND_ROUTER.md`, `VALIDATION.md`, `BUILD_READINESS_MATRIX.md`, blocker register §18, `REPAIRS_APPLIED.md` entries for C39–C41 | Part D |
+| DATA_CONTRACTS duplicate §31 headings | Recorded only: renumbering would break existing citations |
+| Re-pin on the VPS | Only after S0–S11 certification (plan §1 item 3) |

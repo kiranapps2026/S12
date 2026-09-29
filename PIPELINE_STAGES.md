@@ -2,6 +2,7 @@
 
 **Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §6 Request Lifecycle, §10 Execution Safety, §12 Reliability, §15 Observability. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, principal chain. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §5 ExecutionContext, §9 Step, §9 ExecutionResult, §9 ExecutionStatus, §9 ExecutionOutcome, §22 RetryDecision, §19 StepState, §17 IdempotencyKey, §20 BudgetStates. [RESOLVE_LAYER.md](RESOLVE_LAYER.md) — resolution chain. [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [SECURITY.md](SECURITY.md) — §3 Authorization Model, §10 Guardrail Precedence. [MUTATION_SAFETY.md](MUTATION_SAFETY.md) — mutation safety rules, confirmation requirements. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — worker lifecycle, independent verification, admission control, state locality.
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**Worker-management update (2026-09-29)**: §14, §19 and §21 amended per gate v10 C39–C41 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E); changed passages carry a `Worker-management repair (RD-n)` marker. No stage handler or stage contract changed.
 
 ---
 
@@ -988,6 +989,17 @@ for step in reversed(completed_steps):
 - Checkpoint after EVERY step for crash recovery
 - Rollback must verify original operation executed before compensating
 
+### Worker Management in S12 (gate v10 C39)
+
+> **Worker-management repair (RD-4, RD-5, RD-6, RD-9):** the normative sequence is S12_S15_EXECUTION_GATE §7–§8; this is a pointer.
+>
+> - **Entry (gate §7.1–§7.2):** a new run is denied, writing nothing, if its tenant or workspace is paused or not yet active (`tenant_paused`, `workspace_paused`, `not_yet_active`). Operation quota is consumed once per run in the durable-admission transaction (`quota_exhausted` on a hard limit, QUEUE on a soft one).
+> - **Per step, admission (phase 1):** gates 1–6, 12a, 13a, 16 (read-only quota), 8–11, then 7 (capacity QUEUE) last.
+> - **Per step, worker selection (phase 2):** eligibility filters remove workers that are paused, not yet active, assigned to another principal, or whose `runtime_type` cannot run the frozen binding; then locality scoring. No candidate → `no_worker`, with the filter reasons in the ledger.
+> - A pause never cancels a running step or a held lease; the kill switch does (C23).
+> - S12 never chooses an adapter from `runtime_type`: the adapter comes from the binding frozen at S5.
+> - Batch processing (C40) and replanning (C41) are not part of S12 in this phase. When they land, batches are ordinary PlanSteps created at **S9** and replans are child executions through S0→S15 — neither is created, planned or replanned at S7 or inside S12.
+
 ---
 
 ## 15. S13 — Validate Result
@@ -1243,6 +1255,11 @@ When S13 sends a step to S14 with `STILL_UNKNOWN` after max reconciliation attem
 | Expired confirmation | S10 confirmation token TTL exceeded | FAILED | No — must re-confirm | No | No | "Confirmation expired — please confirm again" |
 | Budget exhausted | Budget precheck fails at S8 | DENY | No — no execution started | No | No | "Budget limit reached — upgrade or reduce scope" |
 | Tenant disabled | Tenant status check fails at S8 | DENY | No | No | No | "Account disabled — contact support" |
+| Tenant/workspace paused (C39) | `paused_until > NOW()` at S12 entry | DENY (`tenant_paused` / `workspace_paused`), nothing written | No — resubmit after the pause | No | No | "This workspace is paused until <time>" |
+| Tenant/workspace not yet active (C39) | `scheduled_activation_at > NOW()` at S12 entry | DENY (`not_yet_active`), nothing written | No | No | No | "This workspace becomes active at <time>" |
+| Hard quota exhausted (C39) | Quota consumption returns 0 rows at S12 entry | DENY (`quota_exhausted`), nothing written | No | No | No | "Operation limit reached for this period — upgrade or wait for the next period" |
+| Soft quota exhausted (C39) | Quota consumption returns 0 rows at S12 entry | QUEUE (bounded, then `admission_exhausted`) | Yes — re-admit after `retry_after_ms` | No | No | "Operation limit reached — your request is queued" |
+| No eligible worker (C39) | Every candidate removed by an eligibility filter (paused, not yet active, not assigned, runtime/capability mismatch) | Step CANCELLED `no_worker`; filter reasons in the ledger | No | No | No | "No worker is available for this task right now" |
 
 **Notes**:
 - UNKNOWN outcomes always go through PROBE before any terminal state — no silent transitions
@@ -1480,6 +1497,8 @@ class StateTransition:
 | HUMAN_ASSISTED | High risk, D/IRREVERSIBLE | Execute→confirm→continue | Varies | Approval workflows, critical operations |
 | BATCH | Multiple similar operations | Batch LLM requests, parallel adapters | 1 per batch | Bulk creates/updates, mass operations |
 | EVENT_DRIVEN | External triggers | Webhook→queue→execute | Varies | Async workflows, integrations |
+
+> **Worker-management repair (RD-8, RD-9, RD-10, RD-12):** `runtime_type` (llm, rules, vision, browser, rpa, data, rag, code, human) selects the strategy at S7 (`RuntimeRoutingDecision`, DATA_CONTRACTS §42), the binding family at S5, and worker eligibility at S12. **It never removes a stage:** S8 authorization, S10 confirmation and S11 validation apply to every runtime type, and there is no browser/RPA path that bypasses S0–S11 (FINAL_ARCHITECTURE I-029, §37a Principle 8). Recorded browser/RPA workflows are skill compositions planned at S9. The BATCH strategy, when activated (post-S15), produces one ordinary PlanStep per slice at S9 (gate C40).
 
 ### REFLEX Strategy Detail (SystemOneHarness pattern)
 
