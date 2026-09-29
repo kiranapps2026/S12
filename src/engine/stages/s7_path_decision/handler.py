@@ -17,6 +17,10 @@ from contracts.stage_registry import StageStatus
 
 logger = logging.getLogger(__name__)
 
+#: R-AD: a plan of 2 or more steps needs at least this model confidence (a wrong multi-step plan
+#: costs more than a wrong single step). Single-step thresholds are unchanged.
+MULTI_STEP_CONFIDENCE_FLOOR = 0.85
+
 
 async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> PipelineState:
     """
@@ -30,7 +34,7 @@ async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> Pi
     task_profile = state.task_profile
     intent_result = state.intent_result
     graph_analysis = state.graph_analysis
-    frozen = state.frozen_binding_identity
+    bindings = state.bindings
 
     if task_profile is None:
         raise PathDecisionError("No TaskProfile from S6")
@@ -38,13 +42,14 @@ async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> Pi
         raise PathDecisionError("No IntentResult from S2")
     if graph_analysis is None:
         raise PathDecisionError("No GraphAnalysis from S4")
-    if frozen is None:
+    if not bindings:
         raise PathDecisionError("No FrozenBindingIdentity from S5")
+    multi = len(bindings) > 1
 
     # Risk threshold comes from KernelPolicy only; no default (R-Q row 1).
     risk_deny_threshold = getattr(policy, "risk_deny_threshold", None)
 
-    risk = frozen.effective_risk
+    risk = max(b.effective_risk for b in bindings)      # a chain is as risky as its riskiest step
     confidence = intent_result.confidence if isinstance(intent_result, IntentResult) else 1.0
     graph_complexity = graph_analysis.complexity if isinstance(graph_analysis, GraphAnalysis) else "simple"
     steps = max(1, len(graph_analysis.execution_steps)) if isinstance(graph_analysis, GraphAnalysis) and graph_analysis.execution_steps else 1
@@ -64,8 +69,11 @@ async def handle(state: PipelineState, policy: KernelPolicy | None = None) -> Pi
         reason = "no_capability"
     elif distinct_caps > 1:
         decision = PathDecision.CLARIFY
-        reason = "multi_capability_not_supported"
+        reason = "ambiguous_capability" if multi else "multi_capability_not_supported"
     elif confidence is None or confidence < 0.5:
+        decision = PathDecision.CLARIFY
+        reason = "low_confidence"
+    elif multi and confidence < MULTI_STEP_CONFIDENCE_FLOOR:
         decision = PathDecision.CLARIFY
         reason = "low_confidence"
     elif graph_complexity == "complex" or steps >= 6:

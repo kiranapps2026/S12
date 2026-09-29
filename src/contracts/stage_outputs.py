@@ -41,6 +41,14 @@ class NormalizedInput:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class IntentStep:
+    """One operation of a multi-capability plan (R-AB): a registry intent and its parameters.
+    The model chooses WHICH registered intents and in what order; never their properties."""
+    intent: str
+    parameters: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class IntentResult:
     """
     Structured result of intent analysis from S2.
@@ -53,6 +61,8 @@ class IntentResult:
     confidence: float = 1.0                # 0.0-1.0 confidence in decomposition
     raw_llm_output: str = ""               # Raw LLM response for audit
     attempt: int = 1                       # Which attempt (1 or 2)
+    steps: tuple[IntentStep, ...] = field(default_factory=tuple)   # 2-5 ordered operations (M2a);
+                                                                   # empty for a single-intent answer
 
 
 # ---------------------------------------------------------------------------

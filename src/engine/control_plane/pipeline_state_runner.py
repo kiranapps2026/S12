@@ -120,7 +120,8 @@ def _minimized(state: PipelineState) -> PipelineState:
             state.normalized_input, sanitized_input={}, text="", entities={}, references={})
     if state.intent_result is not None:
         changes["intent_result"] = dataclasses.replace(
-            state.intent_result, parameters={}, raw_llm_output="")
+            state.intent_result, parameters={}, raw_llm_output="",
+            steps=tuple(dataclasses.replace(step, parameters={}) for step in state.intent_result.steps))
     return dataclasses.replace(state, **changes)
 
 

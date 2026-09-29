@@ -45,6 +45,15 @@ STAGE_OUTPUT_FIELD = types.MappingProxyType({
     "S11": "execution_manifest",      # S11 produces ExecutionManifest (primary)
 })
 
+#: Per-step outputs of a multi-capability plan (M2a, R-AB). A plan of ONE step writes only the
+#: singular field (`capability_match`, `frozen_binding_identity`) exactly as before; a plan of
+#: 2-5 steps writes only the tuple, and the singular field stays None so no code can silently use
+#: "the" binding of a multi-step plan. Read either through `PipelineState.matches` / `.bindings`.
+SECONDARY_OUTPUT_FIELD = types.MappingProxyType({
+    "S3": "capability_matches",
+    "S5": "frozen_bindings",
+})
+
 #: The execution sequence — S0 through S11 in order.
 PRE_EXECUTION_SEQUENCE: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11")
 
@@ -105,6 +114,25 @@ _FIELD_TYPE_NAMES = types.MappingProxyType({
 })
 
 
+_TUPLE_FIELD_ELEMENT = types.MappingProxyType({
+    "capability_matches": ("contracts.stage_outputs", "CapabilityMatch"),
+    "frozen_bindings": ("contracts.frozen_binding", "FrozenBindingIdentity"),
+})
+
+
+def _check_tuple(field_name: str, value: object, stage_id: str) -> None:
+    """A per-step output is a non-empty tuple of its element contract (2 or more entries)."""
+    import importlib
+    module_name, class_name = _TUPLE_FIELD_ELEMENT[field_name]
+    element = getattr(importlib.import_module(module_name), class_name)
+    if (not isinstance(value, tuple) or len(value) < 2
+            or not all(isinstance(v, element) for v in value)):
+        raise ContractViolationError(
+            f"Field '{field_name}' expects a tuple of 2 or more {class_name}, "
+            f"got {type(value).__name__}.",
+            stage_id=stage_id, field=field_name)
+
+
 def _resolve_field_type(field_name: str) -> type | None:
     """Return the runtime class for a PipelineState field, or None if unavailable."""
     module_name = _FIELD_TYPE_MODULES.get(field_name)
@@ -138,6 +166,8 @@ class PipelineState:
     capability_match: CapabilityMatch | None = None
     graph_analysis: GraphAnalysis | None = None
     frozen_binding_identity: FrozenBindingIdentity | None = None
+    capability_matches: tuple[CapabilityMatch, ...] | None = None    # S3, plans of 2-5 steps only
+    frozen_bindings: tuple[FrozenBindingIdentity, ...] | None = None  # S5, plans of 2-5 steps only
     task_profile: TaskProfile | None = None
     path_decision: PathDecision | None = None
     safety_result: SafetyResult | None = None
@@ -150,6 +180,20 @@ class PipelineState:
     # decide whether to continue; a stage that refuses sets DENY/CLARIFY/ERROR here.
     stage_status: StageStatus | None = None
     deny_reason: str | None = None
+
+    @property
+    def matches(self) -> tuple[CapabilityMatch, ...]:
+        """S3's match for every intent step: one for a single-step plan, 2-5 otherwise."""
+        if self.capability_matches is not None:
+            return self.capability_matches
+        return (self.capability_match,) if self.capability_match is not None else ()
+
+    @property
+    def bindings(self) -> tuple[FrozenBindingIdentity, ...]:
+        """S5's frozen binding for every intent step, in plan order."""
+        if self.frozen_bindings is not None:
+            return self.frozen_bindings
+        return (self.frozen_binding_identity,) if self.frozen_binding_identity is not None else ()
 
     def with_status(self, status: StageStatus, reason: str | None = None) -> PipelineState:
         """Record the running stage's result. Non-NORMAL statuses stop the run."""
@@ -192,12 +236,18 @@ class PipelineState:
             allowed_fields = set(S11_OWNED_FIELDS)
         else:
             allowed_fields = {STAGE_OUTPUT_FIELD[stage_id]}
+            if stage_id in SECONDARY_OUTPUT_FIELD:
+                allowed_fields.add(SECONDARY_OUTPUT_FIELD[stage_id])
 
         # R-T: a stage may write only after the previous stage's output exists.
         idx = PRE_EXECUTION_SEQUENCE.index(stage_id)
         if idx > 0:
-            prev_field = STAGE_OUTPUT_FIELD[PRE_EXECUTION_SEQUENCE[idx - 1]]
-            if getattr(self, prev_field) is None:
+            prev_stage = PRE_EXECUTION_SEQUENCE[idx - 1]
+            prev_field = STAGE_OUTPUT_FIELD[prev_stage]
+            prev_written = getattr(self, prev_field) is not None or (
+                prev_stage in SECONDARY_OUTPUT_FIELD
+                and getattr(self, SECONDARY_OUTPUT_FIELD[prev_stage]) is not None)
+            if not prev_written:
                 raise ContractViolationError(
                     f"{stage_id} cannot write before {PRE_EXECUTION_SEQUENCE[idx - 1]} "
                     f"has written '{prev_field}'.",
@@ -240,6 +290,10 @@ class PipelineState:
                     field=field_name,
                 )
 
+            if field_name in _TUPLE_FIELD_ELEMENT:
+                _check_tuple(field_name, new_value, stage_id)
+                continue
+
             # Runtime type check — deferred import avoids circular module load.
             expected = _resolve_field_type(field_name)
             if expected is not None and not isinstance(new_value, expected):
@@ -258,7 +312,10 @@ class PipelineState:
         """Get the output for a given stage. Returns None if stage hasn't run."""
         if stage_id not in STAGE_OUTPUT_FIELD:
             raise ValueError(f"Unknown stage '{stage_id}'")
-        return getattr(self, STAGE_OUTPUT_FIELD[stage_id])
+        value = getattr(self, STAGE_OUTPUT_FIELD[stage_id])
+        if value is None and stage_id in SECONDARY_OUTPUT_FIELD:
+            return getattr(self, SECONDARY_OUTPUT_FIELD[stage_id])   # a multi-step plan
+        return value
 
     def has_stage_completed(self, stage_id: str) -> bool:
         """Check if a stage has produced its output."""

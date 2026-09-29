@@ -97,7 +97,11 @@ def decode_state(data: dict[str, Any]) -> Any:
     extra = set(data) - known
     if extra:
         raise TypeError(f"unknown PipelineState fields: {sorted(extra)}")
+    from contracts.frozen_binding import FrozenBindingIdentity
+    from contracts.stage_outputs import CapabilityMatch
     types_by_field: dict[str, Any] = {
+        "capability_matches": tuple[CapabilityMatch, ...],
+        "frozen_bindings": tuple[FrozenBindingIdentity, ...],
         "execution_context": ExecutionContext, "entry_request": EntryRequest,
         "stage_status": StageStatus, "deny_reason": str,
     }

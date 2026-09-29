@@ -31,3 +31,21 @@ overrule any line before the code for that stage is written. Nothing here change
 
 Rulings 6–8 (M2b), S13 compensation, and any change to S12. The M2b prerequisites are the
 `input_schema`/`output_schema` columns, a registry loader and a gate change.
+
+## Implementation status (M2a, built)
+
+Built and tested: R-AB (per-step matches and bindings; the singular fields stay for one-step plans and
+are None for 2-5 steps), R-AC (5 steps, items included), R-AD (0.85 floor at S7), R-AE (bounded step
+parameters, bound at S9, in `plan_hash`, shown at S10), R-AJ, R-AK, R-AL. A step's binding is looked up
+through one mapping (`engine/stages/plan_steps.py`) used by S6, S9 and S11, and S11 re-checks every step
+against its own binding (operation, mutation, risk, cost, dependencies, id).
+
+**R-AF is only partly built.** `Step.inverse` stays `None`: the registry does hold `kernel_ops.inverse`,
+but carrying it to S9 needs a new field on `FrozenBindingIdentity`, whose field list is pinned by
+`tools/owner_certify.py` (OWN-17, R-O approved extensions). Adding it is an owner-authorised change to
+the certifier's `CONTRACTS` table (and its hash). Until then S10 does not claim a step is or is not
+undoable.
+
+Not covered by tests here: a live DeepSeek answer with `steps` (the prompt asks for it; only a run with
+the key can show how the real model behaves), and S12, which still reads the singular
+`frozen_binding_identity` and must be made per-step before a multi-step plan can execute.

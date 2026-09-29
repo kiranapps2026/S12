@@ -36,6 +36,19 @@ CONFIRMATION_TTL_SECONDS = 300.0
 CONFIRMATION_REQUIRED = "confirmation_required"
 
 
+def _operations(steps) -> tuple[dict, ...]:
+    """What the user is shown. A multi-capability plan (R-AB) lists EVERY step with the exact
+    parameters it will run with (R-AE): the values plan_hash covers."""
+    if len(steps) == 1:
+        s = steps[0]
+        return ({"step_id": s.id, "kernel_op_id": s.kernel_op_id, "mutation": s.mutation},)
+    return tuple(
+        {"step_id": s.id, "kernel_op_id": s.kernel_op_id, "mutation": s.mutation,
+         "params": dict(s.params)}
+        for s in steps
+    )
+
+
 async def handle(state: PipelineState, store: ConfirmationStore | None) -> PipelineState:
     """S10 handler. Returns the state with `confirmation` written and a status."""
     refused = deny_unless_safety_passed(state)
@@ -58,10 +71,7 @@ async def handle(state: PipelineState, store: ConfirmationStore | None) -> Pipel
         conversation_id=ctx.conversation_id or "",
         plan_id=plan_result.plan.id,
         plan_hash=plan_result.plan_hash,
-        operations=tuple(
-            {"step_id": s.id, "kernel_op_id": s.kernel_op_id, "mutation": s.mutation}
-            for s in plan_result.plan.steps
-        ),
+        operations=_operations(plan_result.plan.steps),
         expires_at=time.time() + CONFIRMATION_TTL_SECONDS,
     )
     try:

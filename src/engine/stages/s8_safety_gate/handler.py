@@ -46,6 +46,17 @@ def _run_checks(context, task_profile, frozen, deps) -> tuple[str, str] | None:
     return None
 
 
+def _run_all(context, task_profile, bindings, deps) -> tuple[str, str] | None:
+    """The 8 checks for EVERY step's binding (M2a, R-AB): the grant is per capability, the circuit
+    breaker per provider, the mutation policy per (mutation, risk); the budget check sees the
+    plan's total cost. The first failure of any step denies the plan."""
+    for frozen in bindings:
+        failure = _run_checks(context, task_profile, frozen, deps)
+        if failure is not None:
+            return failure
+    return None
+
+
 async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> PipelineState:
     """
     S8 handler: enforce safety policy with 8 checks.
@@ -87,7 +98,7 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
     # 2. Required upstream outputs.
     if state.task_profile is None:
         return deny("missing_task_profile", "missing_task_profile")
-    if state.frozen_binding_identity is None:
+    if not state.bindings:
         return deny("missing_frozen_binding", "missing_frozen_binding")
     if state.execution_context is None:
         return deny("missing_identity", "missing_identity")
@@ -95,8 +106,7 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
     # 3. The 8 checks in R-B table order, in a worker thread: providers are synchronous
     #    (R-C) and may block on I/O. First non-pass denies.
     failure = await asyncio.to_thread(
-        _run_checks, state.execution_context, state.task_profile,
-        state.frozen_binding_identity, deps)
+        _run_all, state.execution_context, state.task_profile, state.bindings, deps)
     if failure is not None:
         return deny(*failure)
 
@@ -126,9 +136,8 @@ async def recheck_safety(state: PipelineState, deps: S8Dependencies | None) -> t
         return "kill_switch", "kill_switch"
     if engaged is not False:
         return "kill_switch_state_unavailable", "kill_switch"
-    if (state.task_profile is None or state.frozen_binding_identity is None
+    if (state.task_profile is None or not state.bindings
             or state.execution_context is None):
         return "missing_identity", "missing_identity"
     return await asyncio.to_thread(
-        _run_checks, state.execution_context, state.task_profile,
-        state.frozen_binding_identity, deps)
+        _run_all, state.execution_context, state.task_profile, state.bindings, deps)

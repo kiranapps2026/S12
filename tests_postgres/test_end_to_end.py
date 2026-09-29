@@ -307,3 +307,54 @@ def test_open_reservations_shrink_the_budget_a_run_may_use(pg):
     # another tenant's reservations do not matter
     code, j, _ = _scenario(pg, "contact.list", _reservation("tenant-b", 10000))
     assert (j["status"], j["final_stage"]) == ("NORMAL", "S11"), j
+
+
+class ChainModel:
+    """A model that answers with an ordered list of registry intents (M2a)."""
+
+    def __init__(self, *steps, confidence=0.95):
+        self.steps, self.confidence = steps, confidence
+
+    async def complete(self, text, intents, feedback):
+        import json
+        from contracts.intent_model import IntentCompletion
+        return IntentCompletion(text=json.dumps({
+            "steps": [{"intent": i, "parameters": p} for i, p in self.steps],
+            "confidence": self.confidence}), model="chain", total_tokens=1)
+
+
+def _chain(pg, model, *setup_sql):
+    async def body(db):
+        auth = PostgresApiKeyAuthenticator(db)
+        key = await auth.issue(_principal("tenant-a"))
+        app = create_app(pipeline=build_runner(db, model), authenticator=auth)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+            r = await client.post("/api/v1/execute", json={"input_data": {"message": "x"}},
+                                  headers={"authorization": f"Bearer {key}"})
+            reply = None
+            if r.json().get("confirmation_id"):
+                reply = await client.post(f"/api/v1/confirmations/{r.json()['confirmation_id']}",
+                                          json={"approved": True}, headers={"authorization": f"Bearer {key}"})
+        async with db.tenant_transaction("tenant-a") as c:
+            stages = [x["stage"] for x in await c.fetch("SELECT stage FROM pipeline_events ORDER BY event_id")]
+        return r, reply, stages
+    return pg(body, *setup_sql)
+
+
+def test_a_two_capability_chain_runs_to_s11_over_the_real_registry(pg):
+    r, _, stages = _chain(pg, ChainModel(("contact.create", {"name": "Ana"}), ("contact.list", {})))
+    assert (r.json()["status"], r.json()["final_stage"]) == ("NORMAL", "S11"), r.text
+    assert stages[-1] == "S11"
+
+
+def test_a_chain_with_a_delete_waits_for_confirmation_and_resumes_from_the_database(pg):
+    r, reply, _ = _chain(pg, ChainModel(("contact.create", {}), ("contact.delete", {"id": "c1"})))
+    assert (r.json()["status"], r.json()["reason"]) == ("CLARIFY", "confirmation_required")
+    assert (reply.json()["status"], reply.json()["final_stage"]) == ("NORMAL", "S11"), reply.text
+
+
+def test_a_missing_grant_for_one_step_denies_the_chain_at_s8(pg):
+    r, _, _ = _chain(pg, ChainModel(("contact.create", {}), ("contact.list", {})),
+                     "UPDATE capability_grants SET is_active = false WHERE capability_id = 'cap.contact.list'")
+    assert (r.json()["status"], r.json()["final_stage"], r.json()["reason"]) == \
+        ("DENY", "S8", "capability_granted_denied")

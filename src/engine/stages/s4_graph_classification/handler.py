@@ -60,6 +60,30 @@ def _step_count(intent) -> int:
     return min(len(items), MAX_STEPS)
 
 
+def _expand_steps(intent) -> tuple[dict, ...]:
+    """The plan steps of a multi-capability chain (R-AB, R-AK): the intent steps in order, a step
+    with `items` becoming one step per item. Each step carries the index of the intent step
+    (and so the binding) it runs and its bound parameters (R-AE); depends_on is the previous step."""
+    expanded: list[tuple[int, dict]] = []
+    for index, step in enumerate(intent.steps):
+        params = dict(step.parameters)
+        items = params.pop("items", None)
+        if isinstance(items, list) and items:
+            expanded.extend((index, {**params, "item": item}) for item in items)
+        else:
+            expanded.append((index, params if items is None else {**params, "items": items}))
+    return tuple(
+        {
+            "step_id": f"step-{n + 1}",
+            "params": params,
+            "depends_on": [] if n == 0 else [f"step-{n}"],
+            "retry_policy": {},
+            "binding_index": index,
+        }
+        for n, (index, params) in enumerate(expanded)
+    )
+
+
 async def handle(state: PipelineState) -> PipelineState:
     """
     S4 handler: classify execution graph shape (simple | chain | complex).
@@ -69,8 +93,17 @@ async def handle(state: PipelineState) -> PipelineState:
     """
     intent_result = state.intent_result
     capability_match = state.capability_match
-    if intent_result is None or capability_match is None:
+    if intent_result is None or not state.matches:
         raise ValueError("S4 requires S2 and S3 outputs")
+
+    if len(intent_result.steps) > 1:                      # M2a: heterogeneous chain
+        execution_steps = _expand_steps(intent_result)
+        complexity = (GraphComplexity.LINEAR if len(execution_steps) <= 5 else GraphComplexity.DAG)
+        candidates = max((m.candidate_count for m in state.matches), default=0)
+        logger.info("S4 classified graph: %s (multi-capability, steps=%d)", complexity, len(execution_steps))
+        return state.with_stage_output("S4", GraphAnalysis(
+            complexity=complexity, is_workflow=True, candidate_count=candidates, join_mode="all",
+            execution_steps=execution_steps, dependencies=_build_dependencies(execution_steps)))
 
     step_count = _step_count(intent_result)
     if step_count == 1:

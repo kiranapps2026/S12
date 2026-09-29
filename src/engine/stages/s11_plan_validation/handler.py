@@ -23,6 +23,7 @@ from contracts.stage_outputs import ValidationResult
 from contracts.execution_manifest import ExecutionManifest
 from contracts.plan_hash import canonical_plan_digest
 from contracts.stage_registry import StageStatus
+from engine.stages.plan_steps import plan_step_bindings
 from engine.stages.preconditions import deny_unless_safety_passed
 
 logger = logging.getLogger(__name__)
@@ -51,17 +52,37 @@ def _dag_ok(steps) -> bool:
     return all(visit(n) for n in ids)
 
 
+def _chain_matches(state: PipelineState, plan) -> bool:
+    """Multi-capability plan (M2a, R-AB): plan step i must equal, field for field, the binding of
+    the intent step S4 assigned to it. Reordered, swapped, missing or extra steps all fail."""
+    expected = plan_step_bindings(state)
+    if expected is None or len(expected) != len(plan.steps):
+        return False
+    for item, step in zip(expected, plan.steps):
+        if (step.id != item.step_data.get("step_id")
+                or step.kernel_op_id != item.binding.kernel_op_id
+                or step.risk != item.binding.effective_risk
+                or step.mutation != item.binding.effective_mutation
+                or step.cost != item.match.estimated_cost_units
+                or tuple(step.depends_on) != tuple(item.step_data.get("depends_on", ()))):
+            return False
+    return True
+
+
 def _first_error(state: PipelineState) -> str | None:
     plan_result, frozen = state.plan, state.frozen_binding_identity
-    if plan_result is None or frozen is None:
+    if plan_result is None or (frozen is None and state.frozen_bindings is None):
         return "binding_mismatch"
     plan = plan_result.plan
 
-    for step in plan.steps:
-        if (step.kernel_op_id != frozen.kernel_op_id
-                or step.risk != frozen.effective_risk
-                or step.mutation != frozen.effective_mutation):
-            return "binding_mismatch"
+    if frozen is not None:
+        for step in plan.steps:
+            if (step.kernel_op_id != frozen.kernel_op_id
+                    or step.risk != frozen.effective_risk
+                    or step.mutation != frozen.effective_mutation):
+                return "binding_mismatch"
+    elif not _chain_matches(state, plan):
+        return "binding_mismatch"
 
     if canonical_plan_digest(plan) != plan_result.plan_hash:
         return "plan_hash_mismatch"
@@ -99,16 +120,22 @@ async def handle(state: PipelineState) -> PipelineState:
         )
         return state.with_status(StageStatus.DENY, error)
 
-    ctx, frozen, plan_result = state.execution_context, state.frozen_binding_identity, state.plan
+    ctx, plan_result = state.execution_context, state.plan
+    bindings = state.bindings
+
+    def version(name: str) -> str:
+        """One version for a single binding; the distinct versions, sorted, for a chain."""
+        return "|".join(sorted({getattr(b, name) for b in bindings}))
+
     manifest = ExecutionManifest(
         execution_id=plan_result.execution_id,
         trace_id=ctx.trace_id,
         plan_hash=plan_result.plan_hash,
-        capability_version=frozen.capability_version,
-        binding_version=frozen.binding_version,
+        capability_version=version("capability_version"),
+        binding_version=version("binding_version"),
         policy_version=ctx.policy_version_id or "",
-        risk_policy_version=frozen.risk_policy_version,
-        authorization_version=frozen.authorization_version,
+        risk_policy_version=version("risk_policy_version"),
+        authorization_version=version("authorization_version"),
         auth_result_id=ctx.auth_result_id,
         created_at=time.time(),
     )

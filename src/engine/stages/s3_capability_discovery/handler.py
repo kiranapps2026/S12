@@ -60,29 +60,14 @@ def _score_capability(
     )
 
 
-async def handle(state: PipelineState, registry: CapabilityRegistry | None) -> PipelineState:
-    """
-    S3 handler: discover, score and rank capabilities from the registry.
-
-    Writes the best match with `candidate_count` = number of distinct active capabilities
-    the registry returned. No candidates -> a "none" placeholder and CLARIFY no_capability.
-    A registry failure propagates (the runner records ERROR); it is never papered over.
-    """
-    intent = state.intent_result
-    ctx = state.execution_context
-    if intent is None or ctx is None:
-        raise ValueError("S3 requires S0 and S2 outputs")
-    if registry is None:
-        return state.with_status(StageStatus.DENY, "capability_registry_unavailable")
-
-    intent_ops = set(intent.operations) | {intent.intent_type}
-    intent_text = " ".join(str(v) for v in (intent.parameters or {}).values()).lower()
-
+async def _best_match(registry: CapabilityRegistry, tenant_id: str, intent_type: str,
+                      operations: tuple[str, ...], parameters: dict) -> CapabilityMatchOutput | None:
+    """The top-ranked active capability for one intent, with `candidate_count` set; None if the
+    registry offers no candidate. A registry failure propagates."""
+    intent_ops = set(operations) | {intent_type}
+    intent_text = " ".join(str(v) for v in (parameters or {}).values()).lower()
     discovered = await registry.discover(
-        {"intent_type": intent.intent_type, "operations": tuple(intent.operations),
-         "text": intent_text},
-        ctx.tenant_id,
-    )
+        {"intent_type": intent_type, "operations": tuple(operations), "text": intent_text}, tenant_id)
 
     # Deduplicate by capability_id (best score wins); inactive capabilities never match.
     best: dict[str, CapabilityMatchOutput] = {}
@@ -92,16 +77,51 @@ async def handle(state: PipelineState, registry: CapabilityRegistry | None) -> P
         scored = _score_capability(cap, intent_ops, intent_text)
         if cap.capability_id not in best or scored.score > best[cap.capability_id].score:
             best[cap.capability_id] = scored
-
     if not best:
-        logger.warning("S3: no capability candidates")
-        state = state.with_stage_output("S3", CapabilityMatchOutput(
-            capability_id=NO_MATCH_ID, name=NO_MATCH_ID, score=0.0, risk_floor=1.0,
-            mutation_type=MUTATION_READ, candidate_count=0,
-        ))
-        return state.with_status(StageStatus.CLARIFY, NO_CAPABILITY)
-
+        return None
     ranked = sorted(best.values(), key=lambda m: (-m.score, m.capability_id))
-    top = CapabilityMatchOutput(**{**ranked[0].__dict__, "candidate_count": len(ranked)})
-    logger.info("S3 scored %d capabilities (top score: %.2f)", len(ranked), top.score)
+    logger.info("S3 scored %d capabilities (top score: %.2f)", len(ranked), ranked[0].score)
+    return CapabilityMatchOutput(**{**ranked[0].__dict__, "candidate_count": len(ranked)})
+
+
+def _none_match() -> CapabilityMatchOutput:
+    return CapabilityMatchOutput(
+        capability_id=NO_MATCH_ID, name=NO_MATCH_ID, score=0.0, risk_floor=1.0,
+        mutation_type=MUTATION_READ, candidate_count=0)
+
+
+async def handle(state: PipelineState, registry: CapabilityRegistry | None) -> PipelineState:
+    """
+    S3 handler: discover, score and rank capabilities from the registry.
+
+    One-intent plan: writes the best match with `candidate_count` = number of distinct active
+    capabilities the registry returned. Several intents (M2a, R-AB): one match per intent, written
+    as `capability_matches` (the singular field stays None). No candidates for any intent -> a
+    "none" placeholder and CLARIFY no_capability. A registry failure propagates (the runner records
+    ERROR); it is never papered over.
+    """
+    intent = state.intent_result
+    ctx = state.execution_context
+    if intent is None or ctx is None:
+        raise ValueError("S3 requires S0 and S2 outputs")
+    if registry is None:
+        return state.with_status(StageStatus.DENY, "capability_registry_unavailable")
+
+    if len(intent.steps) > 1:
+        matches: list[CapabilityMatchOutput] = []
+        for step in intent.steps:
+            match = await _best_match(registry, ctx.tenant_id, step.intent, (step.intent,), step.parameters)
+            matches.append(match if match is not None else _none_match())
+        state = state.with_stage_output("S3", capability_matches=tuple(matches))
+        if any(m.candidate_count == 0 for m in matches):
+            logger.warning("S3: no capability candidates for a step")
+            return state.with_status(StageStatus.CLARIFY, NO_CAPABILITY)
+        return state
+
+    top = await _best_match(registry, ctx.tenant_id, intent.intent_type, tuple(intent.operations),
+                            intent.parameters)
+    if top is None:
+        logger.warning("S3: no capability candidates")
+        state = state.with_stage_output("S3", _none_match())
+        return state.with_status(StageStatus.CLARIFY, NO_CAPABILITY)
     return state.with_stage_output("S3", top)

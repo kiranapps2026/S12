@@ -25,6 +25,8 @@ from contracts.safety import TaskProfile, PathDecision
 from contracts.stage_outputs import Plan, Step, PlanCreationResult
 from contracts.frozen_binding import FrozenBindingIdentity
 from contracts.plan_hash import canonical_plan_digest
+from contracts.stage_registry import StageStatus
+from engine.stages.plan_steps import plan_step_bindings
 from engine.stages.preconditions import deny_unless_safety_passed
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,11 @@ async def handle(state: PipelineState) -> PipelineState:
         raise ValueError("No TaskProfile from S6")
     if path_decision is None:
         raise ValueError("No PathDecision from S7")
+    chain = None
+    if frozen is None:
+        chain = plan_step_bindings(state)       # multi-capability plan (M2a): one binding per step
+        if chain is None:
+            return state.with_status(StageStatus.DENY, "binding_mismatch")
 
     now = time.time()
     # S9 generates NEW UUIDs — distinct from request_id (which is from S0)
@@ -63,8 +70,24 @@ async def handle(state: PipelineState) -> PipelineState:
     steps: list[Step] = []
     n_steps = max(1, task_profile.steps_estimated)
     per_step_cost = task_profile.cost // n_steps
+    if chain is not None and sum(i.match.estimated_cost_units for i in chain) != task_profile.cost:
+        return state.with_status(StageStatus.DENY, "binding_mismatch")   # S6 and S9 must agree
 
-    if graph_analysis and graph_analysis.execution_steps:
+    if chain is not None:
+        # Every step carries ITS OWN binding's operation, mutation and risk and its own
+        # registry cost (R-AB); the parameters are S4's, bound here and covered by plan_hash (R-AE).
+        for item in chain:
+            steps.append(Step(
+                id=item.step_data["step_id"],
+                kernel_op_id=item.binding.kernel_op_id,
+                params=dict(item.step_data.get("params", {})),
+                depends_on=tuple(item.step_data.get("depends_on", [])),
+                mutation=item.binding.effective_mutation,
+                risk=item.binding.effective_risk,
+                cost=item.match.estimated_cost_units,
+                retry_policy=item.step_data.get("retry_policy", {}),
+            ))
+    elif graph_analysis and graph_analysis.execution_steps:
         for step_data in graph_analysis.execution_steps:
             step = Step(
                 id=step_data.get("step_id", f"step-{len(steps) + 1}"),
