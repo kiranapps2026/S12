@@ -66,7 +66,7 @@ This directory contains **only the documents required to build the implementatio
 | `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` (v1.2.1) | Worker-management design and roadmap; gate C39–C41 govern |
 | `WORKER_MGMT_SPEC_REVIEW.md` | Review, owner rulings RD-1…RD-18, audit round 2 and propagation record |
 | `MEMORY_ARCHITECTURE.md` | Worker memory (deferred; repairs pending, register §20) |
-| `ADR-14_VECTOR_MEMORY_BACKEND.md` | Draft ADR: vector backend and memory tenant isolation (decision required) |
+| `ADR-14_VECTOR_MEMORY_BACKEND.md` | ADR (partially decided, owner 2026-09-29): vector backend = pgvector only, tier-2 store = Amazon S3, erasure deadline 90 days; the `MemoryScope` contract (MR-1) is still open |
 | `ADAPTABILITY_PRINCIPLES.md` | Rationale for FINAL_ARCHITECTURE §37a |
 
 ### Traceability

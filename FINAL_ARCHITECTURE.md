@@ -1138,6 +1138,8 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 | Observability | OpenTelemetry + Jaeger | Distributed tracing |
 | Testing | pytest + httpx | Async support, fixture ecosystem |
 
+> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This table row is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
+
 ### Infrastructure
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
@@ -1179,6 +1181,8 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 │  Storage: In-memory (LLM context)                            │
 └────────────────────────────────��────────────────────────────┘
 ```
+
+> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This Layer 3 storage line is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
 
 ### Memory Principles
 
@@ -1539,6 +1543,8 @@ with tracer.start_as_current_span("pipeline.s0.entry") as span:
 | **Replanning = child execution** (RD-11) | A new plan runs as a new execution through S0→S15 with its own manifest; the plan of a running execution never changes (I-006, I-017) | A replan costs a new S0–S11 pass |
 | **Worker checks are eligibility filters** (RD-4) | Admission runs before a worker is chosen, so worker pause, assignment and runtime match filter candidates at selection time | Two places to look: admission (tenant/workspace/system) and selection (worker) |
 
+> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This "LanceDB for vector search" row is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
+
 ---
 
 ## 30. Architectural Evolution Path
@@ -1777,6 +1783,8 @@ An adapter returning HTTP 200 is NOT sufficient for SUCCESS. The kernel must ver
 
 LanceDB is the default vector backend but is pluggable.
 
+> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This section (backend list and the scope-less, synchronous interface, see ADR-14 Part 1) is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
+
 **Backend interface**:
 ```python
 class MemoryBackend(Protocol):
@@ -1806,6 +1814,8 @@ PostgreSQL is the durable source of truth for all execution state. It is NOT the
 | Message passing | In-process or dedicated queue | PostgreSQL is not a message bus |
 | Ephemeral state | Redis | Fast, TTL-based |
 | Vector search | LanceDB | Embedded, no separate service |
+
+> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This table row is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
 
 **Rule**: PostgreSQL stores what must survive restarts. Nothing else does.
 
