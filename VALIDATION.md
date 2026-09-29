@@ -652,6 +652,26 @@ def test_confirmation_expires():
 
 ---
 
+### Worker-Management Tests (gate v10 C39, suite 20)
+
+> **Worker-management repair (gate v10 C39; RD-4…RD-10):** the normative test list is gate §16 suite 20 and plan M8a; this is the index.
+
+| Test | Tier | Validates |
+|---|---|---|
+| `test_entry_denies_tenant_workspace_pause()` | Integration | 12a/13a deny at S12 entry, zero rows written |
+| `test_pause_mid_run_cancels_nothing()` | Integration | Drain semantics (RD-5) |
+| `test_ineligible_worker_never_leased()` | Integration | I18 / STATE_TRANSITIONS I-9 |
+| `test_admin_bypass_workspace_scoped()` | Integration | `owner`/`admin` in the run's workspace only, read live |
+| `test_assignment_uses_original_principal()` | Unit | Filter 14 |
+| `test_reject_gates_before_capacity_queue()` | Unit | C39 evaluation order |
+| `test_quota_concurrent_exactly_limit()` | Concurrency (×5) | 20 entries, limit 5 → 5 admitted (I17) |
+| `test_soft_quota_queues_with_detail()` | Integration | Soft quota → QUEUE |
+| `test_duplicate_request_consumes_no_quota()` | Integration | Duplicate check precedes consumption |
+| `test_quota_refund_only_cancelled_without_completed()` | Integration | Refund rule |
+| `test_no_adapter_choice_from_runtime_type()` | Architecture | S12 never reads `runtime_type` to choose an adapter (RD-9) |
+| `test_no_deferred_worker_tables()` | Architecture | No spawn/batch/group/webhook tables or `parent_execution_id` in this phase |
+| `test_worker_fk_types_text()` | Schema | Every worker foreign key is `TEXT` (RD-1) |
+
 ## 11. Architecture Test Harness
 
 ### Purpose

@@ -3,6 +3,7 @@
 **Purpose**: Canonical terminology for all AiagentsOS design documents.
 **Rule**: Use these exact terms. Do not introduce synonyms in design docs.
 **Date**: 2026-09-25
+**Worker-management update (2026-09-29)**: terms from gate v10 C39–C41 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E) added; the `User` roles example and the "Skill" conflict entry corrected. Changed rows carry *(worker-management, RD-n)*.
 
 ---
 
@@ -45,6 +46,14 @@
 | **Timeout** | A hard limit on operation duration. Enforced by the kernel, not the agent. | deadline, time limit, max duration | RELIABILITY.md, DATA_CONTRACTS.md | "Stage timeouts are configured per stage with a global fallback." |
 | **Budget** | Resource limits: max_tokens, max_cost_usd, max_api_calls, max_duration_seconds, max_retries. Enforced by the kernel. | quota, limit, cap, allowance | DATA_CONTRACTS.md, RELIABILITY.md | "The budget tracker prevents spending beyond max_cost_usd." |
 | **Retry** | Re-execution of a failed operation with backoff. Configured per operation with max_retries and backoff strategy. | reattempt, retry attempt | RELIABILITY.md, PIPELINE_STAGES.md | "Failed mutations retry with exponential backoff up to max_retries." |
+| **runtime_type** | How a Worker executes: `llm`, `rules`, `vision`, `browser`, `rpa`, `data`, `rag`, `code`, `human` (`RuntimeType`, DATA_CONTRACTS §50). Selects routing (S7), binding family (S5) and worker eligibility (S12); never removes a pipeline stage. The only worker-type enum. *(worker-management, RD-10.)* | worker type, WorkerType, worker_type | DATA_CONTRACTS §50, DATABASE workers | "The browser worker's runtime_type makes it eligible for steps bound to the browser adapter." |
+| **Worker Group** | A tenant-scoped set of Workers managed together (bulk pause, schedule, assign). Post-S15. *(worker-management.)* | pool, fleet, team | FINAL_ARCHITECTURE §34 | "Pausing the group pauses every member for new leases." |
+| **Pause** | A time-bounded block on **new** runs (tenant/workspace) or **new** leases (worker/group) via `paused_until`. Running work continues (drain semantics). Not a state. *(worker-management, RD-5.)* | suspend, freeze, disable | WORKER_LIFECYCLE §16, IDENTITY_AND_TENANCY §8.4 | "The workspace is paused until 18:00; runs already RUNNING finish." |
+| **Kill Switch** | An emergency stop that cancels remaining steps now (`kill_switch_engaged`, gate C23). Distinct from Pause. | pause, halt flag | IDENTITY_AND_TENANCY §8.4 | "The kill switch cancelled the remaining steps." |
+| **Scheduled Activation** | `scheduled_activation_at`: before this time no new runs (tenant/workspace) or new leases (worker) are allowed. Not a state. *(worker-management, RD-5.)* | dormant state, go-live flag | WORKER_LIFECYCLE §16 | "The worker becomes eligible at 09:00." |
+| **Eligibility Filter** | A pure predicate applied to candidate workers in S12 worker selection, before locality scoring (pause, activation, assignment, runtime/capability match). No candidate left → `no_worker`. *(worker-management, RD-4.)* | admission gate (for worker checks) | WORKER_LIFECYCLE §13, gate C39 | "The assignment filter removed two candidates." |
+| **Operation Quota** | A count-based limit per tenant, workspace or worker and period (`operation_quotas`), consumed once per run at durable admission. Hard → deny; soft → queue. Distinct from Budget (cost). *(worker-management, RD-6.)* | quota (alone), rate limit, budget | DATA_CONTRACTS §51, DATABASE | "The hard quota of 1,000 executions per month was reached." |
+| **Stability Tier** | One of T1–T7 in FINAL_ARCHITECTURE §30, ranking how stable a concern must be. Not a layer. *(worker-management, RD-15.)* | layer (for tiers), seven-layer architecture | FINAL_ARCHITECTURE §30 | "Worker routing is a T4, evolving, concern." |
 | **Circuit Breaker** | A state machine (CLOSED → OPEN → HALF_OPEN) that prevents cascading failures when a provider is unhealthy. | breaker, fault blocker, trip | RELIABILITY.md, DATA_CONTRACTS.md | "The circuit breaker opens after 5 consecutive failures." |
 
 ---
@@ -68,7 +77,7 @@
 |------|----------------------|------------|----------|---------------|
 | **Tenant** | The top-level isolation boundary. All data, workers, capabilities, skills, and memories belong to exactly one tenant. | account, org, customer, workspace | IDENTITY_AND_TENANCY.md, DATABASE.md | "Row-Level Security enforces tenant isolation on every query." |
 | **Worker Identity** | A durable identifier for a worker, scoped to a tenant, with credentials, permissions, rate limits, and lifecycle. | agent identity, bot ID, runner ID | IDENTITY_AND_TENANCY.md, DATA_CONTRACTS.md | "Worker identity persists across process restarts." |
-| **User** | A human operator who may manage multiple tenants and workers. | human, admin, operator, person | IDENTITY_AND_TENANCY.md | "Users have roles within tenants: TENANT_ADMIN, TENANT_OPERATOR, TENANT_VIEWER." |
+| **User** | A human operator who may manage multiple tenants and workers. | human, admin, operator, person | IDENTITY_AND_TENANCY.md | "Users hold a workspace-scoped role through a membership: owner, admin, member or viewer (`UserRole`)." *(worker-management, RD-7: the former TENANT_ADMIN/TENANT_OPERATOR/TENANT_VIEWER example did not match `UserRole`.)* |
 | **Session** | A conversation or execution session identified by a SessionId. Sessions have context, history, and memory. | conversation, chat, interaction | DATA_CONTRACTS.md, MEMORY_ARCHITECTURE.md | "The session context is injected into every LLM call." |
 | **Principal** | The authenticated entity making a request: a User, Worker, or Service. Use this when discussing authorization generally. | caller, requester, actor | IDENTITY_AND_TENANCY.md, SECURITY.md | "The authorization layer checks the principal's capabilities." |
 | **Scope** | The set of capabilities, resources, and policies available to a principal. Scopes are immutable and scoped to a tenant. | permission set, access list, policy set | IDENTITY_AND_TENANCY.md, DATA_CONTRACTS.md | "The worker's scope limits it to read-file and write-file capabilities." |
@@ -126,6 +135,7 @@
 | **Tool** | A low-level primitive exposed to agents: file read/write, HTTP call, shell execution. Tools are bound to capabilities. | primitive, operation, function | SKILL_FACTORY_ARCHITECTURE.md, AIOS-main-manifest.md | "Tools are managed by the ToolManager with MCP server integration." |
 | **Adapter** | A ProviderAdapter that translates kernel operations into provider-specific API calls. | connector, integration, wrapper | PROVIDER_ADAPTERS.md, DATA_CONTRACTS.md | "The NotionAdapter implements the ProviderAdapter interface." |
 | **Binding** | A mapping between a capability and a provider adapter. Bindings are stored in the Registry and resolved at runtime. | mapping, link, connection | RESOLVE_LAYER.md, DATA_CONTRACTS.md | "The binding maps read-file to the filesystem adapter." |
+| **Skill Composition** | A `SkillDefinition` (DATA_CONTRACTS §53): a data-defined DAG of capability steps, planned at S9 into ordinary PlanSteps. Recorded browser/RPA sequences are skill compositions. Post-S15. *(worker-management, RD-8.)* | workflow (for recorded sequences), macro, script | DATA_CONTRACTS §53 | "The lead-qualification skill composition plans into six PlanSteps." |
 | **Resolution** | The process of looking up a capability, finding its binding, and returning the adapter and parameters. | lookup, discovery, finding | RESOLVE_LAYER.md, PIPELINE_STAGES.md | "Capability resolution happens in S4 of the pipeline." |
 
 ---
@@ -153,6 +163,11 @@
 | cache | Too generic — use specific cache level | L1 Cache, L2 Cache |
 | log | Ambiguous — could mean Log, Trace, or Event | Log, Trace, or Event |
 | record | Too generic — use specific record type | Execution, Task, Mutation, MemoryEntry |
+| worker type / `WorkerType` / `worker_type` | Overlaps `runtime_type` and trigger source *(RD-10)* | `runtime_type`; plan/event/hybrid is derived from subscriptions |
+| TENANT_ADMIN / TENANT_OWNER / TENANT_OPERATOR | Not roles in `UserRole` *(RD-7)* | membership role `owner`, `admin`, `member`, `viewer` |
+| Seven-Layer Architecture (for T1–T7) | Collides with FINAL_ARCHITECTURE §6 layers *(RD-15)* | Stability Tiers T1–T7 |
+| browser path / B0–B7 / RPA path | No bypass path exists (I-029) *(RD-8)* | browser adapter under S0→S15 |
+| batch table / batch state | A batch is ordinary PlanSteps *(RD-12)* | BATCH strategy; PlanStep |
 
 ---
 
@@ -164,6 +179,10 @@
 | "Worker" vs "Agent" | Worker is the durable identity. Agent is the LLM-powered runtime inside a worker pod. | RESOLVED |
 | "Task" vs "Job" | Task is the kernel execution object. Job is the scheduled task (cron). | RESOLVED |
 | "Skill" vs "Capability" | Capability is the contract. Skill is the compiled, cached implementation. | RESOLVED |
+| "Skill" vs "Skill Composition" | A Skill is compiled and cached; a Skill Composition (`SkillDefinition`) is data planned at S9. When the Skill Factory lands, a composition compiles into a Skill. *(worker-management.)* | RESOLVED (post-S15 detail open) |
+| "Pause" vs "Kill Switch" | Pause blocks new work and lets running work finish; the kill switch cancels now. *(RD-5.)* | RESOLVED |
+| "Operation Quota" vs "Budget" | Quota counts runs; budget limits cost. Both are checked; neither replaces the other. *(RD-6.)* | RESOLVED |
+| "Layer" vs "Tier" | Layers are FINAL_ARCHITECTURE §6; tiers rank stability (§30). *(RD-15.)* | RESOLVED |
 | "Adapter" vs "Connector" | Adapter is the formal interface. Connector is informal and ambiguous. | RESOLVED |
 | "Mutation" vs "Action" | Mutation is the kernel-level side effect. Action is the model-level choice. | RESOLVED |
 | "Trace" vs "Log" | Trace is the distributed execution record. Log is a structured event record. | RESOLVED |

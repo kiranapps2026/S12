@@ -2,6 +2,7 @@
 
 **Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §9 Mutation Control, §10 Execution Safety, §12 Reliability, §13 Worker Lifecycle. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §9 ExecutionResult, §9 ExecutionStatus, §9 ExecutionOutcome, §22 RetryDecision, §22 RetryPolicy, §19 StepState, §17 IdempotencyKey. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S8, S9, S10, S11, S12, S13, S14. [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — Step States, BudgetReservation States. [SECURITY.md](SECURITY.md) — §10 Guardrail Precedence Level 7. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §6-9 (independent verification for mutations).
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**Worker-management update (2026-09-29)**: §1 browser/RPA classification and §3 per-worker ceiling, per gate v10 C39 and rulings RD-8, RD-9 (`WORKER_MGMT_SPEC_REVIEW.md` Part E).
 
 **Purpose**: The complete rules for safe execution of write/delete operations. This is the most safety-critical part of the system. Every mutation must be traceable, reversible (where possible), and user-confirmed (for dangerous operations).
 
@@ -43,6 +44,20 @@ Cost: 1 unit      Cost: 2-3 units   Cost: 3-5      Cost: 5+ units
 | `W` | Write — reversible change | create, update, append, patch | Yes | No | Yes |
 | `D` | Delete — reversible removal | delete, archive, remove | Idempotent only | Yes | Yes |
 | `IRREVERSIBLE` | Permanent action | send_email, trigger_workflow, webhook | Never | Always | No |
+
+### Browser and RPA Actions (post-S15; worker-management repair RD-8)
+
+Browser/RPA capabilities use the same four levels; there is no `READ` or `IDEMPOTENT_WRITE` class. Classification follows the effect on **external** state, and Contract 4 (every W/D has an inverse) still applies:
+
+| Action | Default level | Rule |
+|---|---|---|
+| `browser_open`, `browser_wait`, `browser_extract`, `browser_screenshot`, `browser_filter` | `R` | Page-local; no external change |
+| `browser_export` | `R` | Produces a local artifact only |
+| `browser_type` | `R` | Only while nothing is submitted; the submitting action carries the level |
+| `browser_click` that only navigates | `R` | Declared by the skill-composition author |
+| `browser_click` / submit that changes external state | `IRREVERSIBLE` unless an inverse capability exists (then `W` or `D`) | Fail-closed: an undeclared external-effect click is IRREVERSIBLE, so it is confirmed (S10) and never retried |
+
+The level is metadata of the kernel operation and step (frozen at S5/S9), never decided by the adapter at run time.
 
 ### Cost Model
 
@@ -140,7 +155,9 @@ class MutationSafetyGate:
 
 ## 3. Retry Decision Matrix
 
-**Ownership**: MUTATION_SAFETY defines the CEILING (whether retry is semantically allowed based on mutation type). RELIABILITY defines the mechanics (backoff, storm guard, circuit breaker). DATA_CONTRACTS §22 RetryDecision + `max_attempts` field carry the definitive values. The effective max is `min(step_policy.max_attempts, mutation_safety_ceiling, reliability_ceiling, provider_limit)`.
+**Ownership**: MUTATION_SAFETY defines the CEILING (whether retry is semantically allowed based on mutation type). RELIABILITY defines the mechanics (backoff, storm guard, circuit breaker). DATA_CONTRACTS §22 RetryDecision + `max_attempts` field carry the definitive values. The effective max is `min(step_policy.max_attempts, mutation_safety_ceiling, reliability_ceiling, provider_limit, worker_policy_ceiling)`.
+
+> **Worker-management repair (RD-8; IDENTITY_AND_TENANCY §5):** `worker_policy_ceiling` is `workers.settings.execution_policy.max_retries` when set. It can only **lower** the ceiling; it never raises it and never enables a retry this table forbids (IRREVERSIBLE, non-idempotent D). Absent → no effect. A per-worker timeout may likewise only shorten the effective timeout.
 
 ### Retry Rules by Mutation Type
 

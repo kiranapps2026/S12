@@ -829,3 +829,43 @@ parallel step execution; real provider adapters and their per-kernel probe/obser
 methods (RES-5); step-to-step data flow (P0-B); alert delivery; circuit-breaker fleet
 consistency (P1-B); scheduler fairness (P1-C). Open question: no post-execution
 human-approval run state (D4).
+
+---
+
+## SECTION 19: S12–S15 GATE v10 — WORKER-MANAGEMENT RULINGS
+
+**Date**: 2026-09-29. **Source**: S12_S15_EXECUTION_GATE.md v10 C39–C41; `WORKER_MGMT_SPEC_REVIEW.md` Part E (RD-1…RD-18, owner-confirmed).
+**Rule**: as Section 18 — rulings DECIDED and PROPAGATED (markers `Worker-management repair (RD-n)`); status `IMPLEMENTATION_REQUIRED` until the certification report cites the passing tests.
+
+### 19.1 Gate rulings
+
+| ID | Subject | Owning document(s) repaired | Resolves / refines | Tests (gate §16) |
+|---|---|---|---|---|
+| C39 | Worker management: two-phase admission (12a, 13a, 16) + eligibility filters (12b, 13b, 14, 17); pause = new work only; quota consumed once per run at durable admission; `TEXT` worker keys | WORKER_LIFECYCLE §3, §10, §11, §13, §15, §16; DATABASE workers, tenants, workspaces, worker_leases, worker_assignments, `operation_quotas`, RLS, migration 018; DATA_CONTRACTS §50–§52; IDENTITY §5–§8.4; PIPELINE_STAGES §14, §19; STATE_TRANSITIONS §4, I-9, I-10; SECURITY §12a; MUTATION_SAFETY §3; EVENT_GATEWAY §14.7; VALIDATION; VOCABULARY_INDEX | Spec v1.1.0 §3 (worker gates before selection), §2 DDL (UUID FKs to TEXT keys, missing tenant_id), quota overshoot | 20; I17, I18 |
+| C40 | Batch processing out of phase; model = BATCH-strategy PlanSteps | FINAL_ARCHITECTURE §15; STATE_TRANSITIONS §16, §17; DATA_CONTRACTS §53 note | Spec v1.1.0 §4 (blind re-execution, shared idempotency key, parallelism, data flow) | — (architecture test: no batch tables) |
+| C41 | Replanning out of phase; model = child execution; `parent_execution_id` deferred | FINAL_ARCHITECTURE §29; PIPELINE_STAGES §14 | Spec v1.1.0 §6.1 (I-006, I-017, I9 conflicts) | — |
+
+### 19.2 Other rulings and repairs
+
+| ID | Subject | Documents |
+|---|---|---|
+| RD-8, RD-9 / I-029 | One execution path for every runtime type; `runtime_type` never selects an adapter in S12; browser providers are bindings | FINAL_ARCHITECTURE §37a, §50; PIPELINE_STAGES §21; PROVIDER_ADAPTERS §9; MUTATION_SAFETY §1 |
+| RD-10 | `runtime_type` the only worker-type enum | DATA_CONTRACTS §50; VOCABULARY_INDEX; EVENT_GATEWAY §14.8 |
+| RD-14 | `AutonomyLevel` the only autonomy enum | DATA_CONTRACTS §38; IDENTITY §5 |
+| RD-15 | Stability Tiers T1–T7 (not "layers") | FINAL_ARCHITECTURE §30; VOCABULARY_INDEX |
+| RD-16 | FINAL_ARCHITECTURE numbering: §37b, §37c, §37d, §50, §51; duplicate I-022…I-025 removed; unclosed fence closed | FINAL_ARCHITECTURE; gate C38 table; plan §2; REPAIRS_APPLIED |
+| RD-18 | Session 0 prompt on gate v10; items 3–16; P1–P6 | S12_SESSION0_PREFLIGHT_PROMPT |
+| E5 | Stale fencing text (per-worker max token) | WORKER_LIFECYCLE §15 Rule 7; DATA_CONTRACTS §37 |
+| — | IDENTITY §7 worker lifecycle (STOPPED/DELETED) aligned with STATE_TRANSITIONS §4 | IDENTITY_AND_TENANCY §7 |
+
+### 19.3 Deferred by gate v10 (target phase: worker management II, after S15)
+
+Sub-agent spawning and `worker_spawn_audit`; batch processing (C40); replanning and `parent_execution_id` (C41); worker groups; config versioning; state-change webhooks; L2 session memory and memory classification (needs `MemoryWriteBarrier`); progressive autonomy (S0–S11 change control); PolicyEngine (S8 change control); browser/RPA adapters and skill compositions; templates, plans, entitlements, marketplace listing; `skills_prompt` and `llm_model` consumption (S2, S0–S11 change control); tenant model allow-list in `TenantPolicy`.
+
+### 19.4 Open items
+
+| ID | Item | Status |
+|---|---|---|
+| WM-O1 | DATA_CONTRACTS has two §31 headings; not renumbered because other documents cite §31–§37 | RECORDED |
+| WM-O2 | FINAL_ARCHITECTURE TOC listed "§42 Schema and API Compatibility During Rolling Upgrades", which has no section | RECORDED (covered by §48) |
+| WM-O3 | Skill Factory "Skill" vs data-defined skill composition: compile path when the Skill Factory lands | OPEN (post-S15) |

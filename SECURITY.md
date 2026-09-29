@@ -2,6 +2,7 @@
 
 **Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §3 Security Model, §10 Execution Safety. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, PrincipalChain, worker authorization. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §8 SafetyResult, §17 IdempotencyKey. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S1 (injection defense), S8 (safety gate). [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §3 (WorkerIdentity), §10 (admission control). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence).
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY — inherits FINAL_ARCHITECTURE.md status
+**Worker-management update (2026-09-29)**: new §12a and checklist items, per gate v10 C39 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E).
 **Purpose**: Complete security model for the rebuild. Covers prompt injection defense, authorization, worker authorization, delegation and impersonation, data sanitization, credential management, audit logging, resource scoping, guardrail precedence, and secret lifecycle. Every security decision and its rationale.
 
 ---
@@ -20,6 +21,7 @@
 10. [Guardrail Precedence Order](#10-guardrail-precedence-order)
 11. [External Event Security](#11-external-event-security)
 12. [Secret Lifecycle Management](#12-secret-lifecycle-management)
+12a. [Worker Management Security](#12a-worker-management-security)
 13. [Security Checklist](#13-security-checklist)
 
 ---
@@ -1017,6 +1019,23 @@ CI pipeline runs secret scanning:
 
 ---
 
+## 12a. Worker Management Security
+
+> **Worker-management repair (RD-4…RD-9, RD-13; gate v10 C39):** security rules for worker-management features.
+
+1. **Settings are not authorization.** `workers.settings` can only restrict (`restricted_capabilities`, tighter `execution_policy`). No setting grants a capability, widens a scope or bypasses S8 (I-016). The settings content is never passed to an LLM as instructions for authorization.
+2. **Assignment.** `assigned_user_id` restricts which `PrincipalChain.original_principal_id` a worker may serve; it is compared with the original principal, never with a delegating worker's id, so delegation cannot launder an assignment.
+3. **Admin bypass.** Only membership role `owner` or `admin` **in the run's workspace**, read live at the check (not from the run snapshot), bypasses pause, activation and assignment filters. The bypass never affects authorization, the kill switch, quotas or budget. Every bypass is written to the ledger with the membership id.
+4. **Pause vs kill switch.** A pause only blocks new work; an incident needing an immediate stop uses the kill switch (C23). Documentation and UI must not present a pause as an emergency stop.
+5. **Quota integrity.** Quota is consumed only inside the durable-admission transaction with a conditional UPDATE; `operation_quotas` has RLS; a request cannot choose which quota row is charged.
+6. **Time.** Pause, activation and quota periods are compared with database `NOW()` (I-019); client-supplied times are ignored.
+7. **One execution path.** No runtime type (browser, RPA, vision, rules, data, human) bypasses S8 (I-029). Browser providers are bindings frozen at S5 with credentials from `CredentialProvider`.
+8. **Deferred features, rules fixed now:** worker webhooks store a secret **reference** resolved through `CredentialProvider`, never the secret (I-018); webhook URLs are validated against SSRF (no private, loopback or link-local targets; https only) and dispatched through the outbox (I-020). Spawned child workers get capabilities and grants ⊆ the parent's.
+
+**Validation:** gate suite 20; `test_settings_cannot_grant_capability()`, `test_assignment_uses_original_principal()`, `test_admin_bypass_read_live_and_audited()`.
+
+---
+
 ## 12. Security Checklist
 
 ### Pre-Commit Security Checks
@@ -1040,6 +1059,8 @@ CI pipeline runs secret scanning:
 - [ ] Circuit breakers configured for all providers
 - [ ] Budget limits configured
 - [ ] Confirmation flow tested for D/IRREVERSIBLE
+- [ ] `operation_quotas` RLS enabled; quota consumed only at durable admission (§12a)
+- [ ] Worker settings cannot grant capabilities; admin bypass audited (§12a)
 
 ### Runtime Security Monitoring
 

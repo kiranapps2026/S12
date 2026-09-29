@@ -5,7 +5,7 @@
 `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md`, `DATA_CONTRACTS.md`, `IDENTITY_AND_TENANCY.md`, `PIPELINE_STAGES.md`,
 `S12_SESSION0_PREFLIGHT_PROMPT.md`, `DATABASE.md`
 **Date**: 2026-09-29
-**Status**: RULINGS CONFIRMED AND PROPAGATED (2026-09-29). The owner confirmed RD-1…RD-18 (Part E, with the round-2 corrections) and instructed propagation. Part C was applied to the eight target documents and to `DATABASE.md`; **Part F records what was applied and what remains**. The spec itself (Part A → v1.2.0) and the other Part D documents are not yet updated.
+**Status**: RULINGS CONFIRMED AND PROPAGATED (2026-09-29). The owner confirmed RD-1…RD-18 (Part E, with the round-2 corrections) and instructed propagation. Part C was applied to the eight target documents, `DATABASE.md`, every Part D document and the spec itself (now v1.2.0); **Part F records what was applied**. Nothing from Parts A–D remains open except the recorded items in F.3.
 
 ---
 
@@ -56,7 +56,7 @@ or the S12–S15 phase lock:
 15. **Browser section.**
     - Drop B0–B7 and route browser/RPA through the one pipeline: recorded workflow = `SkillDefinition`, planned at S9 (FAST/WORKFLOW, no LLM needed), `BrowserAdapter` behind `BaseAdapter`. FINAL_ARCH §37a Principle 2 already lists browser automation, and §38 already lists `BrowserRuntimeAdapter`.
     - Playwright, Apify and BrowserUse become separate **bindings** frozen at S5, not adapter-internal routing.
-    - Mutation classes: `browser_open`, `browser_extract`, `browser_screenshot`, `browser_wait` and `browser_filter` → `R`. `browser_click`, `browser_type` and `browser_export` → `W` with `retry_safety = false`. A workflow step that submits payments or deletions must be declared `D`/`IRREVERSIBLE` by the author, which puts it through confirmation.
+    - Mutation classes: `browser_open`, `browser_extract`, `browser_screenshot`, `browser_wait` and `browser_filter` → `R`. ~~`browser_click`, `browser_type` and `browser_export` → `W` with `retry_safety = false`.~~ *(Round 3 correction: MUTATION_SAFETY Contract 4 requires every W/D to have an inverse, and most browser actions have none.)* `browser_type`, `browser_export` and navigation-only clicks → `R` (page-local); a click or submit that changes external state → `IRREVERSIBLE` unless an inverse capability exists (then `W`/`D`). An undeclared external-effect action is `IRREVERSIBLE` (fail-closed), so it is confirmed and never retried. Master copy: MUTATION_SAFETY §1.
     - Kernel metadata comes from the Provider Package (DATA_CONTRACTS header), not a `kernel_definitions.yaml`.
     - B3 names `execution_leases`, which C5 deprecated; the lease table is `worker_leases`.
     - If `BrowserExecutionContext` survives at all, a frozen dataclass can't hold `dict`/`list` (use tuples or `MappingProxyType`). Screenshots are artifacts (extension point #11), not context. `auth_passed` via "G3 + G4" confuses admission with authorization.
@@ -318,11 +318,28 @@ Also applied (RD-16 reference sweep): `REPAIRS_APPLIED.md:138` "§13/§38" → "
 | 4 | The genuinely ambiguous cross-references listed by file:line instead of a count | RD-16 |
 | 5 | Rule 7 description corrected: `worker_leases.fence_token` still exists; C25 changed the token source and the check target | Part C.1 |
 
-### F.3 Not yet done
+### F.1b Applied — remaining documents and the spec (2026-09-29, third pass)
 
-| Item | Why it remains |
+| Document | Applied | Status |
+|---|---|---|
+| `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` → **v1.2.0** | Rewritten per Part A and RD-1…RD-18: change table; feature tiers (E.2); corrected DDL (in-phase vs deferred); two-phase admission and eligibility; batch as PlanSteps; propagation record; replanning as child execution; skills at S9; memory classes; routing table without stage skipping; restrict-only autonomy; policy chain rebased on IDENTITY §5; Stability Tiers; browser/RPA under S0→S15; **new §9 S0–S11 Protection List and §10 Implementation Sequence**; corrected appendices. Status: REFERENCE — masters govern | ✅ UPDATED |
+| `VOCABULARY_INDEX.md` | Terms: runtime_type, Worker Group, Pause, Kill Switch, Scheduled Activation, Eligibility Filter, Operation Quota, Stability Tier, Skill Composition; terms to avoid (WorkerType, TENANT_* roles, Seven-Layer, browser path, batch state); conflict rows; `User` role example fixed | ✅ UPDATED |
+| `STATE_TRANSITIONS.md` | §4 note (pause/activation are not states); I-9 (eligible worker ↔ new lease), I-10 (hard quota bound); §16 invalid values (PAUSED, SCHEDULED, batch statuses); new §17 "no new state machines" | ✅ UPDATED |
+| `MUTATION_SAFETY.md` | §1 browser/RPA classification (round-3 correction); §3 `worker_policy_ceiling` (lower-only) | ✅ UPDATED |
+| `SECURITY.md` | New §12a worker-management security (settings ≠ authorization, assignment, audited admin bypass, pause vs kill switch, quota integrity, server time, one path, webhook secret refs + SSRF); TOC; checklist | ✅ UPDATED |
+| `PROVIDER_ADAPTERS.md` | New §9 browser/RPA adapters: one adapter per provider, provider = binding, probe/observe, credentials, eligibility | ✅ UPDATED |
+| `EVENT_GATEWAY_AND_ROUTER.md` | §14.7 pause does not change routing (events replayable), §14.8 plan/event/hybrid derived; two tests | ✅ UPDATED |
+| `VALIDATION.md` | Worker-management test index (13 tests) | ✅ UPDATED |
+| `BUILD_READINESS_MATRIX.md` → 1.1.0 | Rows 9, 10 updated; rows 25 (gate v10), 26 (spec v1.2.0, REFERENCE) | ✅ UPDATED |
+| `SUPERSESSION_AWARE_BLOCKER_REGISTER.md` | New Section 19: C39–C41, other rulings, deferred list, open items WM-O1…WM-O3 | ✅ UPDATED |
+| `REPAIRS_APPLIED.md` | New "S12–S15 GATE v10 WORKER-MANAGEMENT REPAIRS" table (19 documents) | ✅ UPDATED |
+
+### F.3 Still open (recorded, not blocking)
+
+| Item | Where recorded |
 |---|---|
-| `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` → v1.2.0 (Part A corrections, E.2 tiers, milestone references RD-17) | Not one of the eight target documents; the masters now govern and list the spec as reference only |
-| `STATE_TRANSITIONS.md`, `VOCABULARY_INDEX.md` (roles, Skill, WorkerGroup, runtime_type), `MUTATION_SAFETY.md`, `SECURITY.md`, `PROVIDER_ADAPTERS.md`, `EVENT_GATEWAY_AND_ROUTER.md`, `VALIDATION.md`, `BUILD_READINESS_MATRIX.md`, blocker register §18, `REPAIRS_APPLIED.md` entries for C39–C41 | Part D |
-| DATA_CONTRACTS duplicate §31 headings | Recorded only: renumbering would break existing citations |
-| Re-pin on the VPS | Only after S0–S11 certification (plan §1 item 3) |
+| DATA_CONTRACTS duplicate §31 headings (not renumbered: cited elsewhere) | Register WM-O1 |
+| FINAL_ARCHITECTURE had a TOC entry "§42 Schema and API Compatibility" with no section | Register WM-O2 |
+| Skill Factory compile path for data-defined skill compositions | Register WM-O3 |
+| `COMPONENTS_BLUEPRINT.md`, `EXECUTION_PLAN.md`, `RESOLVE_LAYER.md`, `RELIABILITY.md` not touched: no worker-management content required for S12–S15 (C39 changes no directory, resolution or guard rule) | — |
+| Re-pin on the VPS only after S0–S11 certification | Plan §1 item 3 |

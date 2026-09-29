@@ -2,6 +2,7 @@
 
 **Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §8 Resolution, §10 Execution Safety, §12 Reliability, §13 Worker Lifecycle, §6a Event Gateway. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §19 StepState, §9 ExecutionStatus, §9 ExecutionOutcome, §22 ReconciliationStatus, §22 RetryDecision, §20 BudgetStates, §30 EventEnvelope, §31 WorkerSubscription. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S12–S14. [MUTATION_SAFETY.md](MUTATION_SAFETY.md) — mutation safety rules, confirmation requirements. [RELIABILITY.md](RELIABILITY.md) — lease management, circuit breaker states. [DATABASE.md](DATABASE.md) — state column constraints. [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §8 EventEnvelope states, §9 WorkerSubscription states. [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §3 event-sourced execution.
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**Worker-management update (2026-09-29)**: gate v10 C39–C41 add **no** state machine, state or transition (§4 note, §12 I-9/I-10, §17); rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E).
 **Purpose**: The single authoritative source for all state machines in the system. Every state transition not listed here is ILLEGAL and must be rejected.
 
 ---
@@ -277,6 +278,8 @@ Illegal Transitions (MUST be rejected):
 `workers.state` column. They exist only in the scheduler's in-memory view.
 The database only sees: ACTIVE → (heartbeat gap) → ACTIVE (new lease epoch).
 
+> **Worker-management repair (RD-4, RD-5; gate v10 C39):** pause (`paused_until`), scheduled activation (`scheduled_activation_at`) and assignment (`assigned_user_id`) are **not** states and add no transition. A paused or not-yet-active worker stays in its lifecycle state (normally `ACTIVE`) and is removed from worker selection for new leases by an eligibility filter; held leases and running steps are unaffected. `PAUSED` and `SCHEDULED` are not valid `workers.state` values (§16).
+
 ---
 
 ## 5. Lease States
@@ -530,6 +533,8 @@ These invariants must hold across ALL state machines simultaneously:
 | **I-5**: Confirmation consumed → plan frozen | A `pending_confirmations` row can only transition to `consumed` if the associated plan has the S9-authoritative `plan_hash`, which S11 verifies before manifest creation. |
 | **I-6**: Worker TERMINATED → lease expired | A worker can only transition to `TERMINATED` state after its lease expires (or is forcibly released). A worker with an active lease cannot be TERMINATED. |
 | **I-7**: Frozen binding → no state change | A binding frozen at S5 cannot transition to `stale` or `invalid` during the execution. If the underlying binding changes, the execution is marked with `STALE_BINDING` and routed to dead letter. |
+| **I-9**: Eligible worker ↔ new lease *(gate v10 C39, gate I18)* | A lease can only be acquired on a worker that, at acquisition time (database `NOW()`), is not paused, is active per `scheduled_activation_at`, is unassigned or assigned to the run's original principal (or the requester holds the admin bypass), and whose `runtime_type` can run the step's frozen binding. |
+| **I-10**: Hard quota bound *(gate v10 C39, gate I17)* | For every hard `operation_quotas` row, `used_count ≤ limit_value`. Consumption happens only in the durable-admission transaction that creates the run. |
 | **I-8**: Budget committed → step completed or resolved | A `budget_reservations` row can only transition to `committed` if its step is `completed`, or its step is `dead_letter` and the step's execution dead letter was resolved `EXECUTED` or `UNDETERMINED`, or abandoned (gate D4, C21). Budget is never committed for failed, cancelled, skipped or pending steps. *(v9 repair C27.)* |
 
 ---
@@ -630,5 +635,23 @@ The following state values appear in legacy code or older documents but are NOT 
 | `ok` / `error` / `clarify` / `confirm` (Envelope.status) | `EnvelopeStatus` enum | DATA_CONTRACTS §4 |
 | `probe` (step state) | `PROBE` (upper case, enum member) | DATA_CONTRACTS §19 |
 | `reserved` / `committed` / `released` (budget as raw strings) | `BudgetStates` enum | DATA_CONTRACTS §20 |
+| `PAUSED`, `SCHEDULED` (worker state) | Not states: `paused_until` / `scheduled_activation_at` + eligibility filters (§4) | WORKER_MANAGEMENT_AND_EVOLUTION_SPEC v1.1.0 |
+| `PENDING` / `RUNNING` / `SUCCESS` / `FAILED` / `DEAD_LETTER` (batch status) | No batch state machine: a batch slice is an ordinary step (`StepState`) | WORKER_MANAGEMENT_AND_EVOLUTION_SPEC v1.1.0 §2.4, §4 |
+| `success` / `partial` / `failed` (batch consolidation) | `ExecutionStatus` via gate §10 consolidation | WORKER_MANAGEMENT_AND_EVOLUTION_SPEC v1.1.0 §4 |
 
 Engineers implementing the system MUST use the canonical enum values defined in DATA_CONTRACTS. Any code using deprecated values must be updated during migration.
+
+---
+
+## 17. Worker-Management Rulings — No New State Machines
+
+**Source**: S12_S15_EXECUTION_GATE.md v10 C39–C41; `WORKER_MGMT_SPEC_REVIEW.md` Part E.
+
+| Feature | State machine? | Why |
+|---|---|---|
+| Pause, scheduled activation, assignment (C39) | None | Management columns read by eligibility filters (§4, I-9) |
+| Operation quota (C39) | None | A counter with a CHECK; consumption is one conditional UPDATE (I-10) |
+| Batch processing (C40, deferred) | None | Each slice is an ordinary PlanStep with the §2 step machine; the run uses §1 |
+| Replanning (C41, deferred) | None | A replan is a new child execution with its own §1 run machine |
+| Sub-agent spawning (deferred) | None new | A child is a WorkerIdentity with the §4 machine |
+| Worker groups, webhooks, config versions (deferred) | To be decided when they land | Any new machine must be added here first |

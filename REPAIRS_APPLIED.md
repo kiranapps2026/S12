@@ -147,3 +147,31 @@ per piece of state; (4) leaves a machine-readable reason for every decision.
 | VOCABULARY_INDEX.md | Worker Runtime, Fence token, Step idempotency key; "runner" replacement | C2, C9, C25 |
 | XS-1_REGISTER_ENTRY.md | Status RESOLVED BY C22 | C22 |
 | SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Section 18 (rulings, Laya LB1–LB11, deferred items) | all |
+
+---
+
+## S12–S15 GATE v10 WORKER-MANAGEMENT REPAIRS (2026-09-29)
+
+**Scope**: propagate `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` into the document set, corrected by `WORKER_MGMT_SPEC_REVIEW.md` Part E (rulings RD-1…RD-18, owner-confirmed) and gate v10 C39–C41. Each repaired passage carries a `Worker-management repair (RD-n)` marker (or `(C39–C41)` in the gate). Register mapping: blocker register Section 19.
+
+| Document | Repairs | Rulings |
+|---|---|---|
+| S12_S15_EXECUTION_GATE.md → v10 | C39, C40, C41; §1; preflight 15–16; §7.1–§7.3; §8 steps 1–2; §14; suite 20; I17, I18; §20; Appendix B | C39–C41, RD-1…RD-7 |
+| S12_S15_IMPLEMENTATION_PLAN.md → v3 | M8a; M1 schema; roles; invariants growth; risks | C39 |
+| FINAL_ARCHITECTURE.md → 4.5.0 | TOC; §37b/§37c/§37d/§50/§51 renumbering; I-029; duplicate invariants removed; §15, §21, §26, §29, §30, §33, §34, §37a, §51; closed code fence | RD-8…RD-16 |
+| WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md | §3, §10, §11, §13, §15 Rules 1 and 7, new §16 | C39, RD-1…RD-7, E5 |
+| DATABASE.md | Worker keys `TEXT` (incl. two further FK mismatches); management columns; `operation_quotas`; RLS; indexes; integrity; migration 018 | C39, RD-1…RD-3, RD-6 |
+| DATA_CONTRACTS.md | §37 fencing text; AutonomyLevel note; §50–§53 | C39, RD-10, RD-14, E5 |
+| IDENTITY_AND_TENANCY.md | §5 settings level and contract; §6 rules 5–6; §7 lifecycle; §8.4 pause vs kill switch | C39, RD-5, RD-7, RD-13, RD-14 |
+| PIPELINE_STAGES.md | §14 worker management pointer; §19 rows; §21 runtime_type | C39–C41, RD-8…RD-12 |
+| S12_SESSION0_PREFLIGHT_PROMPT.md | Gate v10; items 3–16; P1–P6 | RD-18 |
+| STATE_TRANSITIONS.md | §4 note; I-9, I-10; §16 rows; §17 | C39–C41 |
+| MUTATION_SAFETY.md | Browser/RPA classification; `worker_policy_ceiling` | RD-8 |
+| SECURITY.md | §12a; checklist | C39, RD-5…RD-9 |
+| PROVIDER_ADAPTERS.md | §9 browser/RPA adapters | RD-8, RD-9 |
+| EVENT_GATEWAY_AND_ROUTER.md | §14.7, §14.8; tests | RD-4, RD-5, RD-10 |
+| VALIDATION.md | Worker-management test index | C39 |
+| VOCABULARY_INDEX.md | New terms, terms to avoid, conflicts; role example | RD-5…RD-15 |
+| BUILD_READINESS_MATRIX.md → 1.1.0 | Rows 9, 10 updated; rows 25–26 | C39 |
+| SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Section 19 | all |
+| WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md → v1.2.0 | Corrected per review Part A and the rulings | all |

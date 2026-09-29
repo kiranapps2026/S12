@@ -2,7 +2,9 @@
 
 **Purpose**: Pre-implementation closure checklist. Every item must be complete before writing implementation code.
 
-**Version**: 1.0.0 | **Last Updated**: 2026-09-25
+**Version**: 1.1.0 | **Last Updated**: 2026-09-29
+
+**1.1.0 (2026-09-29)**: worker-management propagation (gate v10 C39–C41, rulings RD-1…RD-18 in `WORKER_MGMT_SPEC_REVIEW.md` Part E). Tier 1 rows note the worker-management content; new rows 25–26.
 
 ---
 
@@ -30,8 +32,10 @@
 | 6 | `EXECUTION_PLAN.md` | COMPLETE | 2026-09-25 | Execution correctness plan, W0-W6 |
 | 7 | `RELIABILITY.md` | COMPLETE | 2026-09-26 | 5-layer reliability guard (+ billing ownership, HealthMonitor) |
 | 8 | `SECURITY.md` | COMPLETE | 2026-09-26 | Security model, prompt injection defense (+ injection patterns, severity-action mapping) |
-| 9 | `DATABASE.md` | COMPLETE | 2026-09-26 | Database schema, migrations (+ memberships, worker_versions, worker_deployments, execution_ownership, provider_tokens, retry_log, outbox) |
-| 10 | `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | COMPLETE | 2026-09-26 | Worker identity/version lifecycle, independent verification, admission control, state locality |
+| 9 | `DATABASE.md` | COMPLETE | 2026-09-29 | Database schema, migrations (+ memberships, worker_versions, worker_deployments, execution_ownership, provider_tokens, retry_log, outbox; + worker `TEXT` keys, management columns, `operation_quotas`, migration 018) |
+| 10 | `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | COMPLETE | 2026-09-29 | Worker identity/version lifecycle, independent verification, admission control, state locality (+ §16 worker management, eligibility filters, operation quota) |
+| 25 | `S12_S15_EXECUTION_GATE.md` v10 | COMPLETE | 2026-09-29 | Binding S12–S15 rulings C1–C41 (C39 worker management; C40/C41 batch and replanning out of phase) |
+| 26 | `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` v1.2.0 | REFERENCE | 2026-09-29 | Worker-management design and roadmap; gate C39–C41 govern |
 
 ## Tier 2 — Required Before M0 Complete
 
