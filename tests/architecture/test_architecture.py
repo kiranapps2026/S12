@@ -28,7 +28,9 @@ ALLOWED_IMPORTS = {
     "adapters": {"contracts", "ports", "adapters"},
     "settings": set(),
     "bootstrap": {"adapters", "pipeline", "ports", "settings"},
-    "__main__": {"adapters", "bootstrap", "contracts", "settings"},
+    "api": {"api", "contracts", "pipeline", "ports"},
+    "server": {"adapters", "api", "bootstrap", "settings"},
+    "__main__": {"adapters", "bootstrap", "contracts", "ports", "server", "settings"},
 }
 
 

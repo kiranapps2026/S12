@@ -97,7 +97,9 @@ tests/
 
 Run: `pip install pytest && python -m pytest`, or the one-file check
 `python verify_s0_s11.py --sabotage` (all test groups plus 14 sabotage patches, one verdict).
-Remaining work is split into packages in [WORK_PACKAGES.md](WORK_PACKAGES.md).
+Run the service: `python -m supragents migrate`, `create-api-key`, `serve` (details and the
+offline installer in [WORK_PACKAGES.md](WORK_PACKAGES.md)); `.env` holds only secrets
+(see `.env.example`).
 
 **How a run works.** `PipelineRunner.run(entry)` executes S0→S11. After every stage it
 logs one line and writes one ledger event; any halt (DENY, CLARIFY, ERROR) stops the run,

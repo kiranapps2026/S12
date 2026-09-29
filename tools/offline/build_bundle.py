@@ -21,8 +21,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-REQUIREMENTS = ("asyncpg>=0.29", "pytest>=8")
-WINDOWS_ONLY = ("colorama",)  # pytest needs it on Windows; pip cannot infer it cross-platform
+REQUIREMENTS = ("asyncpg>=0.29", "fastapi>=0.110", "uvicorn>=0.29", "pytest>=8", "httpx>=0.27")
+WINDOWS_ONLY = ("colorama",)  # pytest and click need it on Windows; pip cannot infer it cross-platform
 SOURCE_ITEMS = ("src", "tests", "pyproject.toml", "verify_s0_s11.py", "README.md",
                 "WORK_PACKAGES.md", ".env.example")
 TARGETS = {"windows": "win_amd64", "linux": "manylinux2014_x86_64", "current": None}

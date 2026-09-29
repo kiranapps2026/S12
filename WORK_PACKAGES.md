@@ -1,8 +1,7 @@
 # S0–S11 — Remaining Work Packages
 
-**Status (2026-09-29):** the pipeline logic S0–S11 is complete. **Packages A (PostgreSQL),
-B (circuit breaker), C (suspended runs), D (DeepSeek) and the offline installer are done**;
-E (API entry) remains. Verify with `python verify_s0_s11.py --sabotage`. What remains is connecting it to the real
+**Status (2026-09-29):** the pipeline logic S0–S11 is complete. **All packages A–E and the offline installer are done.** Remaining: package 0
+(line-of-work decision and re-pinning) and the owner confirmations listed below. Verify with `python verify_s0_s11.py --sabotage`. What remains is connecting it to the real
 world. Each package below has its own folder, its own tests and one commit. None of them
 changes stage logic.
 
@@ -13,7 +12,7 @@ changes stage logic.
 | B ✅ | **Circuit breaker state** | `src/supragents/adapters/runtime/` | `CircuitBreaker` | In-process, single node (gate C1); unit tests for open / half-open / closed | — |
 | C ✅ | **Suspended runs** | `src/supragents/adapters/postgres/` | new port `SuspendedRunStore` | A run awaiting confirmation survives a restart: `resume_state` is stored and reloaded by execution id (PIPELINE_STAGES §12 "on worker restart") | — |
 | D ✅ | **LLM adapter** | `src/supragents/adapters/llm/` | `IntentModel` (+ new `BillingRecorder` port for `llm.token` usage, PIPELINE_STAGES §4) | Structured-output call at temperature 0.1, timeout, capability list in the system prompt; contract tests with a recorded response; key only from the environment | **Done: DeepSeek Responses API, model `deepseek-flash`**; only `DEEPSEEK_API_KEY` in `.env`, everything else built in (`adapters/llm/deepseek_request.py`) |
-| E | **Entry and composition** | `src/supragents/app/` | — | Authenticated request → `EntryRequest`; `POST /runs`, `POST /confirmations/{id}/reply`; `RunResult` → Envelope (DATA_CONTRACTS §1); one composition root wiring every adapter; `.env.example` only | Web framework (recommended: FastAPI); how callers authenticate |
+| E ✅ | **Entry and composition** | `src/supragents/app/` | — | Authenticated request → `EntryRequest`; `POST /runs`, `POST /confirmations/{id}/reply`; `RunResult` → Envelope (DATA_CONTRACTS §1); one composition root wiring every adapter; `.env.example` only | **Done:** FastAPI + uvicorn; API keys (SHA-256 hashed) behind the `Authenticator` port — replaceable by SSO/JWT later |
 
 **Order:** 0 → A → B → C → D → E. A–C can start before D is decided; E comes last
 because it wires everything.
@@ -67,3 +66,24 @@ isolation with such a role.
   S2 stops with `usage_unrecorded` (fail closed).
 - The manifest's `model_version` still comes from `registry_versions`; set it to the model
   in use (`deepseek-flash`).
+
+## Package E notes — the master switch
+
+```
+python -m supragents migrate                 # tables (once, and after upgrades)
+python -m supragents create-api-key --tenant T --workspace W --user U \
+       --membership M --connection C --scope "W/*"     # prints the key once
+python -m supragents serve --host 127.0.0.1 --port 8000
+```
+- `POST /v1/runs` `{"text", "conversation_id"}` with `Authorization: Bearer <key>` →
+  Envelope `ok` (manifest, ready for S12), `confirm` (confirmation id and exact
+  operations), `clarify`, `deny` or `error`.
+- `POST /v1/confirmations/{id}` `{"approved": true|false}` with the same tenant's key.
+- `GET /health`.
+- Identity (tenant, workspace, user, membership, connection, scope) comes **only** from the
+  API key; body fields cannot change it. Keys are stored as SHA-256 hashes; the `api_keys`
+  table is read before the tenant is known, so it has no RLS and holds no secrets.
+- Unexpected failures return 503 with no internal details; every stage is logged
+  (`stage=… status=… reason=… trace=…`) and written to `pipeline_events`.
+- Seed data (tenants, users, capabilities, bindings, kernel operations, grants,
+  `registry_versions`) is loaded by the owner; there is no admin API yet.
