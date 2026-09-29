@@ -379,7 +379,7 @@ A cross-document audit after propagation found 34 items. All were fixed in one p
 
 C1 FINAL §26 DDL (`TEXT` keys, management columns) · C2 I-001…I-029 in FINAL §50 and VALIDATION · C3 DATA_CONTRACTS §31 `lease_epoch` · C4 "Historical Memory" · C5 I-029 citation · C6 gate §17 order and §20 template · **C7 vector guard: scans every file and no longer flags its own sabotage data (the first draft would have failed once installed)** · D1 eight "Upstream contracts" headers · D2 README lists · D3 BUILD_READINESS rows · D4 REPAIRS_APPLIED outcome · D5 VOCABULARY duplicates and L3 · D6 IDENTITY links · D7 DATA_CONTRACTS TOC (duplicate §31 recorded as WM-O1) · D8 I-029 in EXECUTION_PLAN · D9 SECURITY §4/§11/§13 and I-022 · D10 invariant numbering note · D11 Session 0 P1/P2 · D12 gate §0 register pointer.
 
-### G.4 New findings, not fixed (decisions required; register §19.5)
+### G.4 New findings — decided and applied 2026-09-29 (register §19.5)
 
-- **SEC-HMAC:** `webhook_credentials` stores only a hash of the HMAC secret, so webhook signatures cannot be verified as designed.
-- **SEC-NONCE:** SECURITY §11 cites `event_subscriptions.nonce` / `last_sequence`, which do not exist.
+- **SEC-HMAC:** `webhook_credentials` stored only a hash of the HMAC secret, so webhook signatures could not be verified. **Fixed:** envelope-encrypted secret, active/retiring/retired rotation with partial unique indexes, decryption via `CredentialProvider`, pre-tenant lookup as a documented `system_worker_role` SELECT (DATABASE.md, EVENT_GATEWAY §10.3/§11, SECURITY §11). Also fixed: §10.3's one-row-per-source constraint (blocked the grace period) and its CHECK on a nonexistent `source` column.
+- **SEC-NONCE:** SECURITY §11 cited `event_subscriptions.nonce` / `last_sequence`, which do not exist. **Fixed:** the idempotency key is the nonce, now `UNIQUE (tenant_id, idempotency_key)` with `ON CONFLICT DO NOTHING` (it was neither unique nor tenant-scoped); DATABASE.md's stale `event_log` copy replaced by the full definition.

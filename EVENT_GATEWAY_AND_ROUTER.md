@@ -732,7 +732,7 @@ CREATE TABLE event_log (
 CREATE INDEX idx_event_log_tenant ON event_log(tenant_id);
 CREATE INDEX idx_event_log_tenant_status ON event_log(tenant_id, processing_status);
 CREATE INDEX idx_event_log_correlation ON event_log(correlation_id);
-CREATE INDEX idx_event_log_idempotency ON event_log(idempotency_key);
+CREATE UNIQUE INDEX uq_event_log_tenant_idempotency ON event_log(tenant_id, idempotency_key);  -- replay protection (SEC-NONCE)
 CREATE INDEX idx_event_log_source_system ON event_log(source_system);
 CREATE INDEX idx_event_log_occurred_at ON event_log(occurred_at);
 
@@ -742,6 +742,8 @@ CREATE POLICY event_log_tenant_isolation ON event_log
     FOR ALL TO application_role
     USING (tenant_id = current_setting('app.current_tenant')::text);
 ```
+
+> **Repair (SEC-NONCE, decided 2026-09-29):** replay protection needs no separate nonce or sequence columns. The nonce is `idempotency_key` (`{source}:{source_event_id}`), and it is now **unique per tenant**: the former `idx_event_log_idempotency` was neither unique nor tenant-scoped, so two concurrent deliveries could both pass the duplicate check, and two tenants receiving the same source event ids shared one key space. The gateway inserts with `ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`; zero rows inserted = duplicate → `deduplicated`. Together with the 5-minute timestamp window (server time, I-019), this rejects both late and repeated deliveries. `event_log` rows are kept longer than the replay window. Per-source sequence numbers are not used: most webhook providers do not send them.
 
 ### 10.2 event_subscriptions
 
@@ -795,44 +797,63 @@ CREATE POLICY event_subscriptions_tenant_isolation ON event_subscriptions
 
 ### 10.3 webhook_credentials
 
-Per-tenant webhook signing secrets.
+Per-tenant webhook signing secrets, one active per (tenant, source system). **DATABASE.md is authoritative; this copy mirrors it.**
+
+> **Repair (SEC-HMAC, 2026-09-29):** the former table stored `webhook_secret TEXT` with `UNIQUE (tenant_id, source_system)`, which left no room for the old secret during the rotation grace period of §11, and its `chk_source` CHECK named a column `source` that does not exist. DATABASE.md stored only `secret_hash`, which cannot verify a signature.
 
 ```sql
 CREATE TABLE webhook_credentials (
-    credential_id TEXT PRIMARY KEY,      -- UUID v4
-    tenant_id TEXT NOT NULL,
-    source_system TEXT NOT NULL,         -- "ghl", "stripe", etc.
-    webhook_secret TEXT NOT NULL,        -- HMAC secret (encrypted at rest)
-    secret_version INTEGER NOT NULL DEFAULT 1,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    rotated_at REAL,                     -- Last rotation timestamp
-    expires_at REAL,                     -- Optional expiration
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL,
-
-    -- Foreign keys
-    CONSTRAINT fk_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id),
-
-    -- Constraints
-    CONSTRAINT chk_source CHECK (source IN ('ghl', 'stripe', 'custom', 'mcp')),
-    CONSTRAINT uq_tenant_source UNIQUE (tenant_id, source_system)
+    credential_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    source_system TEXT NOT NULL,            -- 'ghl', 'stripe', 'custom', 'mcp'
+    secret_ciphertext BYTEA NOT NULL,       -- AES-256-GCM(HMAC secret) under the per-record DEK
+    secret_nonce BYTEA NOT NULL,            -- 96-bit GCM nonce, fresh for every encryption
+    wrapped_dek BYTEA NOT NULL,             -- per-record DEK wrapped by the KEK (the KEK never enters the database)
+    kek_version INTEGER NOT NULL,           -- KEK version that wrapped the DEK; re-wrap on KEK rotation
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'retiring', 'retired')),
+    retiring_until TIMESTAMPTZ,             -- end of the rotation grace period
+    algorithm TEXT NOT NULL DEFAULT 'hmac-sha256' CHECK (algorithm IN ('hmac-sha256')),
+    last_verified_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (source_system IN ('ghl', 'stripe', 'custom', 'mcp')),
+    CHECK (status <> 'retiring' OR retiring_until IS NOT NULL)
 );
-
+-- one active and at most one retiring secret per (tenant, source): rotation never breaks in-flight webhooks
+CREATE UNIQUE INDEX uq_webhook_credentials_active   ON webhook_credentials(tenant_id, source_system) WHERE status = 'active';
+CREATE UNIQUE INDEX uq_webhook_credentials_retiring ON webhook_credentials(tenant_id, source_system) WHERE status = 'retiring';
 CREATE INDEX idx_webhook_credentials_tenant ON webhook_credentials(tenant_id);
-CREATE INDEX idx_webhook_credentials_source ON webhook_credentials(source_system);
 
--- RLS: tenant isolation
+-- RLS: tenant isolation for application_role (management API)
 ALTER TABLE webhook_credentials ENABLE ROW LEVEL SECURITY;
 CREATE POLICY webhook_credentials_tenant_isolation ON webhook_credentials
     FOR ALL TO application_role
-    USING (tenant_id = current_setting('app.current_tenant')::text);
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
+-- Signature verification runs before any tenant context exists (the credential identifies the tenant, I-022):
+-- a documented system_worker_role operation, SELECT only (DATABASE §9 Canonical Roles).
+GRANT SELECT ON webhook_credentials TO system_worker_role;
+CREATE POLICY webhook_credentials_gateway_lookup ON webhook_credentials
+    FOR SELECT TO system_worker_role
+    USING (status IN ('active', 'retiring'));
 ```
 
 ---
 
 ## 11. Webhook Credential Management
 
-Webhook secrets are per-connection credentials, not per-tenant. This aligns with the existing `provider_tokens` pattern (DATA_CONTRACTS §30, DATABASE.md §10).
+Webhook secrets are per (tenant, source system) credentials, encrypted at rest with envelope encryption (§10.3). *(Repair SEC-HMAC: the former sentence said "per-connection, not per-tenant", which contradicted the class docstring and the table.)*
+
+**Secret handling rules (SEC-HMAC, decided 2026-09-29):**
+
+1. **Encrypted, never hashed.** HMAC verification needs the secret itself (`HMAC(secret, timestamp.body)`); a hash of the secret cannot verify a signature. Secrets use envelope encryption: AES-256-GCM under a per-record data key (DEK); the DEK is stored only wrapped by one system-wide key-encryption key (KEK) that lives in the platform secret manager and never enters the database. `kek_version` records which KEK wrapped the DEK.
+2. **Decryption only through `CredentialProvider`** (gate §21 S6), inside the gateway's signature check. The plaintext secret is held in a `bytearray` for the shortest possible time and overwritten after use (best effort: Python cannot guarantee that no copy remains); it is never logged, returned by any API, written to the ledger, a checkpoint or a trace (I-018).
+3. **Verification order:** the `active` secret, then a `retiring` secret while `retiring_until > NOW()` (database time). A match with the retiring secret is logged and counted, so the source's rotation can be tracked. `last_verified_at` is updated on success.
+4. **Rotation:** in one transaction, move any existing `retiring` row to `retired`, move the current `active` row to `retiring` with `retiring_until = NOW() + grace` (default 24 hours, settings object), and insert the new secret as `active`; a cleanup job moves expired `retiring` rows to `retired` and deletes `retired` rows after the retention period. The two partial unique indexes allow exactly one active and at most one retiring secret per (tenant, source).
+5. **KEK rotation** re-wraps each DEK (`wrapped_dek`, `kek_version`) without touching `secret_ciphertext`.
+6. **Access:** `application_role` sees only its tenant's rows (RLS); the pre-tenant lookup for signature verification is a documented `system_worker_role` operation with SELECT on active and retiring rows only.
 
 ```python
 class WebhookCredentialManager:
@@ -842,11 +863,18 @@ class WebhookCredentialManager:
     Secrets are encrypted at rest (same as provider_tokens).
     """
 
-    async def get_secret(self, tenant_id: str, source_system: str) -> str:
-        """Get HMAC secret for webhook signature verification."""
+    async def get_secret(self, tenant_id: str, source_system: str) -> bytearray:
+        """Decrypt the HMAC secret via CredentialProvider for verification only.
+
+        Internal to validate_signature; the caller overwrites the bytearray after use.
+        Never exposed through any API, log, ledger event or trace (I-018).
+        """
 
     async def rotate_secret(self, tenant_id: str, source_system: str) -> str:
-        """Rotate webhook secret. Old secret remains valid during grace period."""
+        """Rotate webhook secret: new row 'active', old row 'retiring' until retiring_until.
+
+        Returns the new secret once, for registration with the source; it is not stored in plaintext.
+        """
 
     async def validate_signature(
         self,
@@ -856,14 +884,14 @@ class WebhookCredentialManager:
         signature: str,
         timestamp: str,
     ) -> bool:
-        """Validate HMAC-SHA256 webhook signature."""
+        """Validate HMAC-SHA256: try the active secret, then a retiring one while retiring_until > NOW()."""
 ```
 
 ### Signature Validation
 
 ```python
 def validate_hmac_signature(
-    secret: str,
+    secret: bytearray,
     raw_body: bytes,
     signature: str,
     timestamp: str,
@@ -871,6 +899,8 @@ def validate_hmac_signature(
     """Validate HMAC-SHA256 webhook signature.
 
     Format: t=timestamp,v1=signature
+    `secret` is the decrypted bytearray from WebhookCredentialManager.get_secret (§10.3 rules).
+    Deduplication (the nonce) is the unique (tenant_id, idempotency_key) insert on event_log (§10.1).
     """
     # 1. Check timestamp freshness
     server_time = get_server_time()
@@ -881,7 +911,7 @@ def validate_hmac_signature(
     # 2. Compute expected signature
     signed_payload = f"{timestamp}.{raw_body.decode()}"
     expected = hmac.new(
-        secret.encode(),
+        bytes(secret),
         signed_payload.encode(),
         hashlib.sha256,
     ).hexdigest()

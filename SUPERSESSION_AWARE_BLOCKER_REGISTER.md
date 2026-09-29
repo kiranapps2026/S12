@@ -900,12 +900,12 @@ Source: `WORKER_MGMT_SPEC_REVIEW.md` Part G. Status of every audit item after th
 | C1–C7 | Propagation inconsistencies (incl. the vector guard flagging itself) | FIXED |
 | D1–D12 | Pre-existing documentation defects | FIXED, except D7's duplicate §31 (WM-O1, recorded) |
 
-New pre-existing findings (not fixed; decisions required):
+New pre-existing findings (decided and applied 2026-09-29):
 
 | ID | Finding | Status |
 |---|---|---|
-| **SEC-HMAC** | `webhook_credentials` stores only `secret_hash` (SHA-256 of the HMAC secret), but HMAC signature validation (SECURITY §11, EVENT_GATEWAY §11) needs the secret itself. As designed, webhook signatures cannot be verified. Options: store the secret encrypted (via `CredentialProvider`), or keep a hash only for lookup plus an encrypted secret | DECISION_REQUIRED |
-| SEC-NONCE | SECURITY §11 replay protection cites `event_subscriptions.nonce` and `last_sequence`, which do not exist in DATABASE.md; nonces belong per event source, not per subscription | DECISION_REQUIRED |
+| **SEC-HMAC** | `webhook_credentials` stored only `secret_hash`, which cannot verify an HMAC signature; EVENT_GATEWAY §10.3 also allowed only one row per (tenant, source), blocking the rotation grace period, and its CHECK named a missing column | **DECIDED and PROPAGATED (2026-09-29)** — envelope-encrypted secret (`secret_ciphertext`, `secret_nonce`, `wrapped_dek`, `kek_version`), `status` active/retiring/retired with partial unique indexes, decryption via `CredentialProvider`, pre-tenant lookup as a documented `system_worker_role` SELECT. DATABASE.md (authoritative), EVENT_GATEWAY §10.3/§11, SECURITY §11. IMPLEMENTATION_REQUIRED (gateway phase); tests `test_webhook_secret_encrypted_not_hashed()`, `test_rotation_grace_accepts_retiring_secret()`, `test_webhook_secret_never_logged()` |
+| SEC-NONCE | SECURITY §11 cited nonexistent `event_subscriptions.nonce` / `last_sequence`; `event_log.idempotency_key` was neither unique nor tenant-scoped (racing duplicates; cross-tenant key space); DATABASE.md's `event_log` copy lacked the column | **DECIDED and PROPAGATED (2026-09-29)** — the idempotency key is the nonce: `UNIQUE (tenant_id, idempotency_key)` with `ON CONFLICT DO NOTHING`; no sequence tracking. DATABASE.md, EVENT_GATEWAY §10.1, SECURITY §11. IMPLEMENTATION_REQUIRED (gateway phase); tests `test_concurrent_duplicate_delivery_deduplicated_once()`, `test_same_event_id_different_tenants_both_accepted()` |
 
 ---
 

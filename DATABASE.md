@@ -845,21 +845,48 @@ CREATE INDEX idx_exec_owner_lease ON execution_ownership(lease_id);
 
 ### Event Gateway Tables
 
-The `event_log`, `event_subscriptions`, and `webhook_credentials` tables are defined in [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) §10.
+The `event_log`, `event_subscriptions`, and `webhook_credentials` tables are also described in [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) §10. **This file is authoritative (gate §3); §10 mirrors it.**
+
+> **Repair (SEC-HMAC, SEC-NONCE, 2026-09-29):** the copies here had drifted from §10. `webhook_credentials` stored only `secret_hash`, which cannot verify an HMAC signature; `event_log` lacked the `idempotency_key` that replay protection depends on. Both are replaced by the full, corrected definitions below.
 
 ```sql
--- event_log: All incoming and outgoing events
+-- event_log: All incoming and outgoing events (full definition; EVENT_GATEWAY §10.1 mirrors it)
 CREATE TABLE event_log (
-    event_id TEXT PRIMARY KEY,
-    event_type TEXT NOT NULL,
-    source TEXT NOT NULL,
-    direction TEXT NOT NULL,  -- "inbound" | "outbound"
-    envelope JSONB NOT NULL,
-    correlation_id TEXT,
-    tenant_id TEXT NOT NULL,
-    processing_status TEXT NOT NULL DEFAULT 'RECEIVED',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    event_id TEXT PRIMARY KEY,           -- UUID v4
+    tenant_id TEXT NOT NULL,             -- From auth context
+    workspace_id TEXT NOT NULL,          -- From auth context
+    event_type TEXT NOT NULL,            -- EventType or tenant-defined
+    source TEXT NOT NULL,                -- EventSource value
+    source_system TEXT NOT NULL,         -- "ghl", "stripe", "cron", etc.
+    source_event_id TEXT,                -- Source's own event ID (for dedup)
+    payload_ref TEXT NOT NULL,           -- "pg:event_log.{event_id}"
+    payload_size_bytes INTEGER,          -- For billing
+    schema_version TEXT NOT NULL,        -- Payload schema version
+    correlation_id TEXT NOT NULL,        -- trace_id
+    idempotency_key TEXT NOT NULL,       -- "{source}:{source_event_id}"
+    auth_method TEXT NOT NULL,           -- "hmac_sha256", "api_key", etc.
+    auth_principal TEXT NOT NULL,        -- connection_id or user_id
+    processing_status TEXT NOT NULL DEFAULT 'received',  -- State machine values
+    processing_execution_id TEXT,        -- execution_id if activated
+    error TEXT,                          -- Error message if failed
+    occurred_at REAL NOT NULL,           -- Source timestamp
+    received_at REAL NOT NULL,           -- Server-authoritative timestamp
+    created_at REAL NOT NULL,            -- Record creation timestamp
+
+    -- Foreign keys
+    CONSTRAINT fk_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id),
+    CONSTRAINT fk_workspace FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id),
+
+    -- Constraints
+    CONSTRAINT chk_processing_status CHECK (
+        processing_status IN (
+            'received', 'validated', 'deduplicated', 'routed',
+            'processed', 'dropped', 'failed', 'closed'
+        )
+    ),
+    CONSTRAINT chk_source CHECK (source IN ('webhook', 'schedule', 'mcp', 'api', 'internal'))
 );
+CREATE UNIQUE INDEX uq_event_log_tenant_idempotency ON event_log(tenant_id, idempotency_key);  -- replay protection (SEC-NONCE)
 
 -- event_subscriptions: Worker declarations of event interest
 CREATE TABLE event_subscriptions (
@@ -880,19 +907,53 @@ CREATE TABLE event_subscriptions (
     created_by TEXT NOT NULL
 );
 
--- webhook_credentials: HMAC keys for webhook authentication
+-- webhook_credentials: encrypted HMAC signing secrets (SEC-HMAC; EVENT_GATEWAY §10.3 mirrors it)
 CREATE TABLE webhook_credentials (
     credential_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
-    source_system TEXT NOT NULL,
-    secret_hash TEXT NOT NULL,  -- SHA-256 of HMAC secret (never store plaintext)
-    algorithm TEXT NOT NULL DEFAULT 'sha256',
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    last_used_at TIMESTAMPTZ,
+    source_system TEXT NOT NULL,            -- 'ghl', 'stripe', 'custom', 'mcp'
+    secret_ciphertext BYTEA NOT NULL,       -- AES-256-GCM(HMAC secret) under the per-record DEK
+    secret_nonce BYTEA NOT NULL,            -- 96-bit GCM nonce, fresh for every encryption
+    wrapped_dek BYTEA NOT NULL,             -- per-record DEK wrapped by the KEK (the KEK never enters the database)
+    kek_version INTEGER NOT NULL,           -- KEK version that wrapped the DEK; re-wrap on KEK rotation
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'retiring', 'retired')),
+    retiring_until TIMESTAMPTZ,             -- end of the rotation grace period
+    algorithm TEXT NOT NULL DEFAULT 'hmac-sha256' CHECK (algorithm IN ('hmac-sha256')),
+    last_verified_at TIMESTAMPTZ,
     expires_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (source_system IN ('ghl', 'stripe', 'custom', 'mcp')),
+    CHECK (status <> 'retiring' OR retiring_until IS NOT NULL)
 );
+-- one active and at most one retiring secret per (tenant, source): rotation never breaks in-flight webhooks
+CREATE UNIQUE INDEX uq_webhook_credentials_active   ON webhook_credentials(tenant_id, source_system) WHERE status = 'active';
+CREATE UNIQUE INDEX uq_webhook_credentials_retiring ON webhook_credentials(tenant_id, source_system) WHERE status = 'retiring';
+CREATE INDEX idx_webhook_credentials_tenant ON webhook_credentials(tenant_id);
+
+-- RLS: tenant isolation for application_role (management API)
+ALTER TABLE webhook_credentials ENABLE ROW LEVEL SECURITY;
+CREATE POLICY webhook_credentials_tenant_isolation ON webhook_credentials
+    FOR ALL TO application_role
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
+-- Signature verification runs before any tenant context exists (the credential identifies the tenant, I-022):
+-- a documented system_worker_role operation, SELECT only (DATABASE §9 Canonical Roles).
+GRANT SELECT ON webhook_credentials TO system_worker_role;
+CREATE POLICY webhook_credentials_gateway_lookup ON webhook_credentials
+    FOR SELECT TO system_worker_role
+    USING (status IN ('active', 'retiring'));
 ```
+
+**Secret handling rules (SEC-HMAC, decided 2026-09-29):**
+
+1. **Encrypted, never hashed.** HMAC verification needs the secret itself (`HMAC(secret, timestamp.body)`); a hash of the secret cannot verify a signature. Secrets use envelope encryption: AES-256-GCM under a per-record data key (DEK); the DEK is stored only wrapped by one system-wide key-encryption key (KEK) that lives in the platform secret manager and never enters the database. `kek_version` records which KEK wrapped the DEK.
+2. **Decryption only through `CredentialProvider`** (gate §21 S6), inside the gateway's signature check. The plaintext secret is held in a `bytearray` for the shortest possible time and overwritten after use (best effort: Python cannot guarantee that no copy remains); it is never logged, returned by any API, written to the ledger, a checkpoint or a trace (I-018).
+3. **Verification order:** the `active` secret, then a `retiring` secret while `retiring_until > NOW()` (database time). A match with the retiring secret is logged and counted, so the source's rotation can be tracked. `last_verified_at` is updated on success.
+4. **Rotation:** in one transaction, move any existing `retiring` row to `retired`, move the current `active` row to `retiring` with `retiring_until = NOW() + grace` (default 24 hours, settings object), and insert the new secret as `active`; a cleanup job moves expired `retiring` rows to `retired` and deletes `retired` rows after the retention period. The two partial unique indexes allow exactly one active and at most one retiring secret per (tenant, source).
+5. **KEK rotation** re-wraps each DEK (`wrapped_dek`, `kek_version`) without touching `secret_ciphertext`.
+6. **Access:** `application_role` sees only its tenant's rows (RLS); the pre-tenant lookup for signature verification is a documented `system_worker_role` operation with SELECT on active and retiring rows only.
 
 ### S12–S15 Additive Tables (gate v9)
 
@@ -1520,7 +1581,7 @@ GRANT SELECT ON audit_log TO audit_reader;
 
 **Rules**:
 1. `application_role` can NEVER bypass tenant isolation
-2. `system_worker_role` can ONLY perform documented internal operations (worker heartbeats, lease management, scheduler ticks)
+2. `system_worker_role` can ONLY perform documented internal operations (worker heartbeats, lease management, scheduler ticks, and — SEC-HMAC — SELECT of active/retiring `webhook_credentials` rows for webhook signature verification before a tenant context exists)
 3. `audit_reader` can ONLY SELECT from `audit_log` — no other grants
 4. The `admin_override` and `admin_role` patterns are REMOVED
 5. The cross-tenant read policy is REMOVED

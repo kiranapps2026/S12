@@ -784,7 +784,7 @@ Level 10 ── EXECUTE ▶ SUCCESS
 
 ## 11. External Event Security
 
-> **Repair (audit round 2 D9):** this section appeared twice; the first copy had lost its table cells and code and was removed. The invariant cited below was I-023; tenant-from-auth is **I-022** (FINAL_ARCHITECTURE §50). **Open (register §19.5):** `webhook_credentials` stores only `secret_hash`, which cannot verify an HMAC signature, and `event_subscriptions.nonce` / `last_sequence` do not exist in DATABASE.md.
+> **Repair (audit round 2 D9):** this section appeared twice; the first copy had lost its table cells and code and was removed. The invariant cited below was I-023; tenant-from-auth is **I-022** (FINAL_ARCHITECTURE §50). SEC-HMAC and SEC-NONCE (register §19.5) are decided and applied below.
 
 ### Webhook Authentication
 
@@ -792,7 +792,7 @@ All external events entering through the Event Gateway must be authenticated:
 
 | Source Type | Authentication Method | Key Location |
 |-------------|----------------------|--------------|
-| Webhook | HMAC-SHA256 signature | `webhook_credentials` table |
+| Webhook | HMAC-SHA256 signature | `webhook_credentials` table (encrypted secret, SEC-HMAC) |
 | Schedule | Internal cron auth | Service account token |
 | MCP | mTLS or API key | Connection credential |
 | API | Bearer token or mTLS | `connections` table |
@@ -800,18 +800,22 @@ All external events entering through the Event Gateway must be authenticated:
 ### HMAC Validation
 
 ```python
-def validate_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+def validate_webhook_signature(payload: bytes, signature: str, secret: bytearray) -> bool:
+    expected = hmac.new(bytes(secret), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 ```
+
+**Webhook secret storage (SEC-HMAC, decided 2026-09-29).** Secrets are **encrypted, never hashed**: verifying `HMAC(secret, payload)` needs the secret itself. Envelope encryption: AES-256-GCM under a per-record DEK, the DEK wrapped by a system-wide KEK held in the platform secret manager (never in the database). Decryption only through `CredentialProvider`, inside the signature check; the plaintext lives in a `bytearray` for the shortest possible time and is overwritten after use (best effort in Python); it is never logged or returned (I-018). Rotation keeps one `active` and at most one `retiring` secret per (tenant, source) until `retiring_until`, so in-flight webhooks never break. Full rules: DATABASE.md "Event Gateway Tables" and EVENT_GATEWAY_AND_ROUTER.md §10.3, §11.
 
 ### Replay Protection
 
 | Mechanism | Implementation |
 |-----------|----------------|
 | Timestamp window | Reject events with timestamp > 5 minutes from server time |
-| Nonce tracking | `event_subscriptions.nonce` column — reject duplicate nonces |
-| Sequence tracking | `event_subscriptions.last_sequence` — reject stale sequences |
+| Nonce (duplicate) | `event_log.idempotency_key` (`{source}:{source_event_id}`), `UNIQUE (tenant_id, idempotency_key)`; the insert uses `ON CONFLICT DO NOTHING`, so a repeat delivery is `deduplicated` atomically |
+| Sequence tracking | Not used: most webhook providers send no per-source sequence number |
+
+> **Repair (SEC-NONCE, decided 2026-09-29):** the former rows cited `event_subscriptions.nonce` and `event_subscriptions.last_sequence`, which do not exist; nonces belong to events, not subscriptions. The existing idempotency key is the nonce, now enforced by a tenant-scoped unique index.
 
 ### Tenant Isolation (Critical)
 
