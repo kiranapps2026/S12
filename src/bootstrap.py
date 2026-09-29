@@ -1,6 +1,7 @@
 """Composition root: the one place where production adapters are wired to the pipeline."""
 from __future__ import annotations
 
+from adapters.postgres.activation import PostgresActivationReader
 from adapters.postgres.api_keys import PostgresApiKeyAuthenticator
 from adapters.postgres.confirmations import PostgresConfirmationStore
 from adapters.postgres.database import Database
@@ -35,4 +36,5 @@ def build_runner(database: Database, intent_model: IntentModel) -> PipelineRunne
         scopes=PostgresRunScopes(database, InProcessCircuitBreaker()),
         confirmation_store=PostgresConfirmationStore(database),
         suspended=PostgresSuspendedRunStore(database),
+        activation=PostgresActivationReader(database),
     ))

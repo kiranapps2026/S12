@@ -11,6 +11,7 @@ Source: DATA_CONTRACTS.md §2, PIPELINE_STAGES.md §11, RUNBOOK R-C/R-I/R-N
 - Enforcement does not trust a handler's status alone: after S7, S8, S10 and S11 the
   runner checks the stage's own output and stops the run if it says "no".
 - Dependencies arrive from one composition root, build_pipeline(); there are no globals.
+- S0.1 (activation check) runs right after S0, before anything else, and on every reply.
 - Tenant-specific dependencies (live kill switch, RLS-bound authorization state, policy
   versions) are resolved once per run, right after S0 identified the tenant, through the
   RunScopeFactory. If they cannot be read the run ends in ERROR before S1.
@@ -23,6 +24,7 @@ import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from contracts.activation import ActivationStateReader
 from contracts.capability import CapabilityRegistry
 from contracts.intent_model import IntentModel
 from contracts.errors import UnknownConfirmation
@@ -30,6 +32,7 @@ from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE, PipelineState
 from contracts.suspended_runs import SuspendedRunStore
 from contracts.safety import PathDecision
 from contracts.stage_registry import StageStatus
+from engine.stages.s0_entry.activation import activation_denial
 from engine.stages.s0_entry.handler import EntryRequest, handle as s0
 from engine.stages.s1_normalize.handler import handle as s1
 from engine.stages.s2_intent_analysis.handler import handle as s2
@@ -58,6 +61,7 @@ class PipelineDependencies:
     scopes: RunScopeFactory
     confirmation_store: ConfirmationStore
     suspended: SuspendedRunStore
+    activation: ActivationStateReader
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,12 @@ class PipelineRunner:
         if stop is not None or stop_after == "S0":
             return self._result(state, "S0", *(stop or (StageStatus.NORMAL, None)), stages, start)
 
+        # S0.1: a paused / not-yet-active tenant or workspace runs no S1–S11 work
+        denied = await activation_denial(state, self._deps.activation)
+        if denied is not None:
+            return self._result(state.with_status(StageStatus.DENY, denied), "S0",
+                                StageStatus.DENY, denied, stages, start)
+
         try:
             scope = await self._scope_for(state)
         except Exception as exc:  # noqa: BLE001 — fail closed: no scope, no run
@@ -175,6 +185,9 @@ class PipelineRunner:
         suspended = await self._deps.suspended.load(tenant_id=tenant_id, confirmation_id=confirmation_id)
         if suspended is None:
             raise UnknownConfirmation(confirmation_id)
+        denied = await activation_denial(suspended, self._deps.activation)   # S0.1 applies to replies
+        if denied is not None:
+            return self._result(suspended, "S0", StageStatus.DENY, denied, stages, start)
         try:
             if not approved:
                 rejected = await self._deps.confirmation_store.reject(

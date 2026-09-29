@@ -127,7 +127,8 @@ def test_database_outage_fails_closed(pg):
 
 
 def test_pool_failure_after_authentication_never_runs_the_pipeline(pg):
-    """Key resolves, then the scope read fails: ERROR at S0, nothing after S0 ran."""
+    """The database goes away after authentication: S0.1 cannot read the activation state,
+    so the request is denied at S0 and nothing after S0 ran."""
     async def body(db):
         runner = build_runner(db, EchoIntentModel())
         from tests.fixtures.pipeline import make_entry
@@ -136,7 +137,8 @@ def test_pool_failure_after_authentication_never_runs_the_pipeline(pg):
         await db.close()
         return await runner.run(entry)
     result = pg(body)
-    assert (result.status.value, result.reason, result.stages_run) == ("ERROR", "scope_unavailable", ("S0",))
+    assert (result.status.value, result.reason, result.stages_run) == (
+        "DENY", "activation_state_unavailable", ("S0",))
 
 
 # ---- confirmation reply over HTTP, real database ----------------------------------------------
@@ -249,3 +251,22 @@ def test_expired_confirmation_over_http(pg):
                 await c.execute("UPDATE pending_confirmations SET expires_at = now() - interval '1 second'")
             return await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
     assert _flow(pg, steps).json()["reason"] == "confirmation_expired"
+
+
+def test_paused_workspace_is_denied_at_s0_over_http(pg):
+    _, j, _ = _scenario(pg, "contact.list",
+                        "UPDATE workspaces SET paused_until = now() + interval '1 hour' WHERE workspace_id = 'tenant-a.ws'")
+    assert (j["status"], j["final_stage"], j["reason"]) == ("DENY", "S0", "workspace_paused")
+
+
+def test_paused_tenant_and_scheduled_activation_over_http(pg):
+    _, paused, _ = _scenario(pg, "contact.list", "UPDATE tenants SET paused_until = now() + interval '1 hour' WHERE tenant_id = 'tenant-a'")
+    _, future, _ = _scenario(pg, "contact.list", "UPDATE tenants SET scheduled_activation_at = now() + interval '1 hour' WHERE tenant_id = 'tenant-a'")
+    _, over, _ = _scenario(pg, "contact.list", "UPDATE tenants SET paused_until = now() - interval '1 hour' WHERE tenant_id = 'tenant-a'")
+    assert paused["reason"] == "tenant_paused" and future["reason"] == "not_yet_active"
+    assert (over["status"], over["final_stage"]) == ("NORMAL", "S11")
+
+
+def test_a_pause_on_another_tenant_does_not_affect_this_one(pg):
+    _, j, _ = _scenario(pg, "contact.list", "UPDATE tenants SET paused_until = now() + interval '1 hour' WHERE tenant_id = 'tenant-b'")
+    assert j["status"] == "NORMAL"

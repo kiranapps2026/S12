@@ -45,6 +45,27 @@ class InMemorySuspendedRuns:
         return None if raw is None else decode_state(json.loads(raw))
 
 
+class StaticActivation:
+    """Fixture ActivationStateReader: never paused unless a test sets a field."""
+
+    def __init__(self) -> None:
+        self.tenant_paused_until = self.tenant_activation_at = None
+        self.workspace_paused_until = self.workspace_activation_at = None
+        self.now = None
+        self.error: Exception | None = None
+
+    async def read(self, tenant_id, workspace_id):
+        import time
+        from contracts.activation import ActivationState
+        if self.error:
+            raise self.error
+        return ActivationState(
+            database_now=self.now if self.now is not None else time.time(),
+            tenant_paused_until=self.tenant_paused_until, tenant_activation_at=self.tenant_activation_at,
+            workspace_paused_until=self.workspace_paused_until,
+            workspace_activation_at=self.workspace_activation_at)
+
+
 class StaticScopes:
     """Fixture RunScopeFactory: the same scope for every tenant."""
 
@@ -67,6 +88,7 @@ def make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies
         scopes=StaticScopes(scenario, s8),
         confirmation_store=scenario.confirmation_store,
         suspended=InMemorySuspendedRuns(),
+        activation=StaticActivation(),
     )
 
 

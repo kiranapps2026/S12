@@ -281,3 +281,27 @@ def test_confirmation_reject(pg):
         late = await store.consume("c-1", tenant_id=A, user_id="tenant-a.user", plan_hash="h" * 64)
         return wrong, other_tenant, ok, again, late
     assert pg(body) == (False, False, True, False, MISMATCH)
+
+
+# ---- S0.1 activation --------------------------------------------------------------------
+
+def test_activation_state_uses_database_time(pg):
+    from adapters.postgres.activation import PostgresActivationReader
+    state = pg(lambda db: PostgresActivationReader(db).read(A, "tenant-a.ws"),
+               "UPDATE workspaces SET paused_until = now() + interval '1 hour' WHERE workspace_id = 'tenant-a.ws'",
+               "UPDATE tenants SET scheduled_activation_at = now() + interval '2 hours' WHERE tenant_id = 'tenant-a'")
+    assert abs(state.database_now - time.time()) < 60
+    assert state.workspace_paused_until - state.database_now == pytest.approx(3600, abs=5)
+    assert state.tenant_activation_at - state.database_now == pytest.approx(7200, abs=5)
+    assert state.tenant_paused_until is None and state.workspace_activation_at is None
+
+
+def test_activation_needs_a_real_tenant_workspace_pair(pg):
+    from adapters.postgres.activation import PostgresActivationReader
+
+    async def body(db):
+        reader = PostgresActivationReader(db)
+        for tenant, ws in ((A, "tenant-b.ws"), (B, "tenant-a.ws"), (A, "nope"), ("nope", "tenant-a.ws")):
+            with pytest.raises(DependencyUnavailable):
+                await reader.read(tenant, ws)
+    pg(body)
