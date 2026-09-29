@@ -20,6 +20,7 @@ import uuid
 from typing import Any
 
 from contracts.capability import CapabilityRegistry
+from contracts.errors import DependencyUnavailable
 from contracts.intent_model import IntentModel
 from contracts.pipeline_state import PipelineState
 from contracts.stage_outputs import IntentResult
@@ -89,8 +90,11 @@ async def handle(state: PipelineState, model: IntentModel | None,
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             completion = await model.complete(text, known, feedback)
-        except Exception:  # noqa: BLE001 — fail closed; detail is not exposed
-            logger.exception("S2: intent model call failed")
+        except DependencyUnavailable as exc:      # the provider is down / out of credit / refusing: expected
+            logger.warning("S2: intent model unavailable (%s)", exc)   # one line, no traceback
+            return state.with_status(StageStatus.ERROR, "llm_unavailable")
+        except Exception:  # noqa: BLE001 — fail closed; an unexpected failure keeps its traceback
+            logger.exception("S2: intent model call failed unexpectedly")
             return state.with_status(StageStatus.ERROR, "llm_unavailable")
         parsed, feedback = _parse(completion.text, allowed)
         if parsed is None:

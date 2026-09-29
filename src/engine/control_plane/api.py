@@ -12,11 +12,12 @@ Source: COMPONENTS_BLUEPRINT.md, FINAL_ARCHITECTURE.md §36, RUNBOOK R-C
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from contracts.errors import DependencyUnavailable, UnknownConfirmation
 from contracts.principal import Principal
@@ -29,9 +30,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+MAX_INPUT_CHARS = 65536
+
+
 class ExecuteRequest(BaseModel):
     """Request to run the pipeline. Deliberately has no identity fields."""
     model_config = {"extra": "forbid"}
+
+    @field_validator("input_data")
+    @classmethod
+    def _bounded(cls, value: dict) -> dict:
+        try:
+            size = len(json.dumps(value))
+        except (RecursionError, TypeError, ValueError):
+            raise ValueError("input_data is not plain JSON of sane depth")
+        if size > MAX_INPUT_CHARS:
+            raise ValueError(f"input_data is larger than {MAX_INPUT_CHARS} characters")
+        return value
 
     input_data: dict[str, Any] = Field(..., description="Input data for execution")
     conversation_id: str | None = None

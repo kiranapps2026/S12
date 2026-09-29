@@ -34,18 +34,23 @@ def post_json(url: str, headers: dict[str, str], body: bytes, timeout: float) ->
 
 
 class DeepSeekIntentModel:
-    def __init__(self, api_key: str, transport: Transport = post_json) -> None:
+    def __init__(self, api_key: str, transport: Transport = post_json, *,
+                 endpoint: str = ENDPOINT, timeout: float = TIMEOUT_SECONDS) -> None:
+        """`endpoint` and `timeout` are constructor-only (tests, gateways): the key is only ever
+        sent to the endpoint the composition root chose, never to one read from the environment."""
         if not api_key:
             raise ValueError("DeepSeek API key is empty")
         self._api_key = api_key
         self._transport = transport
+        self._endpoint = endpoint
+        self._timeout = timeout
 
     async def complete(self, text: str, intents: tuple[str, ...], feedback: str | None) -> IntentCompletion:
         body = json.dumps(build_request(text, intents, feedback)).encode("utf-8")
         headers = {"Content-Type": "application/json", "Accept": "application/json",
                    "Authorization": f"Bearer {self._api_key}"}
         try:
-            reply = await asyncio.to_thread(self._transport, ENDPOINT, headers, body, TIMEOUT_SECONDS)
+            reply = await asyncio.to_thread(self._transport, self._endpoint, headers, body, self._timeout)
             return parse_reply(reply)
         except _FAILURES as error:
             raise DependencyUnavailable(f"DeepSeek call failed: {type(error).__name__}") from None

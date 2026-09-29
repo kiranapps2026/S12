@@ -133,3 +133,11 @@ def test_reply_needs_authentication_and_rejects_extra_fields():
 
 def test_reply_answers_503_when_nothing_is_wired():
     assert _reply(_client(pipeline=False), "x").status_code == 503
+
+
+def test_an_oversized_body_is_refused_with_422():
+    client = _client()
+    big = {"message": "x" * 70_000}
+    assert client.post("/api/v1/execute", json={"input_data": big}, headers=HEADERS).status_code == 422
+    ok = {"message": "list contacts", "pad": "y" * 60_000}
+    assert client.post("/api/v1/execute", json={"input_data": ok}, headers=HEADERS).status_code == 200

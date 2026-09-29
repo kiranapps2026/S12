@@ -105,6 +105,22 @@ def _enforce(stage_id: str, state: PipelineState) -> tuple[StageStatus, str] | N
     return None
 
 
+def _minimized(state: PipelineState) -> PipelineState:
+    """The state as stored for a suspended run: nothing the user typed and nothing the model said
+    about it. S11 and the reply need the plan, binding, profile, safety result, confirmation and
+    context; they never read the raw request, S1's sanitized text or S2's parameters. Beyond
+    data minimization this keeps bytes PostgreSQL cannot store out of the JSONB."""
+    changes: dict = {}
+    if state.entry_request is not None:
+        changes["entry_request"] = dataclasses.replace(state.entry_request, raw_payload={})
+    if state.normalized_input is not None:
+        changes["normalized_input"] = dataclasses.replace(state.normalized_input, sanitized_input={})
+    if state.intent_result is not None:
+        changes["intent_result"] = dataclasses.replace(
+            state.intent_result, parameters={}, raw_llm_output="")
+    return dataclasses.replace(state, **changes)
+
+
 class PipelineRunner:
     """Runs S0–S11. Construct with build_pipeline()."""
 
@@ -226,9 +242,10 @@ class PipelineRunner:
         """Store the state S10 left so a reply can resume it, even after a restart. If it
         cannot be stored the run ends in ERROR: nobody could ever answer the confirmation."""
         state = result.final_state
+        stored = _minimized(state)
         try:
             await self._deps.suspended.save(
-                state, tenant_id=state.execution_context.tenant_id,
+                stored, tenant_id=state.execution_context.tenant_id,
                 execution_id=state.plan.execution_id,
                 confirmation_id=state.confirmation.confirmation.confirmation_id)
         except Exception:  # noqa: BLE001

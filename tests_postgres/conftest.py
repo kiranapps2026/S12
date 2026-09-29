@@ -95,3 +95,19 @@ def pg(database_url):
                 await database.close()
         return asyncio.run(scenario())
     return run
+
+
+@pytest.fixture
+def stack_factory(database_url):
+    """``stack_factory(delay=0, model_timeout=2, extra_sql=())`` -> a running app process (as a
+    plain, non-superuser DB role) + a fake DeepSeek server + seeded data and API keys."""
+    from tests_postgres.realserver import make_stack
+    made = []
+
+    def factory(**kwargs):
+        stack = make_stack(database_url, **kwargs)
+        made.append(stack)
+        return stack
+    yield factory
+    for stack in made:
+        stack.close()
