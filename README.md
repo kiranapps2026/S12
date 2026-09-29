@@ -66,7 +66,7 @@ The parent `rebuild/` folder contains historical and analytical documents that i
 - `HUMAN_IN_THE_LOOP.md` — absorbed into MUTATION_SAFETY.md and PIPELINE_STAGES.md
 - `ISSUES_CATEGORIZED.md` — historical tracking
 - `MASTER_ARCHITECTURE_FINAL.md` — predecessor to FINAL_ARCHITECTURE.md
-- `MEMORY_ARCHITECTURE.md` — deferred (future worker platform compatibility)
+- `MEMORY_ARCHITECTURE.md` — **now in this directory** (added 2026-09-29), status DEFERRED with repairs pending: see its `Memory repair (MR-n)` markers and blocker register Section 20
 - `REPAIRS_APPLIED.md` — superseded by REFAUDIT.md
 - `SKILL_FACTORY_ARCHITECTURE.md` — deferred (Skill Factory design not finalized)
 - `STUDY_SUMMARY.md` — research input, not a contract

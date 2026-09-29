@@ -46,7 +46,7 @@
 | 11 | `RESOLVE_LAYER.md` | COMPLETE | 2026-09-25 | Capability → Kernel → Binding → Adapter |
 | 12 | `MUTATION_SAFETY.md` | COMPLETE | 2026-09-25 | Mutation taxonomy, retry, confirmation |
 | 13 | `SKILL_FACTORY_ARCHITECTURE.md` | COMPLETE | 2026-09-25 | Skill compilation, discovery, execution |
-| 14 | `MEMORY_ARCHITECTURE.md` | COMPLETE | 2026-09-25 | Worker memory, context lifecycle, cross-session state |
+| 14 | `MEMORY_ARCHITECTURE.md` | REPAIRS PENDING | 2026-09-29 | Worker memory, context lifecycle, cross-session state. Present since 2026-09-29; findings MR-5…MR-10 (register Section 20); vector parts blocked by MR-1. Deferred to the memory phase, not needed for S12–S15 |
 
 ## Tier 3 — Required Before M1 Complete
 

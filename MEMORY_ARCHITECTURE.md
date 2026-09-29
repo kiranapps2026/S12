@@ -1,6 +1,9 @@
 # Worker Memory Architecture
 
 **Purpose**: Complete specification for how AI workers remember, forget, learn, and share state across time, sessions, and worker instances. Memory is what transforms a stateless agent into a persistent worker.
+**Status**: DEFERRED (post-S15, memory / LLM layer) — REPAIRS PENDING. Nothing here is implemented, migrated or tested in S12–S15 (gate v10 §14). **No vector code** until SUPERSESSION_AWARE_BLOCKER_REGISTER.md Section 20 MR-1 is decided (gate v10 §1).
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §21 Memory Architecture, §36 Pluggable Memory Backends, I-001, I-014, I-018, I-019; [ADR-14_VECTOR_MEMORY_BACKEND.md](ADR-14_VECTOR_MEMORY_BACKEND.md) (draft); [S12_S15_EXECUTION_GATE.md](S12_S15_EXECUTION_GATE.md) v10. Where this document and FINAL_ARCHITECTURE differ, FINAL_ARCHITECTURE wins (I-015).
+**Repair markers (2026-09-29)**: passages that conflict with the master documents carry `> **Memory repair (MR-n):**` notes (items MR-5…MR-10 in SUPERSESSION_AWARE_BLOCKER_REGISTER.md Section 20). Text is corrected only where a binding rule already decides the answer; passages that depend on MR-1 (scope contract) or MR-3 (embedding contract) are flagged, not redesigned.
 
 ---
 
@@ -47,7 +50,9 @@ A stateless agent treats every request as the first request. It has no context, 
 ### What Memory Is NOT
 
 - Memory is NOT a global knowledge base
-- Memory is NOT a vector store for semantic search (that's a different system)
+- Memory is NOT a general-purpose or cross-tenant vector knowledge base
+
+> **Memory repair (MR-10):** the former line said memory "is NOT a vector store for semantic search (that's a different system)", which contradicts §4 of this document (LanceDB vector search for patterns and domain knowledge) and FINAL_ARCHITECTURE §21 (L3 stored in PostgreSQL + a vector store). L3 memory **does** use vector search for retrieval, scoped per MR-1; it is not a global knowledge base.
 - Memory is NOT infinite — it has explicit lifecycle and limits
 - Memory is NOT shared across tenants or users without explicit intent
 
@@ -109,9 +114,10 @@ class WorkingMemory:
     partial_results: dict[str, Any]  # Intermediate results for consolidation
     errors: list[ExecutionError]     # Errors encountered during execution
     retry_count: int                 # Current retry count
-    budget_remaining: Decimal        # Budget units remaining
     checkpoint_sequence: int         # Last checkpoint number
 ```
+
+> **Memory repair (MR-10):** `budget_remaining: Decimal` was removed. Budget is held only by `budget_reservations` through the BudgetReserver, in integer minor units (gate C3, C31); working memory never carries a budget figure. Working memory is also not a new S0 artifact: S0–S11 are certified, and S12–S15 state lives in the execution tables and `checkpoints` (gate C10). The database state is the source of truth; a checkpoint is a hint (gate §13).
 
 ### Working Memory Lifecycle
 
@@ -134,6 +140,8 @@ Archived at S14/S15
     ├── Partial failure → Session Memory (with error context)
     └── Dead letter → Long-Term Knowledge (failure pattern)
 ```
+
+> **Memory repair (MR-10):** material copied from execution results, errors or dead-letter evidence into memory passes the same redaction as S15 and dead-letter evidence: no credentials, tokens, provider bodies or stack traces (I-018, gate §21 S6). Memory promotion is a memory write and goes through `MemoryWriteBarrier` (MR-9).
 
 ### Working Memory Isolation
 
@@ -162,7 +170,7 @@ class LongTermMemory:
 
     # Preference Memory
     preferences: dict[str, Any]     # User preferences, defaults, habits
-    confirmation_patterns: dict[str, Any]  # How user confirms/rejects
+    confirmation_patterns: dict[str, Any]  # How user confirms/rejects — informational only (MR-10)
 
     # Procedural Memory
     successful_patterns: list[ExecutionPattern]  # What worked before
@@ -175,6 +183,8 @@ class LongTermMemory:
     # Episodic Memory
     significant_events: list[Event]  # Important past events
 ```
+
+> **Memory repair (MR-10):** `confirmation_patterns` and every other memory entry are informational. Memory never decides authorization, confirmation (S10) or admission, and never skips a confirmation (FINAL_ARCHITECTURE §21 "memory is never authorization", I-007).
 
 ### Pluggable Memory Backend
 
@@ -200,7 +210,11 @@ class MemoryBackend(ABC):
     async def delete(self, entry_id: str) -> None: ...
     @abstractmethod
     async def consolidate(self) -> None: ...
+```
 
+> **Memory repair (MR-7):** this interface (`store`, `retrieve`, `delete`, `consolidate`) differs from FINAL_ARCHITECTURE §36 (`write`, `read`, `search`, `close`), which is authoritative (I-015). Neither has a scope argument, and this one has no vector search at all. The single interface is decided with MR-1: ADR-14 §3.1 proposes `write`, `read`, `search`, `purge`, `close`, all async and all taking a mandatory `MemoryScope`. Until then, treat the class names below as placeholders.
+
+```python
 class PostgresMemoryBackend(MemoryBackend):
     """PostgreSQL-backed structured memory (preferences, events, failures)."""
 
@@ -403,20 +417,25 @@ class MemoryQuality:
     last_used: datetime    # Last retrieval timestamp
     created_at: datetime   # Creation timestamp
 
-    def effective_score(self) -> float:
+    def effective_score(self, now: datetime) -> float:
         """Compute effective quality score."""
-        recency_decay = self._decay(self.recency, self.last_used)
+        recency_decay = self._decay(self.recency, self.last_used, now)
         confidence_weight = self.confidence * 0.6
         recency_weight = recency_decay * 0.3
         usage_weight = min(self.usage_count / 10, 1.0) * 0.1
         return confidence_weight + recency_weight + usage_weight
 
     @staticmethod
-    def _decay(base: float, last_used: datetime) -> float:
-        """Exponential decay based on time since last use."""
-        hours_since = (datetime.now() - last_used).total_seconds() / 3600
+    def _decay(base: float, last_used: datetime, now: datetime) -> float:
+        """Exponential decay based on time since last use.
+
+        `now` is server-authoritative time from the database (I-019), passed in by the caller.
+        """
+        hours_since = (now - last_used).total_seconds() / 3600
         return base * (0.95 ** hours_since)
 ```
+
+> **Memory repair (MR-10):** the former `datetime.now()` used the worker-local clock, which IDENTITY_AND_TENANCY §11 marks "WRONG" for any stored or policy decision (I-019). `effective_score()` must pass the database time through. Every `now()` elsewhere in this document means database time.
 
 ---
 
@@ -443,6 +462,8 @@ class MemoryQuality:
 | **Conditional write** | Write if not exists | Preferences (don't overwrite) |
 
 ### Memory Access Rules
+
+> **Memory repair (MR-6):** `can_delete` had no tenant check (`worker_id` match **or** `is_admin`), so an admin of tenant A could delete tenant B's memory. Corrected below: the tenant check comes first in every rule, and "admin" means membership role `owner`/`admin` **in the memory's workspace**, read live (IDENTITY_AND_TENANCY §5). The final scope rules are part of MR-1; these are the minimum.
 
 ```python
 class MemoryAccessPolicy:
@@ -473,8 +494,11 @@ class MemoryAccessPolicy:
 
     # Delete rules
     def can_delete(self, caller: Caller, memory: Memory) -> bool:
-        # Rule 1: Owner or admin
-        return caller.worker_id == memory.worker_id or caller.is_admin
+        # Rule 1: Tenant match (MR-6: was missing)
+        if caller.tenant_id != memory.tenant_id:
+            return False
+        # Rule 2: Owner, or owner/admin membership in the memory's workspace (read live)
+        return caller.worker_id == memory.worker_id or caller.is_workspace_admin(memory.workspace_id)
 ```
 
 ---
@@ -490,6 +514,8 @@ class MemoryAccessPolicy:
 | **Worker** | worker_id field, RLS policy | All memory layers |
 | **Session** | session_id field, RLS policy | Session memory |
 | **Execution** | trace_id field, RLS policy | Working memory |
+
+> **Memory repair (MR-5):** "RLS on all memory tables" holds only for PostgreSQL tables. A vector store such as LanceDB is embedded and file-based and has **no RLS**, so the guarantees below do not hold for vector data until MR-1 (scope contract and physical layout) and ADR-14 (store choice) are decided. The §10 `record_pattern` code shows the gap: its vector row has `worker_id` but no `tenant_id`.
 
 ### Isolation Guarantees
 
@@ -567,7 +593,7 @@ class MemoryForgettingPolicy:
             return True
 
         # Rule 2: Low quality + old
-        if memory.quality.effective_score() < 0.1 and \
+        if memory.quality.effective_score(now()) < 0.1 and \
            (now() - memory.created_at).days > 90:
             return True
 
@@ -617,6 +643,8 @@ class MemoryForgettingPolicy:
 └─────────────────────────────────────────────────────────────┘
 ```
 
+> **Memory repair (MR-10):** the Redis memory cache is out of scope until the fleet phase (gate §1 forbids Redis in S12–S15). When it lands, every cache key starts with the full memory scope (tenant, workspace, worker, user), the cache is never authoritative, and `purge(scope)` invalidates it.
+
 ### Memory Store Classes
 
 ```python
@@ -638,8 +666,7 @@ class WorkingMemoryStore:
             partial_results={},
             errors=[],
             retry_count=0,
-            budget_remaining=context.budget,
-            checkpoint_sequence=0,
+            checkpoint_sequence=0,  # MR-10: budget_remaining removed; ExecutionContext has no `budget`
         )
         return self._memory
 
@@ -647,7 +674,7 @@ class WorkingMemoryStore:
         """Persist current working memory to database."""
         if self._memory is None:
             raise RuntimeError("Memory not initialized")
-        await self.db.insert("execution_checkpoints", {
+        await self.db.insert("checkpoints", {  # MR-10: gate C10 table (was "execution_checkpoints")
             "trace_id": self.trace_id,
             "sequence": self._memory.checkpoint_sequence,
             "step": self._memory.current_step,
@@ -658,7 +685,7 @@ class WorkingMemoryStore:
     async def restore(self) -> WorkingMemory | None:
         """Restore working memory from last checkpoint."""
         row = await self.db.fetch_one(
-            "SELECT * FROM execution_checkpoints WHERE trace_id = :trace_id "
+            "SELECT * FROM checkpoints WHERE trace_id = :trace_id "
             "ORDER BY sequence DESC LIMIT 1",
             {"trace_id": self.trace_id},
         )
@@ -714,7 +741,10 @@ class LongTermMemoryStore:
         return row["value"] if row else None
 
     async def record_pattern(self, worker_id: str, pattern: ExecutionPattern) -> None:
-        """Record execution pattern in both PostgreSQL and vector store."""
+        """Record execution pattern in both PostgreSQL and vector store.
+
+        NOT A TEMPLATE — see the repair note after this block (MR-5, MR-8, MR-9).
+        """
         # Store in PostgreSQL
         await self.db.insert("execution_patterns", {
             "worker_id": worker_id,
@@ -735,6 +765,11 @@ class LongTermMemoryStore:
             "task_description": pattern.task_description,
         })
 ```
+
+> **Memory repair (MR-5, MR-8, MR-9):** this sketch shows three defects, kept visible on purpose.
+> - **MR-5:** the vector row carries `worker_id` but no `tenant_id` (or workspace/user), and the PostgreSQL queries filter by `worker_id` alone. Every memory row and query is scoped by the full `MemoryScope` (MR-1; gate C34 for PostgreSQL rows).
+> - **MR-8:** `self._embed(...)` makes the memory store call an embedding provider itself. A memory backend (Layer 0) cannot call a provider (Layer 1), and an embedding call needs a frozen binding, credentials via `CredentialProvider` (I-018) and budget. The caller embeds and passes vectors (MR-3).
+> - **MR-9:** both writes go straight to the database and the vector store. Every memory write goes through `MemoryWriteBarrier` (I-014), which is not yet designed; the PostgreSQL row and the vector row must also be written consistently with their event (I-020), which is decided by the store choice (ADR-14).
 
 ---
 
