@@ -580,6 +580,17 @@ These items have a design decision recorded. They are NOT evidence-closed (no im
 | **Status** | DECISION_REQUIRED |
 | **Affected** | DATABASE.md, RELIABILITY.md, DATA_CONTRACTS |
 
+### ADR-14 — Vector Memory Backend and Tenant Isolation
+
+| | |
+|---|---|
+| **Finding** | FINAL_ARCHITECTURE §36 `MemoryBackend.search(vector, limit)` has no tenant/workspace/worker scope; LanceDB (§20, §29) is embedded and file-based with no RLS, so vector isolation would rest on callers (I-001). Also: no atomic write with ledger/outbox (I-020), no sharing across nodes, no PITR (DATABASE §5) |
+| **Draft** | `ADR-14_VECTOR_MEMORY_BACKEND.md` — Part 1: mandatory `MemoryScope` on every async backend call, enforced by the backend, scope from context only; Part 2: recommended Option C — pgvector default (RLS, partition per tenant, HNSW per partition), LanceDB optional per deployment with per-tenant datasets and a recorded I-001 exception |
+| **Status** | DECISION_REQUIRED — **blocks all vector code** (register Section 20, MR-1/MR-2) |
+| **Target phase** | Post-S15 (memory / LLM layer) |
+| **Affected** | FINAL_ARCHITECTURE §20, §21, §29, §36; DATABASE.md; DATA_CONTRACTS.md; SECURITY.md; IDENTITY_AND_TENANCY.md; VALIDATION.md |
+| **Tests** | test_memory_calls_require_scope(), test_cross_tenant_vector_search_impossible(), test_scope_from_context_not_llm(), test_memory_write_and_event_atomic() (full list in the ADR §6) |
+
 ---
 
 ## SECTION 14: W0-W6 READINESS STATUS
@@ -869,3 +880,20 @@ Sub-agent spawning and `worker_spawn_audit`; batch processing (C40); replanning 
 | WM-O1 | DATA_CONTRACTS has two §31 headings; not renumbered because other documents cite §31–§37 | RECORDED |
 | WM-O2 | FINAL_ARCHITECTURE TOC listed "§42 Schema and API Compatibility During Rolling Upgrades", which has no section | RECORDED (covered by §48) |
 | WM-O3 | Skill Factory "Skill" vs data-defined skill composition: compile path when the Skill Factory lands | OPEN (post-S15) |
+
+---
+
+## SECTION 20: MEMORY / RAG GROUP (target phase: post-S15, memory / LLM layer)
+
+**Date**: 2026-09-29. **Source**: review of the vector/RAG proposal against FINAL_ARCHITECTURE §20, §21, §36, §37a, §38 and invariants I-001, I-011, I-014, I-020, I-029.
+
+**Blocking rule (owner, 2026-09-29):** no vector code — no `lancedb`/`pgvector` dependency, no `VectorMemoryBackend`, no vector migration, no embedding adapter, no vector capability — is written until **MR-1 is DECIDED and propagated**. MR-2…MR-4 may be discussed in parallel but are `BLOCKED` for implementation until then.
+
+| ID | Item | Why | Status | Depends on |
+|---|---|---|---|---|
+| **MR-1** | **Memory scope contract and physical layout.** Every `MemoryBackend` call takes a mandatory `MemoryScope` (tenant, workspace, worker, user, layer) derived from `ExecutionContext` / `PrincipalChain`, never from LLM output; the backend enforces it (no caller filter strings, no cross-tenant API); async methods; `purge(scope)`; physical layout per store (pgvector: RLS + tenant partitions; LanceDB: one dataset per tenant, path built only by the backend). | §36 `search(vector, limit)` has no scope; LanceDB has no RLS (I-001); memory must be isolated by worker, tenant and user (§21). Retrofitting isolation onto an embedded store is harder than choosing the store with it. | DECISION_REQUIRED — **BLOCKING** | — (decided together with MR-2's store choice) |
+| **MR-2** | **Vector backend ADR** — ADR-14 (`ADR-14_VECTOR_MEMORY_BACKEND.md`): recommended Option C, pgvector default, LanceDB optional per deployment with an owner-recorded I-001 exception. | LanceDB (§20, §29) predates the fleet plan; pgvector gives RLS, atomic writes with events (I-020), multi-node sharing and existing PITR. | DECISION_REQUIRED | MR-1 |
+| **MR-3** | **Embedding contract.** Either an additive `RuntimeContract.embed()` (§38 has only `generate`, `stream`, `capabilities`, `cost_model`) or an `embed` kernel operation on a Layer 1 provider adapter, with its binding (frozen at S5), cost model, budget reservation, credentials via `CredentialProvider` (I-018) and mutation level `R`. The memory backend (Layer 0) never calls it; callers embed and pass vectors. Vector capabilities (`memory.embed`, `memory.vector_search`, `memory.nearest_neighbors`) are registered in the Provider Package and run through S0→S15 with S8 authorization (I-029), not directly over A2A. | Runtime Contract has no embedding method (same shape as Laya LB1); Layer 0 may not import Layer 1; A2A carries requests into S0, it is not a bypass. | DECISION_REQUIRED — BLOCKED for implementation by MR-1 | MR-1, MR-2 |
+| **MR-4** | **Pipeline rulings.** (a) Does an embedding call count toward I-011 ("one LLM call per request, max 2 with retry")? (b) Vector-similarity capability discovery at S3 changes certified S0–S11 code: S0–S11 change control (gate §19.3) and re-certification. | I-011 is written for LLM generation; S3 is certified. | DECISION_REQUIRED — BLOCKED for implementation by MR-1 | MR-1; MR-3 for (a) |
+
+**Also required before vector writes (existing items):** `MemoryWriteBarrier` implementation (I-014; deferred in gate §14 and blocker register §19.3). **Not in S12–S15:** the gate forbids real provider APIs and defers memory, so none of MR-1…MR-4 is implemented in this phase.
