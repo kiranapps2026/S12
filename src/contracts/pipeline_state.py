@@ -20,7 +20,7 @@ from contracts.errors import ContractViolationError
 from contracts.stage_registry import StageOutcome, StageStatus
 
 if TYPE_CHECKING:
-    from engine.stages.s0_entry.handler import EntryRequest
+    from contracts.entry import EntryRequest
 
 # ---------------------------------------------------------------------------
 # Stage-to-field ownership mapping

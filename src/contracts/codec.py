@@ -91,7 +91,7 @@ def decode_state(data: dict[str, Any]) -> Any:
     from contracts.execution_context import ExecutionContext
     from contracts.pipeline_state import PipelineState, _resolve_field_type
     from contracts.stage_registry import StageStatus
-    from engine.stages.s0_entry.handler import EntryRequest
+    from contracts.entry import EntryRequest
 
     known = {f.name for f in fields(PipelineState)}
     extra = set(data) - known

@@ -9,12 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING
-
 from contracts.events import LedgerEvent
-
-if TYPE_CHECKING:
-    from db.session import DatabaseSession
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +23,7 @@ class EventLedger:
     trace_id chains all events for a given execution.
     """
 
-    def __init__(self, db: "DatabaseSession") -> None:
-        self.db = db
+    def __init__(self) -> None:
         self._buffer: list[LedgerEvent] = []
 
     def _generate_event_id(self) -> str:
