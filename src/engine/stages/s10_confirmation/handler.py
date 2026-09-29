@@ -65,7 +65,7 @@ async def handle(state: PipelineState, store: ConfirmationStore | None) -> Pipel
         expires_at=time.time() + CONFIRMATION_TTL_SECONDS,
     )
     try:
-        store.save(confirmation, ctx.tenant_id, plan_result.execution_id)
+        await store.save(confirmation, ctx.tenant_id, plan_result.execution_id)
     except Exception:
         logger.exception("S10: confirmation store save failed")
         return state.with_status(StageStatus.DENY, "confirmation_store_unavailable")
@@ -75,8 +75,8 @@ async def handle(state: PipelineState, store: ConfirmationStore | None) -> Pipel
     return state.with_status(StageStatus.CLARIFY, CONFIRMATION_REQUIRED)
 
 
-def resume_confirmation(state: PipelineState, store: ConfirmationStore, *,
-                        now: float | None = None) -> PipelineState:
+async def resume_confirmation(state: PipelineState, store: ConfirmationStore, *,
+                              now: float | None = None) -> PipelineState:
     """Confirmed re-entry: consume the pending confirmation, then allow S11 to run.
 
     The only permitted rewrite of the S10 output: the same confirmation, now carrying
@@ -87,11 +87,12 @@ def resume_confirmation(state: PipelineState, store: ConfirmationStore, *,
         return state.with_status(StageStatus.DENY, "confirmation_mismatch")
     conf = outcome.confirmation
     when = time.time() if now is None else now
-    result = store.consume(
+    result = await store.consume(
         conf.confirmation_id,
+        tenant_id=state.execution_context.tenant_id,
         user_id=state.execution_context.user_id,
         plan_hash=state.plan.plan_hash,
-        now=when,
+        now=now,
     )
     if result == CONSUMED:
         consumed = dataclasses.replace(conf, consumed_at=when)

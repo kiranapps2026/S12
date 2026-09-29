@@ -198,7 +198,7 @@ CHECK_MATRIX = [
     ("connection_active", {"connection": "UNKNOWN"}, "unknown",  "connection_active_invalid"),
     ("connection_active", {"connection": 42},        "malformed","connection_active_invalid"),
     # --- capability_granted ---
-    ("capability_granted", {"grant": False},  "false",    "capability_denied"),
+    ("capability_granted", {"grant": False},  "false",    "capability_granted_denied"),
     ("capability_granted", {"grant": None},   "None",     "capability_granted_unavailable"),
     ("capability_granted", {"grant": RAISE},  "RAISE",    "capability_granted_unavailable"),
     ("capability_granted", {"grant": "UNKNOWN"}, "unknown", "capability_granted_invalid"),
@@ -218,13 +218,13 @@ CHECK_MATRIX = [
     # Note: None state not directly supported by ConfigurableCircuitBreaker;
     # it returns the value. We test via RAISE for unavailable.
     # --- budget_available ---
-    ("budget_available", {"budget": False},   "false",    "budget_unavailable"),
+    ("budget_available", {"budget": False},   "false",    "budget_available_denied"),
     ("budget_available", {"budget": None},    "None",     "budget_available_unavailable"),
     ("budget_available", {"budget": RAISE},   "RAISE",    "budget_available_unavailable"),
     ("budget_available", {"budget": "UNKNOWN"}, "unknown", "budget_available_invalid"),
     ("budget_available", {"budget": 42},      "malformed","budget_available_invalid"),
     # --- mutation_safety ---
-    ("mutation_safety", {"mutation": False},  "false",    "mutation_invalid"),
+    ("mutation_safety", {"mutation": False},  "false",    "mutation_safety_denied"),
     ("mutation_safety", {"mutation": None},   "None",     "mutation_safety_unavailable"),
     ("mutation_safety", {"mutation": RAISE},  "RAISE",    "mutation_safety_unavailable"),
     ("mutation_safety", {"mutation": "UNKNOWN"}, "unknown", "mutation_safety_invalid"),
@@ -306,7 +306,7 @@ class TestStatusDenials:
         ({"user": "deactivated"}, "user_active", "user_active_inactive"),
         ({"connection": "revoked"}, "connection_active", "connection_active_inactive"),
         ({"connection": ("active", time.time() - 10)}, "connection_active", "connection_active_expired"),
-        ({"grant": False}, "capability_granted", "capability_denied"),
+        ({"grant": False}, "capability_granted", "capability_granted_denied"),
         ({"scope": False}, "resource_scope", "resource_scope_denied"),
     ], ids=["suspended_tenant", "deactivated_user", "revoked_connection",
             "expired_connection", "withdrawn_grant", "out_of_scope_workspace"])
@@ -358,7 +358,7 @@ class TestStatusDenials:
         ({"user": "deactivated"}, "user_active", "user_active_inactive"),
         ({"connection": "revoked"}, "connection_active", "connection_active_inactive"),
         ({"connection": ("active", time.time() - 10)}, "connection_active", "connection_active_expired"),
-        ({"grant": False}, "capability_granted", "capability_denied"),
+        ({"grant": False}, "capability_granted", "capability_granted_denied"),
         ({"scope": False}, "resource_scope", "resource_scope_denied"),
     ], ids=["suspended_tenant", "deactivated_user", "revoked_connection",
             "expired_connection", "withdrawn_grant", "out_of_scope_workspace"])
@@ -830,7 +830,7 @@ class TestCheckCapabilityGrantedUnit:
         auth = ConfigurableAuthState(grant=False)
         binding = _make_binding(capability_id="cap-1")
         r = check_capability_granted(_make_ctx(), _make_task_profile(), binding, _make_deps(auth=auth))
-        assert r == CheckResult("capability_granted", False, "capability_denied")
+        assert r == CheckResult("capability_granted", False, "capability_granted_denied")
 
     def test_no_capability_id_on_binding(self):
         binding = _make_binding(capability_id="")
@@ -887,17 +887,17 @@ class TestCheckBudgetAvailableUnit:
     def test_zero_cost(self):
         tp = _make_task_profile(cost=0)
         r = check_budget_available(_make_ctx(), tp, _make_binding(), _make_deps())
-        assert r == CheckResult("budget_available", False, "budget_unavailable: invalid estimated_cost=0")
+        assert r == CheckResult("budget_available", False, "budget_available_invalid")
 
     def test_negative_cost(self):
         tp = _make_task_profile(cost=-1)
         r = check_budget_available(_make_ctx(), tp, _make_binding(), _make_deps())
-        assert "budget_unavailable" in r.reason
+        assert r.reason == "budget_available_invalid"
 
     def test_budget_false(self):
         auth = ConfigurableAuthState(budget=False)
         r = check_budget_available(_make_ctx(), _make_task_profile(), _make_binding(), _make_deps(auth=auth))
-        assert r == CheckResult("budget_available", False, "budget_unavailable")
+        assert r == CheckResult("budget_available", False, "budget_available_denied")
 
 
 class TestCheckMutationSafetyUnit:
@@ -907,7 +907,7 @@ class TestCheckMutationSafetyUnit:
         mutation = ConfigurableMutationPolicy(value=False)
         binding = _make_binding(effective_mutation="DELETE", effective_risk=0.9)
         r = check_mutation_safety(_make_ctx(), _make_task_profile(), binding, _make_deps(mutation=mutation))
-        assert r == CheckResult("mutation_safety", False, "mutation_invalid")
+        assert r == CheckResult("mutation_safety", False, "mutation_safety_denied")
 
     def test_mutation_raises(self):
         mutation = ConfigurableMutationPolicy(value=RAISE)

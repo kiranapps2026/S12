@@ -11,16 +11,18 @@ Source: DATA_CONTRACTS.md §2, PIPELINE_STAGES.md §11, RUNBOOK R-C/R-I/R-N
 - Enforcement does not trust a handler's status alone: after S7, S8, S10 and S11 the
   runner checks the stage's own output and stops the run if it says "no".
 - Dependencies arrive from one composition root, build_pipeline(); there are no globals.
+- Tenant-specific dependencies (live kill switch, RLS-bound authorization state, policy
+  versions) are resolved once per run, right after S0 identified the tenant, through the
+  RunScopeFactory. If they cannot be read the run ends in ERROR before S1.
 """
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Mapping
+from typing import Awaitable, Callable
 
 from contracts.capability import CapabilityRegistry
-from contracts.kernel_policy import KernelPolicy
 from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE, PipelineState
 from contracts.safety import PathDecision
 from contracts.stage_registry import StageStatus
@@ -32,7 +34,7 @@ from engine.stages.s4_graph_classification.handler import handle as s4
 from engine.stages.s5_provider_resolution.handler import handle as s5
 from engine.stages.s6_task_profile_assembly.handler import handle as s6
 from engine.stages.s7_path_decision.handler import handle as s7
-from engine.stages.s8_safety_gate.dependencies import S8Dependencies
+from engine.control_plane.scope import RunScope, RunScopeFactory
 from engine.stages.s8_safety_gate.handler import handle as s8
 from engine.stages.s9_plan_creation.handler import handle as s9
 from engine.stages.s10_confirmation.handler import handle as s10, resume_confirmation
@@ -49,8 +51,7 @@ class PipelineDependencies:
     """Everything S0–S11 need from outside. Built once, passed to build_pipeline()."""
     llm: LLMProvider
     registry: CapabilityRegistry
-    policy: KernelPolicy
-    s8: S8Dependencies
+    scopes: RunScopeFactory
     confirmation_store: ConfirmationStore
 
 
@@ -94,12 +95,37 @@ def _enforce(stage_id: str, state: PipelineState) -> tuple[StageStatus, str] | N
 class PipelineRunner:
     """Runs S0–S11. Construct with build_pipeline()."""
 
-    def __init__(self, handlers: Mapping[str, StageHandler], deps: PipelineDependencies) -> None:
-        missing = [s for s in PRE_EXECUTION_SEQUENCE[1:] if s not in handlers]
-        if missing:
-            raise ValueError(f"PipelineRunner missing handlers for {missing}")
-        self._handlers = dict(handlers)
+    def __init__(self, deps: PipelineDependencies) -> None:
         self._deps = deps
+        self._wrappers: dict[str, Callable[[StageHandler], StageHandler]] = {}
+
+    def wrap(self, stage_id: str, wrapper: Callable[[StageHandler], StageHandler]) -> None:
+        """Replace stage_id's handler with wrapper(real_handler). For tests and instrumentation."""
+        if stage_id not in PRE_EXECUTION_SEQUENCE[1:]:
+            raise ValueError(f"Unknown stage {stage_id}")
+        self._wrappers[stage_id] = wrapper
+
+    def handlers(self, scope: RunScope) -> dict[str, StageHandler]:
+        """The S1..S11 handlers bound to this run's dependencies."""
+        d = self._deps
+        table: dict[str, StageHandler] = {
+            "S1": s1,
+            "S2": lambda st: s2(st, d.llm),
+            "S3": lambda st: s3(st, d.registry),
+            "S4": s4,
+            "S5": lambda st: s5(st, d.registry, scope.policy_versions),
+            "S6": s6,
+            "S7": lambda st: s7(st, scope.policy),
+            "S8": lambda st: s8(st, scope.s8),
+            "S9": s9,
+            "S10": lambda st: s10(st, d.confirmation_store),
+            "S11": s11,
+        }
+        return {k: self._wrappers[k](v) if k in self._wrappers else v for k, v in table.items()}
+
+    async def _scope_for(self, state: PipelineState) -> RunScope:
+        ctx = state.execution_context
+        return await self._deps.scopes.for_run(ctx.tenant_id, ctx.workspace_id)
 
     async def run(self, entry: EntryRequest, *, stop_after: str | None = None) -> PipelineRunResult:
         """Run S0 then S1..S11 (or up to and including `stop_after`)."""
@@ -117,14 +143,21 @@ class PipelineRunner:
         if stop is not None or stop_after == "S0":
             return self._result(state, "S0", *(stop or (StageStatus.NORMAL, None)), stages, start)
 
-        return await self._run_from(state, PRE_EXECUTION_SEQUENCE[1:], stages, start, stop_after)
+        try:
+            scope = await self._scope_for(state)
+        except Exception as exc:  # noqa: BLE001 — fail closed: no scope, no run
+            logger.exception("Run scope unavailable")
+            return self._result(state, "S0", StageStatus.ERROR, "scope_unavailable", stages, start)
+        return await self._run_from(state, self.handlers(scope), PRE_EXECUTION_SEQUENCE[1:],
+                                    stages, start, stop_after)
 
     async def resume(self, suspended: PipelineState) -> PipelineRunResult:
         """Confirmed re-entry after S10: consume the confirmation, then run S11."""
         start = time.monotonic()
         stages = list(PRE_EXECUTION_SEQUENCE[:11])
         try:
-            state = resume_confirmation(suspended, self._deps.confirmation_store)
+            scope = await self._scope_for(suspended)
+            state = await resume_confirmation(suspended, self._deps.confirmation_store)
         except Exception as exc:  # noqa: BLE001
             logger.exception("S10 resume failed")
             return self._result(suspended, "S10", StageStatus.ERROR, type(exc).__name__, stages, start)
@@ -134,15 +167,16 @@ class PipelineRunner:
         stop = self._stop_check("S10", state)
         if stop is not None:
             return self._result(state, "S10", *stop, stages, start)
-        return await self._run_from(state, ("S11",), stages, start, None)
+        return await self._run_from(state, self.handlers(scope), ("S11",), stages, start, None)
 
-    async def _run_from(self, state: PipelineState, sequence: tuple[str, ...],
-                        stages: list[str], start: float, stop_after: str | None) -> PipelineRunResult:
+    async def _run_from(self, state: PipelineState, handlers: dict[str, StageHandler],
+                        sequence: tuple[str, ...], stages: list[str], start: float,
+                        stop_after: str | None) -> PipelineRunResult:
         final_stage = stages[-1] if stages else "S0"
         for stage_id in sequence:
             final_stage = stage_id
             try:
-                state = await self._handlers[stage_id](state)
+                state = await handlers[stage_id](state)
             except Exception as exc:  # noqa: BLE001 — becomes ERROR, never escapes
                 logger.exception("Stage %s raised", stage_id)
                 return self._result(state, stage_id, StageStatus.ERROR,
@@ -178,17 +212,4 @@ class PipelineRunner:
 
 def build_pipeline(deps: PipelineDependencies) -> PipelineRunner:
     """The composition root for S0–S11: the only place handlers meet dependencies."""
-    handlers: dict[str, StageHandler] = {
-        "S1": s1,
-        "S2": lambda st: s2(st, deps.llm),
-        "S3": lambda st: s3(st, deps.registry),
-        "S4": s4,
-        "S5": lambda st: s5(st, deps.registry),
-        "S6": s6,
-        "S7": lambda st: s7(st, deps.policy),
-        "S8": lambda st: s8(st, deps.s8),
-        "S9": s9,
-        "S10": lambda st: s10(st, deps.confirmation_store),
-        "S11": s11,
-    }
-    return PipelineRunner(handlers, deps)
+    return PipelineRunner(deps)

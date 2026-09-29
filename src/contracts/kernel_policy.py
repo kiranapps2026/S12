@@ -39,3 +39,11 @@ class KernelPolicy:
     enable_tenant_isolation: bool = True
     enable_audit_log: bool = True
     enable_event_replay: bool = True
+
+
+@dataclass(frozen=True)
+class PolicyVersions:
+    """Policy versions in force for one tenant and workspace; S5 records them (R-E)."""
+    tenant_policy_version_id: str
+    workspace_policy_version_id: str
+    policy_version_id: str

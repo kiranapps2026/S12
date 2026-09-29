@@ -189,3 +189,9 @@ class KillSwitchActiveError(SafetyGateError):
     def __init__(self, message: str, switch_id: str = "") -> None:
         super().__init__(message, check_name="kill_switch")
         self.switch_id = switch_id
+
+
+class DependencyUnavailable(SuprAgentsError):
+    """A required dependency (database, provider) could not answer. Callers fail closed."""
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="DEPENDENCY_UNAVAILABLE")

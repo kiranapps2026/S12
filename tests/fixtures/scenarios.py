@@ -26,12 +26,13 @@ class RecordingConfirmationStore:
         self._inner = ConfirmationStoreImpl()
         self.saves: list[tuple] = []
 
-    def save(self, confirmation, tenant_id, execution_id):
-        self._inner.save(confirmation, tenant_id, execution_id)
+    async def save(self, confirmation, tenant_id, execution_id):
+        await self._inner.save(confirmation, tenant_id, execution_id)
         self.saves.append((confirmation, tenant_id, execution_id))
 
-    def consume(self, confirmation_id, *, user_id, plan_hash, now):
-        return self._inner.consume(confirmation_id, user_id=user_id, plan_hash=plan_hash, now=now)
+    async def consume(self, confirmation_id, *, tenant_id, user_id, plan_hash, now=None):
+        return await self._inner.consume(confirmation_id, tenant_id=tenant_id, user_id=user_id,
+                                         plan_hash=plan_hash, now=now)
 
 
 @dataclass(frozen=True)

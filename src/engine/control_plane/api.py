@@ -5,20 +5,21 @@ Source: COMPONENTS_BLUEPRINT.md, FINAL_ARCHITECTURE.md §36, RUNBOOK R-C
 
 - One execution path: the PipelineRunner built by build_pipeline() and placed on
   app.state.pipeline by the composition root. The API never builds handlers itself.
-- Identity (tenant, workspace, user) comes ONLY from the authenticator on
-  app.state.authenticator. The request body cannot carry or override identity.
+- Identity (tenant, workspace, user, membership, connection, resource scope) comes ONLY
+  from the API key resolved by app.state.authenticator. The body cannot carry or override it.
 - Fail closed: no authenticator or no pipeline configured -> 503; failed authentication
   -> 401. There is no default principal.
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from contracts.errors import DependencyUnavailable
+from contracts.principal import Principal
 from contracts.stage_registry import PIPELINE_SEQUENCE, StageStatus
 from engine.control_plane.pipeline_state_runner import PipelineRunner
 from engine.stages.s0_entry.handler import EntryRequest
@@ -28,26 +29,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@dataclass(frozen=True)
-class Principal:
-    """Authenticated identity. Produced only by an Authenticator."""
-    tenant_id: str
-    workspace_id: str
-    user_id: str
-    membership_id: str = ""
-
-
-class Authenticator(Protocol):
-    async def authenticate(self, request: Request) -> Principal | None: ...
-
-
 class ExecuteRequest(BaseModel):
     """Request to run the pipeline. Deliberately has no identity fields."""
     model_config = {"extra": "forbid"}
 
     input_data: dict[str, Any] = Field(..., description="Input data for execution")
     conversation_id: str | None = None
-    connection_id: str | None = None
     idempotency_key: str = ""
 
 
@@ -71,7 +58,13 @@ async def get_principal(request: Request) -> Principal:
     authenticator = getattr(request.app.state, "authenticator", None)
     if authenticator is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "authentication_unavailable")
-    principal = await authenticator.authenticate(request)
+    scheme, _, credential = request.headers.get("authorization", "").partition(" ")
+    if scheme != "Bearer" or not credential:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthenticated")
+    try:
+        principal = await authenticator.authenticate(credential)
+    except DependencyUnavailable:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "authentication_unavailable")
     if principal is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthenticated")
     return principal
@@ -99,7 +92,8 @@ async def execute_pipeline(
         user_id=principal.user_id,
         membership_id=principal.membership_id,
         conversation_id=body.conversation_id,
-        connection_id=body.connection_id,
+        connection_id=principal.connection_id,
+        resource_scope=principal.resource_scope,
         idempotency_key=body.idempotency_key,
     )
     result = await pipeline.run(entry)

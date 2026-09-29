@@ -75,7 +75,7 @@ async def handle(state: PipelineState, registry: CapabilityRegistry | None) -> P
     if registry is None:
         return state.with_status(StageStatus.DENY, "capability_registry_unavailable")
 
-    intent_ops = set(intent.operations)
+    intent_ops = set(intent.operations) | {intent.intent_type}
     intent_text = " ".join(str(v) for v in (intent.parameters or {}).values()).lower()
 
     discovered = await registry.discover(

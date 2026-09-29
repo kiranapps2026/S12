@@ -14,6 +14,7 @@ execution_context.auth_result_id via validate_replace, then writes safety_result
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import dataclasses
 import uuid
@@ -29,6 +30,20 @@ from .checks import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _run_checks(context, task_profile, frozen, deps) -> tuple[str, str] | None:
+    """Run the 8 checks; return (reason, failed_check) for the first failure, else None."""
+    for check_name, check_fn in SAFETY_CHECKS:
+        try:
+            r = check_fn(context, task_profile, frozen, deps)
+        except Exception:
+            return f"{check_name}_unavailable", check_name
+        if not isinstance(r, CheckResult) or r.name != check_name:
+            return f"{check_name}_invalid", check_name
+        if r.passed is not True:
+            return (r.reason or f"{check_name}_failed"), check_name
+    return None
 
 
 async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> PipelineState:
@@ -77,21 +92,13 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
     if state.execution_context is None:
         return deny("missing_identity", "missing_identity")
 
-    # 3. The 8 checks in R-B table order. First non-pass denies.
-    for check_name, check_fn in SAFETY_CHECKS:
-        try:
-            r = check_fn(
-                state.execution_context,
-                state.task_profile,
-                state.frozen_binding_identity,
-                deps,
-            )
-        except Exception:
-            return deny(f"{check_name}_unavailable", check_name)
-        if not isinstance(r, CheckResult) or r.name != check_name:
-            return deny(f"{check_name}_invalid", check_name)
-        if r.passed is not True:
-            return deny(r.reason or f"{check_name}_failed", check_name)
+    # 3. The 8 checks in R-B table order, in a worker thread: providers are synchronous
+    #    (R-C) and may block on I/O. First non-pass denies.
+    failure = await asyncio.to_thread(
+        _run_checks, state.execution_context, state.task_profile,
+        state.frozen_binding_identity, deps)
+    if failure is not None:
+        return deny(*failure)
 
     # 4. All checks pass.
     # R-M: set auth_passed/auth_result_id via replace_context, then write safety_result.

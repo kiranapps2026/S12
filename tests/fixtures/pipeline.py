@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 
 from contracts.kernel_policy import KernelPolicy
+from engine.control_plane.scope import RunScope
 from contracts.pipeline_state import PipelineState
 from engine.control_plane.pipeline_state_runner import (
     PipelineDependencies, PipelineRunResult, build_pipeline,
@@ -19,16 +20,29 @@ from engine.control_plane.pipeline_state_runner import (
 from engine.stages.s0_entry.handler import EntryRequest
 from tests.fixtures.deps import make_s8_deps
 from tests.fixtures.scenarios import ScenarioRegistry, make_scenario
-from tests.fixtures.states import _ScenarioDrivenLLM
+from tests.fixtures.states import POLICY_VERSIONS, _ScenarioDrivenLLM
+
+
+class StaticScopes:
+    """Fixture RunScopeFactory: the same scope for every tenant."""
+
+    def __init__(self, scenario, s8=None) -> None:
+        self._scope = RunScope(
+            policy=KernelPolicy(kill_switch_engaged=False,
+                                risk_deny_threshold=scenario.risk_deny_threshold),
+            s8=s8 or make_s8_deps(kill_switch=False),
+            policy_versions=POLICY_VERSIONS,
+        )
+
+    async def for_run(self, tenant_id, workspace_id):
+        return self._scope
 
 
 def make_pipeline_deps(scenario, *, llm=None, s8=None) -> PipelineDependencies:
     return PipelineDependencies(
         llm=llm or _ScenarioDrivenLLM(scenario),
         registry=ScenarioRegistry(scenario),
-        policy=KernelPolicy(kill_switch_engaged=False,
-                            risk_deny_threshold=scenario.risk_deny_threshold),
-        s8=s8 or make_s8_deps(kill_switch=False),
+        scopes=StaticScopes(scenario, s8),
         confirmation_store=scenario.confirmation_store,
     )
 

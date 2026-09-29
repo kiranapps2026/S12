@@ -1,0 +1,227 @@
+"""Each PostgreSQL adapter against a real database, as a non-superuser (RLS enforced)."""
+from __future__ import annotations
+
+import asyncio
+import time
+
+import pytest
+
+from adapters.postgres.api_keys import PostgresApiKeyAuthenticator
+from adapters.postgres.confirmations import PostgresConfirmationStore
+from adapters.postgres.database import Database, LoopBridge
+from adapters.postgres.identity import PostgresAuthorizationState, PostgresMutationPolicy
+from adapters.postgres.migrate import apply_migrations
+from adapters.postgres.registry import PostgresCapabilityRegistry
+from adapters.postgres.scope import PostgresRunScopes
+from adapters.runtime.circuit_breaker import InProcessCircuitBreaker
+from contracts.errors import DependencyUnavailable
+from contracts.execution_manifest import Confirmation
+from contracts.principal import Principal
+from engine.stages.s10_confirmation.store import CONSUMED, EXPIRED, MISMATCH
+
+A, B = "tenant-a", "tenant-b"
+
+
+async def _in_thread(fn, *args):
+    return await asyncio.to_thread(fn, *args)
+
+
+def test_migrations_are_idempotent(database_url):
+    async def rerun():
+        owner = await Database.connect(database_url)
+        try:
+            return await apply_migrations(owner)
+        finally:
+            await owner.close()
+    assert asyncio.run(rerun()) == []
+
+
+def test_rls_hides_other_tenants(pg):
+    async def body(db):
+        auth = PostgresAuthorizationState(db, A, LoopBridge.current())
+        own = await _in_thread(auth.user_status, "tenant-a.user")
+        with pytest.raises(DependencyUnavailable):
+            await _in_thread(auth.user_status, "tenant-b.user")
+        with pytest.raises(DependencyUnavailable):
+            await _in_thread(auth.tenant_status, B)          # bound to one tenant
+        async with db.tenant_transaction(A) as c:
+            visible = await c.fetchval("SELECT count(*) FROM users")
+        async with db.tenant_transaction(None) as c:
+            none_visible = await c.fetchval("SELECT count(*) FROM users")
+        return own, visible, none_visible
+    assert pg(body) == ("active", 1, 0)
+
+
+def test_bridge_refuses_the_loop_thread(pg):
+    async def body(db):
+        auth = PostgresAuthorizationState(db, A, LoopBridge.current())
+        with pytest.raises(RuntimeError, match="deadlock"):
+            auth.user_status("tenant-a.user")            # called on the loop thread
+    pg(body)
+
+
+def test_authorization_answers(pg):
+    async def body(db):
+        auth = PostgresAuthorizationState(db, A, LoopBridge.current())
+        status, expires = await _in_thread(auth.connection_status, "tenant-a.conn")
+        return (
+            await _in_thread(auth.tenant_status, A), status, expires,
+            await _in_thread(auth.has_grant, A, "tenant-a.user", "cap.contact.list"),
+            await _in_thread(auth.has_grant, A, "tenant-a.user", "cap.nothing"),
+            await _in_thread(auth.in_scope, A, "tenant-a.user", "tenant-a.ws"),
+            await _in_thread(auth.in_scope, A, "tenant-a.user", "tenant-b.ws"),
+            await _in_thread(auth.budget_available, A, 10000),
+            await _in_thread(auth.budget_available, A, 10001),
+        )
+    assert pg(body) == ("active", "active", None, True, False, True, False, True, False)
+
+
+def test_inactive_and_expired_records(pg):
+    async def body(db):
+        auth = PostgresAuthorizationState(db, A, LoopBridge.current())
+        return (await _in_thread(auth.user_status, "tenant-a.user"),
+                (await _in_thread(auth.connection_status, "tenant-a.conn"))[1] < time.time())
+    assert pg(body, "UPDATE users SET status = 'suspended' WHERE tenant_id = 'tenant-a'",
+              "UPDATE connections SET expires_at = now() - interval '1 hour' WHERE tenant_id = 'tenant-a'"
+              ) == ("suspended", True)
+
+
+def test_mutation_ceiling(pg):
+    async def body(db):
+        policy = PostgresMutationPolicy(db, A, LoopBridge.current())        # ceiling 'D'
+        return [await _in_thread(policy.permits, m, 0.1) for m in ("R", "W", "D", "IRREVERSIBLE")]
+    assert pg(body) == [True, True, True, False]
+
+
+def test_run_scope_reads_policy_live_and_binds_tenant(pg):
+    async def body(db):
+        scopes = PostgresRunScopes(db, InProcessCircuitBreaker())
+        first = await scopes.for_run(A, "tenant-a.ws")
+        async with db.tenant_transaction(A) as c:      # tenant switch flips between runs
+            await c.execute("UPDATE tenants SET kill_switch_engaged = true WHERE tenant_id = 'tenant-a'")
+        second = await scopes.for_run(A, "tenant-a.ws")
+        with pytest.raises(DependencyUnavailable):
+            await scopes.for_run(A, "tenant-b.ws")     # workspace of another tenant
+        return first, second
+    first, second = pg(body)
+    assert (first.policy.kill_switch_engaged, second.policy.kill_switch_engaged) == (False, True)
+    assert first.policy.risk_deny_threshold == 0.95
+    assert first.policy_versions.policy_version_id == "tenant-a.policy-1"
+
+
+def test_system_kill_switch_engages_every_tenant(pg):
+    async def body(db):
+        return (await PostgresRunScopes(db, InProcessCircuitBreaker()).for_run(B, "tenant-b.ws")).policy
+    assert pg(body, "UPDATE system_settings SET kill_switch_engaged = true").kill_switch_engaged is True
+
+
+def test_workspace_policy_version_overrides_tenant(pg):
+    async def body(db):
+        return (await PostgresRunScopes(db, InProcessCircuitBreaker()).for_run(A, "tenant-a.ws")).policy_versions
+    v = pg(body, "UPDATE workspaces SET policy_version_id = 'ws-policy-9' WHERE workspace_id = 'tenant-a.ws'")
+    assert (v.tenant_policy_version_id, v.workspace_policy_version_id) == ("tenant-a.policy-1", "ws-policy-9")
+
+
+def test_registry_catalog_and_bindings(pg):
+    async def body(db):
+        reg = PostgresCapabilityRegistry(db)
+        found = await reg.discover({"intent_type": "contact.delete"}, A)
+        bindings = await reg.list_bindings("cap.contact.delete")
+        return found, bindings, await reg.discover({"intent_type": "nope"}, A)
+    found, bindings, none = pg(body)
+    assert none == []
+    (cap,) = found
+    assert (cap.capability_id, cap.mutation_type, cap.risk_floor, cap.estimated_cost_units) == (
+        "cap.contact.delete", "D", 0.5, 5)
+    (b,) = bindings
+    assert (b.kernel_op_id, b.provider, b.capability_version, b.authorization_version) == (
+        "crm.contact_delete", "crm", "cap-7", "auth-4")
+
+
+def test_registry_uses_the_more_severe_mutation_and_higher_floor(pg):
+    async def body(db):
+        (cap,) = await PostgresCapabilityRegistry(db).discover({"intent_type": "contact.list"}, A)
+        return cap
+    cap = pg(body, "UPDATE kernel_ops SET mutation = 'IRREVERSIBLE', risk_floor = 0.6"
+                   " WHERE kernel_op_id = 'crm.contact_list'")
+    assert (cap.mutation_type, cap.risk_floor) == ("IRREVERSIBLE", 0.6)
+
+
+@pytest.mark.parametrize("break_sql", [
+    "UPDATE capabilities SET truth_state = 'DRAFT' WHERE intent = 'contact.list'",
+    "UPDATE bindings SET is_active = false WHERE capability_id = 'cap.contact.list'",
+    "UPDATE kernel_ops SET truth_state = 'REVIEW' WHERE kernel_op_id = 'crm.contact_list'",
+])
+def test_registry_offers_only_production_capabilities_with_a_live_binding(pg, break_sql):
+    async def body(db):
+        reg = PostgresCapabilityRegistry(db)
+        return await reg.discover({"intent_type": "contact.list"}, A), await reg.list_bindings("cap.contact.list")
+    assert pg(body, break_sql) == ([], [])
+
+
+def _conf(user="tenant-a.user", plan_hash="h" * 64, ttl=300.0):
+    return Confirmation(confirmation_id="c-1", user_id=user, conversation_id="conv", plan_id="p-1",
+                        plan_hash=plan_hash, operations=({"step_id": "s1", "mutation": "D"},),
+                        expires_at=time.time() + ttl)
+
+
+def test_confirmation_is_single_use_and_tenant_bound(pg):
+    async def body(db):
+        store = PostgresConfirmationStore(db)
+        await store.save(_conf(), A, "exec-1")
+        wrong_tenant = await store.consume("c-1", tenant_id=B, user_id="tenant-a.user", plan_hash="h" * 64)
+        wrong_user = await store.consume("c-1", tenant_id=A, user_id="someone", plan_hash="h" * 64)
+        wrong_hash = await store.consume("c-1", tenant_id=A, user_id="tenant-a.user", plan_hash="0" * 64)
+        ok = await store.consume("c-1", tenant_id=A, user_id="tenant-a.user", plan_hash="h" * 64)
+        again = await store.consume("c-1", tenant_id=A, user_id="tenant-a.user", plan_hash="h" * 64)
+        return wrong_tenant, wrong_user, wrong_hash, ok, again
+    assert pg(body) == (MISMATCH, MISMATCH, MISMATCH, CONSUMED, MISMATCH)
+
+
+def test_confirmation_expiry_uses_the_database_clock(pg):
+    async def body(db):
+        store = PostgresConfirmationStore(db)
+        await store.save(_conf(ttl=-5.0), A, "exec-1")
+        # a caller-supplied "now" in the past must not rescue an expired confirmation
+        return await store.consume("c-1", tenant_id=A, user_id="tenant-a.user", plan_hash="h" * 64,
+                                   now=time.time() - 3600)
+    assert pg(body) == EXPIRED
+
+
+def test_confirmation_rejects_empty_ids_and_hides_other_tenants(pg):
+    async def body(db):
+        store = PostgresConfirmationStore(db)
+        with pytest.raises(ValueError):
+            await store.save(_conf(), A, "")
+        await store.save(_conf(), A, "exec-1")
+        async with db.tenant_transaction(B) as c:
+            return await c.fetchval("SELECT count(*) FROM pending_confirmations")
+    assert pg(body) == 0
+
+
+def test_api_keys(pg):
+    principal = Principal(A, "tenant-a.ws", "tenant-a.user", "tenant-a.member", "tenant-a.conn", "scope-1")
+
+    async def body(db):
+        auth = PostgresApiKeyAuthenticator(db)
+        key = await auth.issue(principal)
+        async with db.transaction() as c:
+            stored = await c.fetchval("SELECT key_hash FROM api_keys")
+        return (key, stored, await auth.authenticate(key), await auth.authenticate(key + "x"),
+                await auth.authenticate("not-a-key"), await auth.authenticate(""))
+    key, stored, ok, bad, wrong_prefix, empty = pg(body)
+    assert key.startswith("sk_supra_") and key not in stored and len(stored) == 64
+    assert ok == principal
+    assert bad is None and wrong_prefix is None and empty is None
+
+
+def test_revoked_api_key_stops_working(pg):
+    principal = Principal(A, "tenant-a.ws", "tenant-a.user", "tenant-a.member", "tenant-a.conn", "")
+
+    async def body(db):
+        auth = PostgresApiKeyAuthenticator(db)
+        key = await auth.issue(principal)
+        async with db.transaction() as c:
+            await c.execute("UPDATE api_keys SET is_active = false")
+        return await auth.authenticate(key)
+    assert pg(body) is None

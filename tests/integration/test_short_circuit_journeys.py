@@ -74,8 +74,8 @@ def test_s10_expired_deny():
     # the user answers after the confirmation has expired
     conf = paused.final_state.confirmation.confirmation
     expired = dataclasses.replace(conf, expires_at=time.time() - 1)
-    store_row = deps.confirmation_store._inner._rows
-    store_row[conf.confirmation_id] = (expired, *store_row[conf.confirmation_id][1:])
+    rows = deps.confirmation_store._inner._rows
+    rows[conf.confirmation_id] = (expired, *rows[conf.confirmation_id][1:])
     stale = dataclasses.replace(paused.final_state,
                                 confirmation=dataclasses.replace(paused.final_state.confirmation,
                                                                  confirmation=expired))
@@ -100,14 +100,16 @@ def test_s10_confirmed_resume_reaches_manifest():
 
 def test_s11_plan_mutation_deny():
     sc = make_scenario(mutation="W", risk=0.2, steps=3, graph="chain", confidence=0.8)
-    runner = build_pipeline(make_pipeline_deps(sc))
+    deps = make_pipeline_deps(sc)
+    runner = build_pipeline(deps)
     s10 = asyncio.run(runner.run(make_entry(REQ), stop_after="S10"))
     assert s10.status is StageStatus.NORMAL
     state = s10.final_state
     plan = state.plan.plan
     mutated = dataclasses.replace(plan, steps=(dataclasses.replace(plan.steps[0], risk=0.0),) + plan.steps[1:])
     state = dataclasses.replace(state, plan=dataclasses.replace(state.plan, plan=mutated))
-    result = asyncio.run(runner._run_from(state, ("S11",), list(s10.stages_run), 0.0, None))
+    handlers = runner.handlers(asyncio.run(deps.scopes.for_run("tenant-1", "ws-1")))
+    result = asyncio.run(runner._run_from(state, handlers, ("S11",), list(s10.stages_run), 0.0, None))
     assert (result.final_stage, result.status, result.reason) == ("S11", StageStatus.DENY, "binding_mismatch")
     assert result.final_state.execution_manifest is None
     assert result.final_state.validation_result.is_valid is False

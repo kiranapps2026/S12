@@ -18,6 +18,7 @@ import logging
 from contracts.pipeline_state import PipelineState
 from contracts.frozen_binding import FrozenBindingIdentity
 from contracts.capability import CapabilityRegistry
+from contracts.kernel_policy import PolicyVersions
 from contracts.stage_outputs import CapabilityMatch
 from contracts.stage_registry import StageStatus
 from contracts.errors import ContractViolationError, ResolutionError
@@ -27,12 +28,14 @@ logger = logging.getLogger(__name__)
 CANONICAL_MUTATIONS = frozenset({"R", "W", "D", "IRREVERSIBLE"})
 
 
-async def handle(state: PipelineState, registry: CapabilityRegistry | None) -> PipelineState:
+async def handle(state: PipelineState, registry: CapabilityRegistry | None,
+                 policy_versions: PolicyVersions | None) -> PipelineState:
     """
     S5 handler: pick the best active binding, compute effective_risk once, freeze.
 
     effective_risk = max(risk_floor, risk_rule, risk_implied, binding.effective_risk).
-    S5 also records the policy version on the ExecutionContext (S5 whitelist, R-E).
+    S5 also records the tenant/workspace/effective policy versions (from the run scope) on
+    the ExecutionContext (S5 whitelist, R-E).
     """
     match = state.capability_match
     ctx = state.execution_context
@@ -48,6 +51,8 @@ async def handle(state: PipelineState, registry: CapabilityRegistry | None) -> P
         raise ContractViolationError("S5 requires the S0 ExecutionContext", stage_id="S5")
     if registry is None:
         return state.with_status(StageStatus.DENY, "capability_registry_unavailable")
+    if policy_versions is None:
+        return state.with_status(StageStatus.DENY, "policy_versions_unavailable")
 
     if match.mutation_type not in CANONICAL_MUTATIONS:
         return state.with_status(StageStatus.DENY, "invalid_mutation")
@@ -78,7 +83,12 @@ async def handle(state: PipelineState, registry: CapabilityRegistry | None) -> P
         authorization_version=row.authorization_version,
     )
 
-    state = state.replace_context("S5", policy_version_id=row.policy_version)
+    state = state.replace_context(
+        "S5",
+        tenant_policy_version_id=policy_versions.tenant_policy_version_id,
+        workspace_policy_version_id=policy_versions.workspace_policy_version_id,
+        policy_version_id=policy_versions.policy_version_id,
+    )
     logger.info("S5: resolved binding %s: risk=%.4f, mutation=%s",
                 frozen.binding_id, frozen.effective_risk, frozen.effective_mutation)
     return state.with_stage_output("S5", frozen)

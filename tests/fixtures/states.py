@@ -155,7 +155,9 @@ class _ScenarioDrivenLLM:
 # Public API
 # ---------------------------------------------------------------------------
 
-_S8_KILL_SWITCH_OFF = None  # deps are built per call; see _s8_deps
+from contracts.kernel_policy import PolicyVersions
+
+POLICY_VERSIONS = PolicyVersions("policy-1", "policy-1", "policy-1")
 
 
 def _s8_deps():
@@ -182,7 +184,7 @@ def _stage_runners(scenario: Scenario):
     return {
         "S3": lambda st: s3(st, ScenarioRegistry(scenario)),
         "S4": lambda st: s4(st),
-        "S5": lambda st: s5(st, ScenarioRegistry(scenario)),
+        "S5": lambda st: s5(st, ScenarioRegistry(scenario), POLICY_VERSIONS),
         "S6": lambda st: s6(st),
         "S7": lambda st: s7(st, policy=_policy(scenario)),
         "S8": lambda st: s8(st, _s8_deps()),
@@ -229,8 +231,9 @@ def run_stage(stage_id: str, state: PipelineState, scenario: Scenario) -> Pipeli
 def consume(scenario: Scenario, confirmation_id: str, *, user_id: str, plan_hash: str,
             now: float) -> str:
     """Call the production store's conditional consume; returns its result code."""
-    return scenario.confirmation_store.consume(
-        confirmation_id, user_id=user_id, plan_hash=plan_hash, now=now)
+    tenant_id = getattr(scenario, "tenant_id", "tenant-1")
+    return asyncio.run(scenario.confirmation_store.consume(
+        confirmation_id, tenant_id=tenant_id, user_id=user_id, plan_hash=plan_hash, now=now))
 
 
 def tamper(state: PipelineState, **fields) -> PipelineState:

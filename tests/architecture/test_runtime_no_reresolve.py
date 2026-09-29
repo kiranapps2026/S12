@@ -20,6 +20,7 @@ def test_s6_to_s11_no_resolver_calls():
     at_s5 = run_through("S5", REQUEST, scenario=sc)          # real S0..S5
 
     runner = build_pipeline(deps)
+    handlers = runner.handlers(asyncio.run(deps.scopes.for_run("tenant-1", "ws-1")))
     reg = deps.registry
     with mock.patch.object(ScenarioRegistry, "discover", wraps=reg.discover) as discover, \
          mock.patch.object(ScenarioRegistry, "list_bindings", wraps=reg.list_bindings) as bindings, \
@@ -27,7 +28,7 @@ def test_s6_to_s11_no_resolver_calls():
          mock.patch("engine.stages.s5_provider_resolution.handler.handle") as s5_spy:
         state = at_s5
         for stage in ("S6", "S7", "S8", "S9", "S10", "S11"):
-            state = asyncio.run(runner._handlers[stage](state))
+            state = asyncio.run(handlers[stage](state))
             assert state.stage_status is StageStatus.NORMAL, (stage, state.deny_reason)
     assert discover.call_count == 0
     assert bindings.call_count == 0
@@ -46,8 +47,9 @@ def test_frozen_binding_identity_preserved():
     assert frozen_final == frozen_after_s5                     # same values
 
     # identity: hand the S5 object through S6..S11 and it comes out as the same object
-    runner = build_pipeline(make_pipeline_deps(sc))
+    deps = make_pipeline_deps(sc)
+    handlers = build_pipeline(deps).handlers(asyncio.run(deps.scopes.for_run("tenant-1", "ws-1")))
     state = at_s5
     for stage in ("S6", "S7", "S8", "S9", "S10", "S11"):
-        state = asyncio.run(runner._handlers[stage](state))
+        state = asyncio.run(handlers[stage](state))
     assert state.frozen_binding_identity is frozen_after_s5

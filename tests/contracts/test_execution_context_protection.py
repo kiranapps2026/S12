@@ -239,7 +239,7 @@ class TestValidateContextChanges:
 # ---------------------------------------------------------------------------
 
 def test_s5_writes_only_policy_version_fields():
-    """Running the real S5 changes exactly policy_version_id on the ExecutionContext."""
+    """Running the real S5 changes exactly the three whitelisted policy version fields on the ExecutionContext."""
     from tests.fixtures.scenarios import make_scenario
     from tests.fixtures.states import run_stage, state_ready_for
 
@@ -250,5 +250,5 @@ def test_s5_writes_only_policy_version_fields():
         f for f in ExecutionContext.__dataclass_fields__
         if getattr(before.execution_context, f) != getattr(after.execution_context, f)
     }
-    assert changed == {"policy_version_id"}
+    assert changed == {"tenant_policy_version_id", "workspace_policy_version_id", "policy_version_id"}
     assert after.execution_context.policy_version_id == "policy-1"
