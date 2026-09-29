@@ -104,8 +104,7 @@ def test_runner_enforces_s10_pending_confirmation():
 
 
 def test_s0_is_run_and_missing_identity_denies():
-    entry = make_entry()
-    entry.workspace_id = None
+    entry = dataclasses.replace(make_entry(), workspace_id=None)
     runner = build_pipeline(make_pipeline_deps(make_scenario()))
     result = asyncio.run(runner.run(entry))
     assert (result.final_stage, result.status, result.reason) == ("S0", StageStatus.DENY, "missing_workspace_id")

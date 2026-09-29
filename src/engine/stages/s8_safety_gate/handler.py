@@ -111,3 +111,24 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
         "S8",
         SafetyResult(allowed=True, reason=None, failed_check=None),
     )
+
+
+async def recheck_safety(state: PipelineState, deps: S8Dependencies | None) -> tuple[str, str] | None:
+    """Re-evaluate the kill switch and all 8 checks for a run that was suspended after S8,
+    without writing anything. Returns (reason, failed_check) for the first failure, or None
+    if the request is still authorized. Time has passed since S8 allowed it (kill switch,
+    suspended user, revoked grant): a stale ALLOW must not carry a run to S11."""
+    try:
+        engaged = deps.policy.kill_switch_engaged
+    except Exception:  # noqa: BLE001
+        return "kill_switch_state_unavailable", "kill_switch"
+    if engaged is True:
+        return "kill_switch", "kill_switch"
+    if engaged is not False:
+        return "kill_switch_state_unavailable", "kill_switch"
+    if (state.task_profile is None or state.frozen_binding_identity is None
+            or state.execution_context is None):
+        return "missing_identity", "missing_identity"
+    return await asyncio.to_thread(
+        _run_checks, state.execution_context, state.task_profile,
+        state.frozen_binding_identity, deps)

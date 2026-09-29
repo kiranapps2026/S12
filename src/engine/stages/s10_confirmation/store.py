@@ -28,6 +28,9 @@ class ConfirmationStore(Protocol):
                       plan_hash: str, now: float | None = None) -> str:
         """Atomically PENDING -> CONSUMED. Returns exactly one of CONSUMED, EXPIRED, MISMATCH."""
 
+    async def reject(self, confirmation_id: str, *, tenant_id: str, user_id: str) -> bool:
+        """Atomically PENDING -> REJECTED if tenant and user match. True if it was rejected."""
+
 
 class ConfirmationStoreImpl:
     """Atomic in-process confirmation store."""
@@ -35,6 +38,7 @@ class ConfirmationStoreImpl:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._rows: dict[str, tuple[Confirmation, str, str]] = {}
+        self._rejected: set[str] = set()
 
     async def save(self, confirmation: Confirmation, tenant_id: str, execution_id: str) -> None:
         if not tenant_id or not execution_id:
@@ -56,6 +60,7 @@ class ConfirmationStoreImpl:
                 return MISMATCH
             conf, row_tenant, execution_id = row
             if (row_tenant != tenant_id or conf.consumed_at is not None
+                    or confirmation_id in self._rejected
                     or conf.user_id != user_id or conf.plan_hash != plan_hash):
                 return MISMATCH
             if when > conf.expires_at:
@@ -63,3 +68,12 @@ class ConfirmationStoreImpl:
             self._rows[confirmation_id] = (dataclasses.replace(conf, consumed_at=when),
                                            row_tenant, execution_id)
             return CONSUMED
+
+    async def reject(self, confirmation_id: str, *, tenant_id: str, user_id: str) -> bool:
+        async with self._lock:
+            row = self._rows.get(confirmation_id)
+            if (row is None or row[1] != tenant_id or row[0].user_id != user_id
+                    or row[0].consumed_at is not None or confirmation_id in self._rejected):
+                return False
+            self._rejected.add(confirmation_id)
+            return True

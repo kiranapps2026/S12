@@ -34,6 +34,9 @@ class RecordingConfirmationStore:
         return await self._inner.consume(confirmation_id, tenant_id=tenant_id, user_id=user_id,
                                          plan_hash=plan_hash, now=now)
 
+    async def reject(self, confirmation_id, *, tenant_id, user_id):
+        return await self._inner.reject(confirmation_id, tenant_id=tenant_id, user_id=user_id)
+
 
 @dataclass(frozen=True)
 class Scenario:

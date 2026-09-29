@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from contracts.errors import DependencyUnavailable
+from contracts.errors import DependencyUnavailable, UnknownConfirmation
 from contracts.principal import Principal
 from contracts.stage_registry import PIPELINE_SEQUENCE, StageStatus
 from engine.control_plane.pipeline_state_runner import PipelineRunner
@@ -46,6 +46,13 @@ class ExecuteResponse(BaseModel):
     final_stage: str
     reason: str | None = None
     confirmation_id: str | None = None   # set when S10 is waiting for the user
+
+
+class ReplyRequest(BaseModel):
+    """The user's answer to a pending confirmation."""
+    model_config = {"extra": "forbid"}
+
+    approved: bool
 
 
 class HealthResponse(BaseModel):
@@ -96,11 +103,32 @@ async def execute_pipeline(
         resource_scope=principal.resource_scope,
         idempotency_key=body.idempotency_key,
     )
-    result = await pipeline.run(entry)
+    return _response(await pipeline.run(entry))
+
+
+@router.post("/confirmations/{confirmation_id}", response_model=ExecuteResponse)
+async def reply_to_confirmation(
+    confirmation_id: str,
+    body: ReplyRequest,
+    principal: Principal = Depends(get_principal),
+    pipeline: PipelineRunner = Depends(get_pipeline),
+) -> ExecuteResponse:
+    """Answer a pending confirmation. Only the user it was issued to can approve or reject
+    it, and only within their own tenant; the run then continues (approve) or ends (reject)."""
+    try:
+        result = await pipeline.reply(principal.tenant_id, confirmation_id, principal.user_id,
+                                      body.approved)
+    except UnknownConfirmation:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "confirmation_not_found")
+    except DependencyUnavailable:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable")
+    return _response(result)
+
+
+def _response(result) -> ExecuteResponse:
     state = result.final_state
     if result.status is StageStatus.ERROR:
         logger.error("Pipeline ERROR at %s: %s", result.final_stage, result.reason)
-
     conf = state.confirmation.confirmation if state.confirmation else None
     return ExecuteResponse(
         trace_id=state.execution_context.trace_id if state.execution_context else None,

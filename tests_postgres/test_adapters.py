@@ -225,3 +225,59 @@ def test_revoked_api_key_stops_working(pg):
             await c.execute("UPDATE api_keys SET is_active = false")
         return await auth.authenticate(key)
     assert pg(body) is None
+
+
+# ---- suspended runs ---------------------------------------------------------------------
+
+def _suspended_state():
+    from tests.fixtures.pipeline import run_pipeline
+    from tests.fixtures.scenarios import make_scenario
+    r = run_pipeline({"message": "x", "connection_id": "c"},
+                     make_scenario(mutation="D", risk=0.9, steps=2, graph="chain", confidence=0.8))
+    return r.final_state
+
+
+def test_suspended_run_round_trips_through_jsonb(pg):
+    from adapters.postgres.suspended_runs import PostgresSuspendedRunStore
+    state = _suspended_state()
+    conf = state.confirmation.confirmation
+
+    async def body(db):
+        await PostgresConfirmationStore(db).save(conf, "tenant-1", state.plan.execution_id)
+        store = PostgresSuspendedRunStore(db)
+        await store.save(state, tenant_id="tenant-1", execution_id=state.plan.execution_id,
+                         confirmation_id=conf.confirmation_id)
+        return await store.load(tenant_id="tenant-1", confirmation_id=conf.confirmation_id)
+    assert pg(body, "INSERT INTO tenants (tenant_id, name, policy_version_id) VALUES ('tenant-1','t','p')") == state
+
+
+def test_suspended_run_is_tenant_scoped_and_needs_its_confirmation(pg):
+    from adapters.postgres.suspended_runs import PostgresSuspendedRunStore
+    state = _suspended_state()
+    conf = state.confirmation.confirmation
+
+    async def body(db):
+        await PostgresConfirmationStore(db).save(conf, "tenant-1", "exec-1")
+        store = PostgresSuspendedRunStore(db)
+        await store.save(state, tenant_id="tenant-1", execution_id="exec-1",
+                         confirmation_id=conf.confirmation_id)
+        other = await store.load(tenant_id=B, confirmation_id=conf.confirmation_id)
+        with pytest.raises(Exception):                       # FK: no confirmation, no suspended run
+            await store.save(state, tenant_id="tenant-1", execution_id="exec-1", confirmation_id="ghost")
+        with pytest.raises(ValueError):
+            await store.save(state, tenant_id="tenant-1", execution_id="", confirmation_id="x")
+        return other
+    assert pg(body, "INSERT INTO tenants (tenant_id, name, policy_version_id) VALUES ('tenant-1','t','p')") is None
+
+
+def test_confirmation_reject(pg):
+    async def body(db):
+        store = PostgresConfirmationStore(db)
+        await store.save(_conf(), A, "exec-1")
+        wrong = await store.reject("c-1", tenant_id=A, user_id="someone")
+        other_tenant = await store.reject("c-1", tenant_id=B, user_id="tenant-a.user")
+        ok = await store.reject("c-1", tenant_id=A, user_id="tenant-a.user")
+        again = await store.reject("c-1", tenant_id=A, user_id="tenant-a.user")
+        late = await store.consume("c-1", tenant_id=A, user_id="tenant-a.user", plan_hash="h" * 64)
+        return wrong, other_tenant, ok, again, late
+    assert pg(body) == (False, False, True, False, MISMATCH)

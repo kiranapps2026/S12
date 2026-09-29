@@ -48,3 +48,11 @@ class PostgresConfirmationStore:
                  WHERE confirmation_id = $1 AND user_id = $2 AND plan_hash = $3""",
                 confirmation_id, user_id, plan_hash)
         return EXPIRED if expired else MISMATCH
+
+    async def reject(self, confirmation_id: str, *, tenant_id: str, user_id: str) -> bool:
+        async with self._db.tenant_transaction(tenant_id) as connection:
+            done = await connection.execute("""
+                UPDATE pending_confirmations SET status = 'rejected'
+                 WHERE confirmation_id = $1 AND user_id = $2 AND status = 'pending'""",
+                confirmation_id, user_id)
+        return done == "UPDATE 1"

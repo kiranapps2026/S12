@@ -76,8 +76,11 @@ async def handle(state: PipelineState, store: ConfirmationStore | None) -> Pipel
 
 
 async def resume_confirmation(state: PipelineState, store: ConfirmationStore, *,
-                              now: float | None = None) -> PipelineState:
+                              user_id: str, now: float | None = None) -> PipelineState:
     """Confirmed re-entry: consume the pending confirmation, then allow S11 to run.
+
+    `user_id` is the AUTHENTICATED replier, never the user stored in the suspended state:
+    only the user the confirmation was issued to can consume it.
 
     The only permitted rewrite of the S10 output: the same confirmation, now carrying
     consumed_at. On any refusal the state keeps the pending confirmation.
@@ -90,7 +93,7 @@ async def resume_confirmation(state: PipelineState, store: ConfirmationStore, *,
     result = await store.consume(
         conf.confirmation_id,
         tenant_id=state.execution_context.tenant_id,
-        user_id=state.execution_context.user_id,
+        user_id=user_id,
         plan_hash=state.plan.plan_hash,
         now=now,
     )

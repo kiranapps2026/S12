@@ -12,6 +12,7 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 import pytest
 
@@ -93,7 +94,6 @@ class TestS0EntryParse:
     @pytest.mark.parametrize("missing", ["tenant_id", "workspace_id", "user_id"])
     def test_missing_identity_denies(self, entry_request, missing):
         """A missing identity value is a DENY missing_<field>; no context is created."""
-        setattr(entry_request, missing, None)
-        state = asyncio.run(s0_handle(entry_request))
+        state = asyncio.run(s0_handle(dataclasses.replace(entry_request, **{missing: None})))
         assert state.execution_context is None
         assert (str(state.stage_status).lower(), state.deny_reason) == ("deny", f"missing_{missing}")

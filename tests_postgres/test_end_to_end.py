@@ -7,13 +7,9 @@ import asyncio
 import httpx
 
 from adapters.postgres.api_keys import PostgresApiKeyAuthenticator
-from adapters.postgres.confirmations import PostgresConfirmationStore
-from adapters.postgres.registry import PostgresCapabilityRegistry
-from adapters.postgres.scope import PostgresRunScopes
-from adapters.runtime.circuit_breaker import InProcessCircuitBreaker
 from app import create_app
 from contracts.principal import Principal
-from engine.control_plane.pipeline_state_runner import PipelineDependencies, build_pipeline
+from bootstrap import build_runner
 
 
 class EchoIntentModel:
@@ -38,11 +34,8 @@ def _scenario(pg, intent, *setup_sql, tenant="tenant-a", key_of=None, headers=No
     async def body(db):
         auth = PostgresApiKeyAuthenticator(db)
         keys = {t: await auth.issue(_principal(t)) for t in ("tenant-a", "tenant-b")}
-        deps = PipelineDependencies(
-            intent_model=EchoIntentModel(), registry=PostgresCapabilityRegistry(db),
-            scopes=PostgresRunScopes(db, InProcessCircuitBreaker()),
-            confirmation_store=PostgresConfirmationStore(db))
-        app = create_app(pipeline=build_pipeline(deps), authenticator=auth)
+        runner = build_runner(db, EchoIntentModel())
+        app = create_app(pipeline=runner, authenticator=auth)
         h = headers if headers is not None else {"authorization": f"Bearer {keys[key_of or tenant]}"}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
             r = await client.post("/api/v1/execute", json={"input_data": {"message": intent}}, headers=h)
@@ -123,11 +116,8 @@ def test_database_outage_fails_closed(pg):
     async def body(db):
         auth = PostgresApiKeyAuthenticator(db)
         key = await auth.issue(_principal("tenant-a"))
-        deps = PipelineDependencies(
-            intent_model=EchoIntentModel(), registry=PostgresCapabilityRegistry(db),
-            scopes=PostgresRunScopes(db, InProcessCircuitBreaker()),
-            confirmation_store=PostgresConfirmationStore(db))
-        app = create_app(pipeline=build_pipeline(deps), authenticator=auth)
+        runner = build_runner(db, EchoIntentModel())
+        app = create_app(pipeline=runner, authenticator=auth)
         await db.close()                                   # the database goes away
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
             return await client.post("/api/v1/execute", json={"input_data": {"message": "contact.list"}},
@@ -139,11 +129,7 @@ def test_database_outage_fails_closed(pg):
 def test_pool_failure_after_authentication_never_runs_the_pipeline(pg):
     """Key resolves, then the scope read fails: ERROR at S0, nothing after S0 ran."""
     async def body(db):
-        deps = PipelineDependencies(
-            intent_model=EchoIntentModel(), registry=PostgresCapabilityRegistry(db),
-            scopes=PostgresRunScopes(db, InProcessCircuitBreaker()),
-            confirmation_store=PostgresConfirmationStore(db))
-        runner = build_pipeline(deps)
+        runner = build_runner(db, EchoIntentModel())
         from tests.fixtures.pipeline import make_entry
         entry = make_entry({"message": "contact.list", "tenant_id": "tenant-a", "workspace_id": "tenant-a.ws",
                             "connection_id": "tenant-a.conn"})
@@ -151,3 +137,115 @@ def test_pool_failure_after_authentication_never_runs_the_pipeline(pg):
         return await runner.run(entry)
     result = pg(body)
     assert (result.status.value, result.reason, result.stages_run) == ("ERROR", "scope_unavailable", ("S0",))
+
+
+# ---- confirmation reply over HTTP, real database ----------------------------------------------
+
+OTHER_USER_SQL = (
+    "INSERT INTO users (user_id, tenant_id) VALUES ('tenant-a.other', 'tenant-a')",
+    "INSERT INTO memberships (membership_id, tenant_id, user_id, workspace_id)"
+    " VALUES ('tenant-a.other.m', 'tenant-a', 'tenant-a.other', 'tenant-a.ws')",
+    "INSERT INTO connections (connection_id, tenant_id, user_id, workspace_id)"
+    " VALUES ('tenant-a.other.c', 'tenant-a', 'tenant-a.other', 'tenant-a.ws')",
+    "UPDATE kernel_ops SET cost = 6 WHERE kernel_op_id = 'crm.contact_delete'",
+)
+
+
+def _flow(pg, steps, *setup_sql):
+    """steps: async fn(client, keys, db, make_client) -> anything. Runs against the real DB."""
+    async def body(db):
+        auth = PostgresApiKeyAuthenticator(db)
+        keys = {t: await auth.issue(_principal(t)) for t in ("tenant-a", "tenant-b")}
+        keys["other"] = await auth.issue(Principal("tenant-a", "tenant-a.ws", "tenant-a.other",
+                                                   "tenant-a.other.m", "tenant-a.other.c", ""))
+
+        def make_client():          # a fresh app/runner: nothing carried in memory ("restart")
+            app = create_app(pipeline=build_runner(db, EchoIntentModel()), authenticator=auth)
+            return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+        return await steps(keys, db, make_client)
+    return pg(body, *OTHER_USER_SQL, *setup_sql)
+
+
+def _auth(key):
+    return {"authorization": f"Bearer {key}"}
+
+
+async def _start(client, key, intent="contact.delete"):
+    r = await client.post("/api/v1/execute", json={"input_data": {"message": intent}}, headers=_auth(key))
+    return r.json()
+
+
+def test_full_confirmation_flow_survives_a_restart_and_is_single_use(pg):
+    async def steps(keys, db, make_client):
+        async with make_client() as first:
+            j = await _start(first, keys["tenant-a"])
+        cid = j["confirmation_id"]
+        async with db.tenant_transaction("tenant-a") as c:
+            stored = [dict(r) for r in await c.fetch("SELECT confirmation_id, tenant_id FROM suspended_runs")]
+        async with make_client() as second:                      # a new process
+            ok = await second.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
+            again = await second.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
+        return j, stored, ok, again
+    j, stored, ok, again = _flow(pg, steps)
+    assert (j["status"], j["final_stage"]) == ("CLARIFY", "S10")
+    assert stored == [{"confirmation_id": j["confirmation_id"], "tenant_id": "tenant-a"}]
+    assert (ok.status_code, ok.json()["status"], ok.json()["final_stage"]) == (200, "NORMAL", "S11")
+    assert again.json()["reason"] == "confirmation_mismatch"
+
+
+def test_another_user_or_tenant_cannot_answer(pg):
+    async def steps(keys, db, make_client):
+        async with make_client() as client:
+            cid = (await _start(client, keys["tenant-a"]))["confirmation_id"]
+            other_user = await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["other"]))
+            other_tenant = await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-b"]))
+            owner = await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
+        return other_user, other_tenant, owner
+    other_user, other_tenant, owner = _flow(pg, steps)
+    assert (other_user.json()["status"], other_user.json()["reason"]) == ("DENY", "confirmation_mismatch")
+    assert other_tenant.status_code == 404                      # RLS: tenant-b cannot even see it
+    assert owner.json()["status"] == "NORMAL"                   # the wrong replies did not burn it
+
+
+def test_rejection_over_http(pg):
+    async def steps(keys, db, make_client):
+        async with make_client() as client:
+            cid = (await _start(client, keys["tenant-a"]))["confirmation_id"]
+            no = await client.post(f"/api/v1/confirmations/{cid}", json={"approved": False}, headers=_auth(keys["tenant-a"]))
+            late = await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
+        return no, late
+    no, late = _flow(pg, steps)
+    assert (no.json()["status"], no.json()["reason"]) == ("DENY", "confirmation_rejected")
+    assert late.json()["reason"] == "confirmation_mismatch"
+
+
+def test_kill_switch_engaged_while_the_run_waits(pg):
+    async def steps(keys, db, make_client):
+        async with make_client() as client:
+            cid = (await _start(client, keys["tenant-a"]))["confirmation_id"]
+            async with db.tenant_transaction("tenant-a") as c:
+                await c.execute("UPDATE tenants SET kill_switch_engaged = true")
+            return await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
+    r = _flow(pg, steps)
+    assert (r.json()["status"], r.json()["final_stage"], r.json()["reason"]) == ("DENY", "S8", "kill_switch")
+
+
+def test_user_suspended_while_the_run_waits(pg):
+    async def steps(keys, db, make_client):
+        async with make_client() as client:
+            cid = (await _start(client, keys["tenant-a"]))["confirmation_id"]
+            async with db.tenant_transaction("tenant-a") as c:
+                await c.execute("UPDATE users SET status = 'suspended' WHERE user_id = 'tenant-a.user'")
+            return await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
+    r = _flow(pg, steps)
+    assert (r.json()["final_stage"], r.json()["reason"]) == ("S8", "user_active_inactive")
+
+
+def test_expired_confirmation_over_http(pg):
+    async def steps(keys, db, make_client):
+        async with make_client() as client:
+            cid = (await _start(client, keys["tenant-a"]))["confirmation_id"]
+            async with db.tenant_transaction("tenant-a") as c:
+                await c.execute("UPDATE pending_confirmations SET expires_at = now() - interval '1 second'")
+            return await client.post(f"/api/v1/confirmations/{cid}", json={"approved": True}, headers=_auth(keys["tenant-a"]))
+    assert _flow(pg, steps).json()["reason"] == "confirmation_expired"

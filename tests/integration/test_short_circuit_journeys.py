@@ -61,29 +61,27 @@ def test_s10_expired_deny():
 
     # the user answers after the confirmation has expired
     conf = paused.final_state.confirmation.confirmation
-    expired = dataclasses.replace(conf, expires_at=time.time() - 1)
     rows = deps.confirmation_store._inner._rows
-    rows[conf.confirmation_id] = (expired, *rows[conf.confirmation_id][1:])
-    stale = dataclasses.replace(paused.final_state,
-                                confirmation=dataclasses.replace(paused.final_state.confirmation,
-                                                                 confirmation=expired))
-    result = asyncio.run(runner.resume(stale))
+    rows[conf.confirmation_id] = (dataclasses.replace(conf, expires_at=time.time() - 1),
+                                  *rows[conf.confirmation_id][1:])
+    result = asyncio.run(runner.reply("tenant-1", conf.confirmation_id, "user-1", True))
     assert (result.status, result.reason) == (StageStatus.DENY, "confirmation_expired")
     assert result.final_state.execution_manifest is None
     assert result.final_state.validation_result is None
 
 
-def test_s10_confirmed_resume_reaches_manifest():
+def test_s10_confirmed_reply_reaches_manifest_exactly_once():
     sc = make_scenario(mutation="D", risk=0.9, steps=2, graph="chain", confidence=0.8)
     runner = build_pipeline(make_pipeline_deps(sc))
     paused = asyncio.run(runner.run(make_entry(REQ)))
-    result = asyncio.run(runner.resume(paused.final_state))
+    cid = paused.final_state.confirmation.confirmation.confirmation_id
+    result = asyncio.run(runner.reply("tenant-1", cid, "user-1", True))
     assert result.status is StageStatus.NORMAL
     assert result.final_state.execution_manifest.plan_hash == paused.final_state.plan.plan_hash
     assert result.final_state.confirmation.confirmation.consumed_at is not None
-    # single use: resuming the same suspended state again is refused
-    again = asyncio.run(runner.resume(paused.final_state))
+    again = asyncio.run(runner.reply("tenant-1", cid, "user-1", True))       # single use
     assert (again.status, again.reason) == (StageStatus.DENY, "confirmation_mismatch")
+    assert again.final_state.execution_manifest is None
 
 
 def test_s11_plan_mutation_deny():

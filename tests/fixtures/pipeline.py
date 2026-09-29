@@ -23,6 +23,28 @@ from tests.fixtures.scenarios import ScenarioRegistry, make_scenario
 from tests.fixtures.states import POLICY_VERSIONS, ScenarioIntentModel
 
 
+class InMemorySuspendedRuns:
+    """Fixture SuspendedRunStore. Stores the JSON text, so every save/load goes through the
+    real codec exactly as the database adapter does. Tenant-scoped like RLS."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], str] = {}
+        self.fail_saves = False
+
+    async def save(self, state, *, tenant_id, execution_id, confirmation_id):
+        import json
+        from contracts.codec import encode_state
+        if self.fail_saves:
+            raise RuntimeError("store down")
+        self.rows[(tenant_id, confirmation_id)] = json.dumps(encode_state(state))
+
+    async def load(self, *, tenant_id, confirmation_id):
+        import json
+        from contracts.codec import decode_state
+        raw = self.rows.get((tenant_id, confirmation_id))
+        return None if raw is None else decode_state(json.loads(raw))
+
+
 class StaticScopes:
     """Fixture RunScopeFactory: the same scope for every tenant."""
 
@@ -44,6 +66,7 @@ def make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies
         registry=ScenarioRegistry(scenario),
         scopes=StaticScopes(scenario, s8),
         confirmation_store=scenario.confirmation_store,
+        suspended=InMemorySuspendedRuns(),
     )
 
 

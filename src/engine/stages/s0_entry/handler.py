@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 
 from contracts.pipeline_state import PipelineState
 from contracts.execution_context import ExecutionContext
@@ -25,39 +26,25 @@ from contracts.stage_registry import StageStatus
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
 class EntryRequest:
     """Incoming request at the entry point.
 
     Identity fields (tenant_id, workspace_id, user_id) come from the authenticated
     transport (API key / session), never from the payload.
     """
-    def __init__(
-        self,
-        raw_payload: dict,
-        entry_channel: str,
-        tenant_id: str,
-        conversation_id: str | None = None,
-        connection_id: str | None = None,
-        user_id: str | None = None,
-        request_id: str | None = None,
-        workspace_id: str | None = None,
-        membership_id: str = "",
-        idempotency_key: str = "",
-        resource_scope: str = "",
-        tags: frozenset = frozenset(),
-    ):
-        self.raw_payload = raw_payload
-        self.entry_channel = entry_channel
-        self.tenant_id = tenant_id
-        self.conversation_id = conversation_id
-        self.connection_id = connection_id
-        self.user_id = user_id
-        self.request_id = request_id
-        self.workspace_id = workspace_id
-        self.membership_id = membership_id
-        self.idempotency_key = idempotency_key
-        self.resource_scope = resource_scope
-        self.tags = tags
+    raw_payload: dict
+    entry_channel: str
+    tenant_id: str
+    conversation_id: str | None = None
+    connection_id: str | None = None
+    user_id: str | None = None
+    request_id: str | None = None
+    workspace_id: str | None = None
+    membership_id: str = ""
+    idempotency_key: str = ""
+    resource_scope: str = ""
+    tags: frozenset = frozenset()
 
 
 #: Identity values S0 must find on the entry request; absent -> DENY missing_<field>.

@@ -160,7 +160,8 @@ def test_full_journey_real_handlers():
     from tests.fixtures.pipeline import make_entry, make_pipeline_deps
     runner = build_pipeline(make_pipeline_deps(sc))
     paused = asyncio.run(runner.run(make_entry({"message": "delete it", "connection_id": "conn-1"})))
-    final = asyncio.run(runner.resume(paused.final_state))
+    cid = paused.final_state.confirmation.confirmation.confirmation_id
+    final = asyncio.run(runner.reply("tenant-1", cid, "user-1", True))
     assert final.status is StageStatus.NORMAL
 
     state = final.final_state

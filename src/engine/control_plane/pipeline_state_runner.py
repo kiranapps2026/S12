@@ -17,6 +17,7 @@ Source: DATA_CONTRACTS.md §2, PIPELINE_STAGES.md §11, RUNBOOK R-C/R-I/R-N
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass
@@ -24,7 +25,9 @@ from typing import Awaitable, Callable
 
 from contracts.capability import CapabilityRegistry
 from contracts.intent_model import IntentModel
+from contracts.errors import UnknownConfirmation
 from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE, PipelineState
+from contracts.suspended_runs import SuspendedRunStore
 from contracts.safety import PathDecision
 from contracts.stage_registry import StageStatus
 from engine.stages.s0_entry.handler import EntryRequest, handle as s0
@@ -36,7 +39,7 @@ from engine.stages.s5_provider_resolution.handler import handle as s5
 from engine.stages.s6_task_profile_assembly.handler import handle as s6
 from engine.stages.s7_path_decision.handler import handle as s7
 from engine.control_plane.scope import RunScope, RunScopeFactory
-from engine.stages.s8_safety_gate.handler import handle as s8
+from engine.stages.s8_safety_gate.handler import handle as s8, recheck_safety
 from engine.stages.s9_plan_creation.handler import handle as s9
 from engine.stages.s10_confirmation.handler import handle as s10, resume_confirmation
 from engine.stages.s10_confirmation.store import ConfirmationStore
@@ -54,6 +57,7 @@ class PipelineDependencies:
     registry: CapabilityRegistry
     scopes: RunScopeFactory
     confirmation_store: ConfirmationStore
+    suspended: SuspendedRunStore
 
 
 @dataclass(frozen=True)
@@ -149,18 +153,41 @@ class PipelineRunner:
         except Exception as exc:  # noqa: BLE001 — fail closed: no scope, no run
             logger.exception("Run scope unavailable")
             return self._result(state, "S0", StageStatus.ERROR, "scope_unavailable", stages, start)
-        return await self._run_from(state, self.handlers(scope), PRE_EXECUTION_SEQUENCE[1:],
-                                    stages, start, stop_after)
+        result = await self._run_from(state, self.handlers(scope), PRE_EXECUTION_SEQUENCE[1:],
+                                      stages, start, stop_after)
+        if (result.final_stage == "S10" and result.status is StageStatus.CLARIFY
+                and result.reason == "confirmation_required"):
+            return await self._suspend(result)
+        return result
 
-    async def resume(self, suspended: PipelineState) -> PipelineRunResult:
-        """Confirmed re-entry after S10: consume the confirmation, then run S11."""
+    async def reply(self, tenant_id: str, confirmation_id: str, user_id: str,
+                    approved: bool) -> PipelineRunResult:
+        """The authenticated user's answer to a confirmation, for the run waiting on it.
+
+        Raises UnknownConfirmation if this tenant has no such waiting run. The reply is
+        checked against the authenticated `user_id` (never the stored one); a rejection
+        ends the run; an approval re-checks authorization (the kill switch or the user's
+        status may have changed since S8), consumes the confirmation exactly once, then
+        runs S11.
+        """
         start = time.monotonic()
         stages = list(PRE_EXECUTION_SEQUENCE[:11])
+        suspended = await self._deps.suspended.load(tenant_id=tenant_id, confirmation_id=confirmation_id)
+        if suspended is None:
+            raise UnknownConfirmation(confirmation_id)
         try:
+            if not approved:
+                rejected = await self._deps.confirmation_store.reject(
+                    confirmation_id, tenant_id=tenant_id, user_id=user_id)
+                reason = "confirmation_rejected" if rejected else "confirmation_mismatch"
+                return self._result(suspended, "S10", StageStatus.DENY, reason, stages, start)
             scope = await self._scope_for(suspended)
-            state = await resume_confirmation(suspended, self._deps.confirmation_store)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("S10 resume failed")
+            stale = await recheck_safety(suspended, scope.s8)
+            if stale is not None:
+                return self._result(suspended, "S8", StageStatus.DENY, stale[0], stages, start)
+            state = await resume_confirmation(suspended, self._deps.confirmation_store, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001 — becomes ERROR, never escapes
+            logger.exception("Confirmation reply failed")
             return self._result(suspended, "S10", StageStatus.ERROR, type(exc).__name__, stages, start)
         if state.stage_status is not StageStatus.NORMAL:
             return self._result(state, "S10", state.stage_status or StageStatus.ERROR,
@@ -169,6 +196,21 @@ class PipelineRunner:
         if stop is not None:
             return self._result(state, "S10", *stop, stages, start)
         return await self._run_from(state, self.handlers(scope), ("S11",), stages, start, None)
+
+    async def _suspend(self, result: PipelineRunResult) -> PipelineRunResult:
+        """Store the state S10 left so a reply can resume it, even after a restart. If it
+        cannot be stored the run ends in ERROR: nobody could ever answer the confirmation."""
+        state = result.final_state
+        try:
+            await self._deps.suspended.save(
+                state, tenant_id=state.execution_context.tenant_id,
+                execution_id=state.plan.execution_id,
+                confirmation_id=state.confirmation.confirmation.confirmation_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Suspended run could not be stored")
+            return dataclasses.replace(result, status=StageStatus.ERROR,
+                                       reason="suspended_run_unrecorded")
+        return result
 
     async def _run_from(self, state: PipelineState, handlers: dict[str, StageHandler],
                         sequence: tuple[str, ...], stages: list[str], start: float,

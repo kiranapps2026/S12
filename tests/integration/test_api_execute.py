@@ -84,3 +84,52 @@ def test_confirmation_pause_returns_confirmation_id():
 def test_old_engine_is_gone():
     import importlib.util
     assert importlib.util.find_spec("engine.control_plane.pipeline") is None
+
+
+# ---- confirmation reply route ---------------------------------------------------------
+
+HIGH = dict(mutation="D", risk=0.9, steps=2, graph="chain", confidence=0.8)
+
+
+def _reply(client, cid, approved=True, headers=HEADERS, **extra):
+    return client.post(f"/api/v1/confirmations/{cid}", json={"approved": approved, **extra}, headers=headers)
+
+
+def _pending(client):
+    j = client.post("/api/v1/execute", json=BODY, headers=HEADERS).json()
+    assert (j["status"], j["reason"]) == ("CLARIFY", "confirmation_required")
+    return j["confirmation_id"]
+
+
+def test_approving_a_pending_confirmation_completes_the_run_once():
+    client = _client(make_scenario(**HIGH))
+    cid = _pending(client)
+    ok = _reply(client, cid).json()
+    assert (ok["status"], ok["final_stage"]) == ("NORMAL", "S11") and ok["execution_id"]
+    again = _reply(client, cid).json()
+    assert (again["status"], again["reason"]) == ("DENY", "confirmation_mismatch")
+
+
+def test_rejecting_cancels_the_run():
+    client = _client(make_scenario(**HIGH))
+    cid = _pending(client)
+    j = _reply(client, cid, approved=False).json()
+    assert (j["status"], j["reason"]) == ("DENY", "confirmation_rejected")
+    assert _reply(client, cid).json()["reason"] == "confirmation_mismatch"
+
+
+def test_reply_to_an_unknown_confirmation_is_404():
+    r = _reply(_client(make_scenario(**HIGH)), "nope")
+    assert (r.status_code, r.json()["detail"]) == (404, "confirmation_not_found")
+
+
+def test_reply_needs_authentication_and_rejects_extra_fields():
+    client = _client(make_scenario(**HIGH))
+    cid = _pending(client)
+    assert _reply(client, cid, headers={}).status_code == 401
+    assert _reply(client, cid, user_id="someone-else").status_code == 422
+    assert _reply(client, cid).status_code == 200
+
+
+def test_reply_answers_503_when_nothing_is_wired():
+    assert _reply(_client(pipeline=False), "x").status_code == 503
