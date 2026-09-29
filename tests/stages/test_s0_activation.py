@@ -1,4 +1,15 @@
-"""S0.1: a paused or not-yet-active tenant/workspace runs no S1–S11 work; fail closed."""
+"""
+GOLDEN TEST FILE (OWNER). Pinned by hash. The agent edits it only on the owner's explicit
+instruction.
+Rulings: R-AA (S0.1 activation check; proposed id, see docs/proposals/S0_1_PAUSE_CHECK.md).
+A paused or not-yet-active tenant/workspace runs no S1-S11 work; the database clock decides;
+fail closed; the check also gates every reply to a waiting confirmation.
+
+Fixture contract (tests/fixtures/pipeline.py): make_pipeline_deps(scenario) -> deps whose
+`activation` is a StaticActivation (settable *_paused_until / *_activation_at / now / error);
+build_pipeline(deps).run(entry) -> PipelineRunResult(status, final_stage, reason, stages_run,
+final_state).
+"""
 import asyncio
 import time
 

@@ -227,7 +227,7 @@ class RetryPolicy:
 | Condition | Requires Confirmation |
 |-----------|----------------------|
 | Any IRREVERSIBLE mutation | YES |
-| Any D mutation with cost > 5 | YES |
+| Any D mutation (always, whatever the cost; amended — R-V) | YES |
 | Total cost > 20 | YES |
 | Total risk > 0.7 | YES |
 | Cross-provider (3+ providers) | YES |

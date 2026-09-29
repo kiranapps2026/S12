@@ -115,7 +115,7 @@ the LLM client, the ledger writer). The tests use fakes from `tests/fakes/`.
 
 | # | Topic | Documents say | Decision |
 |---|---|---|---|
-| 1 | D confirmation | DATA_CONTRACTS §7: D only above cost 5; PIPELINE_STAGES §12: never run D/IRREVERSIBLE unconfirmed | **Every D and IRREVERSIBLE plan is confirmed** (§12 wins). The owner updates runbook R-V and the pinned S6 golden test (`delete_cost_5_boundary`) |
+| 1 | D confirmation | DATA_CONTRACTS §7: D only above cost 5; PIPELINE_STAGES §12: never run D/IRREVERSIBLE unconfirmed | **Every D and IRREVERSIBLE plan is confirmed** (§12 wins). **Resolved:** the §7 tables in DATA_CONTRACTS, FINAL_ARCHITECTURE, MUTATION_SAFETY and PIPELINE_STAGES, runbook R-V and the S6 golden test (`delete_cost_5_confirmed`) now say so |
 | 2 | WORKFLOW route | PIPELINE_STAGES §9: chain, confidence ≥ 0.7, risk ≤ 0.5 | **Keep**: simple or chain, confidence ≥ 0.7, risk below the deny threshold (runbook R-Q row 8); risky plans are confirmed, not refused |
 | 3 | Where confirmation is used up | DATA_CONTRACTS §13: S11; PIPELINE_STAGES §12 and gate: S10 | **Keep**: S10 consumes on the user's confirmed reply; S11 requires it consumed. Resolved conflict |
 | 4 | Policy version ids | DATA_CONTRACTS §2 lists them on ExecutionContext | **Restored**: `tenant_policy_version_id`, `workspace_policy_version_id`, `policy_version_id` on ExecutionContext; S5 sets them from an injected `PolicyVersionSource` (R-M whitelist) and fails closed if they are missing; the manifest's `policy_version` is `ExecutionContext.policy_version_id` |

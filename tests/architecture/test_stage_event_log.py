@@ -1,4 +1,13 @@
-"""Every stage outcome is recorded; if it cannot be recorded, nothing further runs."""
+"""
+GOLDEN TEST FILE (OWNER). Pinned by hash. The agent edits it only on the owner's explicit
+instruction.
+Rulings: every S0-S11 stage outcome is recorded in the event log; the record holds no user text;
+if an event cannot be recorded the run stops with ERROR ledger_unavailable (a refusal stays a
+refusal); tenant is None only when S0 stopped before identity was known.
+
+Fixture contract: make_pipeline_deps(scenario).events is an InMemoryEvents recording every
+StageEvent (settable `fail` / `fail_on_stage`).
+"""
 import asyncio
 import dataclasses
 import time

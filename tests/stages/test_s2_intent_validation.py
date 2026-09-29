@@ -1,7 +1,15 @@
 """
-S2 Intent Analysis — the model's answer is untrusted and validated.
+GOLDEN TEST FILE (OWNER). Pinned by hash. The agent edits it only on the owner's explicit
+instruction.
+Rulings: PIPELINE_STAGES §4 (S2 is the only LLM call; its output is untrusted), R-M (task_id set
+by S2 through the context whitelist), R-U (risk, mutation and capabilities are registry facts).
+The model may only choose among the registry's intents, "unknown" (-> CLARIFY intent_unclear) or
+"prohibited" (-> DENY intent_prohibited); an invalid answer is retried once with feedback, then
+CLARIFY intent_unparseable; a model failure is ERROR llm_unavailable, never a guess.
+The vocabulary ("unknown", "prohibited") awaits its owner ruling id.
 
-Per R-H: state is built by the real runner (run_through), never by hand.
+Fixture contract: run_through("S1", request) -> state after S1; the IntentModel is passed to the
+real S2 handler `handle(state, model, registry)`; ScenarioRegistry(scenario) is the registry.
 """
 from __future__ import annotations
 
