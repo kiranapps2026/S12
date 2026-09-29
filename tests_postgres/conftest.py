@@ -16,13 +16,22 @@ import pytest
 
 from adapters.postgres.database import Database, normalize_url
 from adapters.postgres.migrate import apply_migrations
+from tests_postgres.envfile import load_dotenv
 from tests_postgres.seed import reset_and_seed
+
+load_dotenv()   # TEST_DATABASE_URL / DEEPSEEK_API_KEY may live in the repo-root .env
 
 APP_ROLE = "supragents_test_app"
 
 
 def pytest_ignore_collect(collection_path, config):
-    return not os.environ.get("TEST_DATABASE_URL") and collection_path.name.startswith("test_")
+    name = collection_path.name
+    if not name.startswith("test_"):
+        return False
+    if not os.environ.get("TEST_DATABASE_URL"):
+        return True
+    # the live full-stack test spends real (tiny) LLM credit: only with an explicit key
+    return name.startswith("test_live_") and not os.environ.get("DEEPSEEK_API_KEY")
 
 
 def _url() -> str:

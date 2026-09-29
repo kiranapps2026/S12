@@ -6,14 +6,20 @@ Source: Based on IDENTITY_AND_TENANCY.md, SECURITY.md
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The repo-root .env is found from any working directory; a .env in the current directory
+# (listed last) overrides it. Real environment variables override both.
+_ROOT_ENV = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(str(_ROOT_ENV), ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
