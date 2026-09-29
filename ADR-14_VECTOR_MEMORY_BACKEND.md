@@ -82,7 +82,7 @@ Rules:
 
 ## 4. Part 2 — Store options
 
-| Criterion (priority order) | A. pgvector default | B. LanceDB, per-tenant datasets | C. pgvector default + LanceDB optional |
+| Criterion (priority order) | A. pgvector only | B. LanceDB, per-tenant datasets | C. pgvector default + LanceDB optional |
 |---|---|---|---|
 | 1. Tenant isolation | RLS, database level ✅ | Application level ⚠️ (I-001 exception needed) | ✅ default; ⚠️ where LanceDB is enabled |
 | 2. Atomic write + event (I-020) | Same transaction as ledger/outbox ✅ | Two stores; needs outbox + idempotent replay ⚠️ | ✅ default |
@@ -92,13 +92,13 @@ Rules:
 | 6. Performance at very large scale | Good to tens of millions of vectors per partition; heavier on the primary database ⚠️ | Strong on large, columnar datasets ✅ | Choose per deployment ✅ |
 | Consistency with current documents | Changes §20, §29, §36 ⚠️ | Matches today ✅ | Changes §20, §29 ⚠️ |
 
-### Recommendation: Option C
+### Recommendation: Option A (revised 2026-09-29)
 
-- **pgvector is the default vector backend.** It is the only option that meets drivers 1–4 as written: RLS isolation (I-001), atomic writes with events (I-020), sharing across nodes and the existing backups.
-- **LanceDB remains an optional `MemoryBackend`** (§36 already makes backends pluggable) for deployments that need its scale — enabled per deployment by the owner, only with the per-tenant dataset layout of §3.2, shared object storage (Amazon S3, Part 3) for multiple nodes, its own backup procedure, and a recorded, owner-approved I-001 exception stating that isolation for that store is enforced in the backend.
-- Both implement the same Part 1 contract, and the same test suite runs against both.
+- **pgvector in PostgreSQL is the only vector backend.** It is the only option that meets drivers 1–4 as written: RLS isolation (I-001), atomic writes with events (I-020), sharing across nodes and the existing backups — with no I-001 exception.
+- **No LanceDB option is kept open.** Option C (pgvector plus an optional LanceDB backend) was the first recommendation; it was revised because LanceDB can only isolate tenants in application code, so any tenant data in it needs an I-001 exception, and the recommendation for Q2 is to refuse that exception. Under A, the question does not arise.
+- If a future phase outgrows one PostgreSQL instance, a new backend is proposed then, against Part 1, with its own isolation review; the pluggable `MemoryBackend` (§36) keeps that door open without keeping a second store today.
 
-If the owner prefers to keep LanceDB as the default (Option B), Part 1 still applies unchanged, and the I-001 exception, the object-storage design and the backup procedure become prerequisites for MR-2.
+**If the owner prefers C** (keep LanceDB available per deployment): Part 1 still applies unchanged, and LanceDB then needs the per-tenant dataset layout of §3.2, shared object storage (Amazon S3, Part 3) for multiple nodes, its own backup procedure, and a recorded, owner-approved I-001 exception (Q2). **If the owner prefers B** (LanceDB as default), those items become prerequisites for MR-2.
 
 ---
 
@@ -152,14 +152,14 @@ A shared cache (Redis) is out of scope until the fleet phase (gate §1; MEMORY_A
 
 | Document | Change |
 |---|---|
-| FINAL_ARCHITECTURE §20, §21, §29, §36 | Default vector backend; `MemoryBackend` with `MemoryScope`, async, `purge`; LanceDB as optional backend and its conditions |
-| FINAL_ARCHITECTURE I-001 | Only if LanceDB is enabled: the recorded exception text |
+| FINAL_ARCHITECTURE §20, §21, §29, §36 | Vector backend: under **A**, pgvector replaces LanceDB in §20/§21/§29 and §36 lists pgvector; under B/C, LanceDB stays with its conditions. In every case: `MemoryBackend` with `MemoryScope`, async, `purge` |
+| FINAL_ARCHITECTURE I-001 | None under A. Under B/C only: the recorded exception text for LanceDB |
 | DATABASE.md | `memory_vectors` table (partitioned, RLS, HNSW per partition), `CREATE EXTENSION vector`, migration, backup note |
 | DATA_CONTRACTS.md | `MemoryScope`, `MemoryEntry`, `MemoryHit`, `MemoryFilter`, `WriteResult` |
-| SECURITY.md | Scope from context only; purge audit; path validation for LanceDB |
+| SECURITY.md | Scope from context only; purge audit; (B/C only) path validation for LanceDB |
 | IDENTITY_AND_TENANCY.md | Memory scope derivation from `ExecutionContext` / `PrincipalChain` |
 | VALIDATION.md | Tests below |
-| Implementation repo | `pgvector` (and optionally `lancedb`) dependency, added in the memory phase only |
+| Implementation repo | `pgvector` dependency (plus `lancedb` under B/C only), added in the memory phase only |
 | DATABASE.md (Part 3) | `payload_ref` column on memory rows; `memory_tenant_keys` (wrapped per-tenant DEK, `kek_version`); `memory_payload_inline_max_bytes` in the settings object |
 | SECURITY.md, RELIABILITY.md (Part 3) | S3 access through `CredentialProvider` and per-tenant STS session policies; crypto-shredding procedure; orphan-object sweeper and deletion job |
 | Infrastructure (Part 3) | One S3 bucket per environment: Block Public Access, TLS-only policy, versioning, lifecycle rules; KMS key for the KEK |
@@ -175,7 +175,7 @@ A shared cache (Redis) is out of scope until the fleet phase (gate §1; MEMORY_A
 | `test_memory_write_and_event_atomic()` | A failed ledger/outbox write leaves no vector (and vice versa) |
 | `test_embedding_model_mismatch_rejected()` | A vector of another model or dimension is rejected |
 | `test_tenant_memory_purge()` | `purge(scope)` removes every entry in scope and is audited |
-| `test_lancedb_tenant_path_validation()` | (LanceDB only) malformed `tenant_id` never builds a path |
+| `test_lancedb_tenant_path_validation()` | (B/C only) malformed `tenant_id` never builds a path |
 | `test_backend_contract_suite_both_backends()` | The same suite passes on every enabled backend |
 | `test_s3_key_built_from_scope_only()` | (S3) The object key comes only from `MemoryScope`; request or LLM parameters cannot change it |
 | `test_s3_session_policy_limits_tenant_prefix()` | (S3) Credentials for tenant A cannot read or write under tenant B's prefix |
@@ -190,13 +190,22 @@ The question numbers are stable (other documents cite them). Answer them in the 
 
 | Order | # | Question | Depends on | Recommendation | What the answer changes |
 |---|---|---|---|---|---|
-| 1 | **Q1** | Vector index: Option A, B or C (Part 2)? | — | **C** — pgvector in PostgreSQL by default; LanceDB optional per deployment | The store every other answer assumes. If A, Q2 is moot |
-| 2 | **Q6** | Where will the memory service run: in the bucket's AWS region, or outside AWS (§4a.6)? | — | **Same AWS region** as the bucket | Outside AWS, S3 reads are charged per GB, which argues for a higher Q5 threshold |
+| 1 | **Q1** | Vector index: Option A, B or C (Part 2)? A = pgvector only; B = LanceDB; C = pgvector by default plus LanceDB as an option. (There is no external-service option.) | — | **A** — pgvector only (revised from C: consistent with refusing the Q2 exception) | The store every other answer assumes, and the only answer that gates vector code. Under A, Q2 is moot |
+| 2 | **Q6** | Where will the memory service run: in the bucket's AWS region, or outside AWS (§4a.6)? | — | **Same AWS region** as the bucket | Vector lookups run in PostgreSQL, so outside AWS only large-payload reads from S3 are charged per GB — which argues for a higher Q5 threshold. If the service cannot run in AWS, say so before any code: it changes the S3 design |
 | 3 | **Q5** | Is the 256 KiB inline threshold acceptable (§4a.2)? | Q1, Q6 | **Yes**, if Q6 is "same region" | Where large **payloads** live. Embeddings stay in PostgreSQL whatever the threshold |
-| 4 | **Q3** | One embedding model per tenant, or several side by side? | Q1 | **One per tenant** | One vector size per tenant partition (simpler schema and index), or one partition per model. It does **not** decide MR-3: where embedding happens (Runtime Contract addition or provider-adapter operation) stays a separate question |
-| 5 | **Q2** | If LanceDB is ever enabled: accept an I-001 exception for it? | Q1 (only if B or C) | **No** — use LanceDB only for data that is not tenant-scoped, or not at all | Whether LanceDB can hold tenant data |
+| 4 | **Q3** | One embedding model per tenant, or several side by side? | Q1 | **One per tenant**, plus a migration rule: when a tenant changes model, old and new vectors coexist (tagged by `embedding_model`) while re-embedding runs, searches use only the model the query was embedded with, and the old vectors are deleted when re-embedding completes | One vector size per tenant partition keeps the schema and index simple. Tenant isolation does **not** depend on this: it comes from `MemoryScope` and RLS, and vectors sharing a model's space leak nothing. It does **not** decide MR-3 (where embedding happens) |
+| 5 | **Q2** | If LanceDB is ever enabled: accept an I-001 exception for it? | Q1 (only if B or C) | **No** (moot under A) | The exception concerns **tenant isolation**, not the vector guard: pgvector needs none (RLS enforces isolation in the database); LanceDB has no RLS, so tenant data in it would be isolated only in application code |
 | 6 | **Q4** | Must erasure cover backups — and if so, **how**? | Q1 | **Yes, immediately:** destroy the tenant key (makes every S3 copy unreadable), then rotate the KEK and destroy the old KEK version (§4a.4) | Without the KEK step, PostgreSQL backups keep the wrapped tenant key until they expire, and erasure in backups completes only then |
-| 7 | **Q7** | What is the erasure deadline? | Q4 | Owner to set (for example 30 days) | Bounds the lifecycle expiry of noncurrent S3 versions, the backup retention and the KEK rotation cadence. It does **not** affect Object Lock |
+| 7 | **Q7** | What is the erasure deadline — how long after an erasure request may erased data still exist anywhere (old S3 versions, backups)? | Q4 | Owner to set with legal/compliance (typically days or weeks, for example 30 days) | This is **not** the retention period (how long live data is kept). It bounds the lifecycle expiry of noncurrent S3 versions, the backup retention and the KEK rotation cadence. It does **not** affect Object Lock |
 | 8 | **Q8** | Does any record class need immutable retention (Object Lock)? | — (independent) | **No**, unless a law requires it; then a **separate** bucket | Only whether a separate locked archive bucket exists |
 
-**The memory bucket never uses Object Lock, whatever Q4, Q7 or Q8 say:** live erasure (`purge`, Part 1) must always be able to delete objects, even if backups are not covered (Q4 = no). Only Q8 can add Object Lock, and only on a separate bucket.
+**The memory bucket never uses Object Lock, whatever Q4, Q7 or Q8 say:** live erasure (`purge`, Part 1) must always be able to delete objects, even if backups are not covered (Q4 = no). (Destroying a tenant key would make locked ciphertext unreadable, but the lock would still block deletion itself.) Only Q8 can add Object Lock, and only on a separate bucket with its own access controls, lifecycle and audit trail, which the memory service never writes to.
+
+**Owner input needed before any memory-phase code:**
+
+| Priority | Questions | Why |
+|---|---|---|
+| 1 | **Q1** | The only answer that gates vector code (with MR-1's scope contract, Part 1) |
+| 2 | **Q6** | An infrastructure constraint: if the service cannot run in AWS, the S3 tier needs rethinking before code is written against it |
+| 3 | **Q4 + Q7** | Compliance and liability: they need legal/compliance input; if that is not available, mark them "legal input required before implementation" rather than guessing |
+| — | Q2, Q3, Q5, Q8 | Can be answered on technical merit and do not block the next session; Q5 should be revisited after the first memory-service load test |
