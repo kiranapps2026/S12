@@ -1,7 +1,7 @@
 # S12–S15 EXECUTION GATE — PHASE-LOCKED INSTRUCTION
 
 Status: APPROVED FOR EXECUTION (owner confirmed Section 6, D1–D6, as written)
-Revision: v10 — v9 plus worker-management rulings C39 (admission and eligibility, operation quota), C40 (batch: out of phase), C41 (replanning: out of phase), preflight items 15–16, suite 20, invariants I17–I18, and the owner-confirmed rulings RD-1…RD-18 of `WORKER_MGMT_SPEC_REVIEW.md` Part E. Passages changed in v10 carry a `Worker-management repair (RD-n)` or `(C39–C41)` marker. v10 audit round 2 (2026-09-29): C39 revised (A1–A6, B1–B9 of the audit; pause moved to S0.1 by S0–S11 ruling R-P, S12 entry keeps a safety net; no per-step quota or pause check; eligibility filters extended), preflight item 17. v10 addendum (2026-09-29): vector memory / RAG is blocked until blocker register Section 20 MR-1 is decided (§1, §14, suite 2; guard `tests/golden/s12/test_arch_no_vector_code.py`).
+Revision: v10 — v9 plus worker-management rulings C39 (admission and eligibility, operation quota), C40 (batch: out of phase), C41 (replanning: out of phase), preflight items 15–16, suite 20, invariants I17–I18, and the owner-confirmed rulings RD-1…RD-18 of `WORKER_MGMT_SPEC_REVIEW.md` Part E. Passages changed in v10 carry a `Worker-management repair (RD-n)` or `(C39–C41)` marker. v10 audit round 2 (2026-09-29): C39 revised (A1–A6, B1–B9 of the audit; pause moved to S0.1 by S0–S11 ruling R-P, S12 entry keeps a safety net; no per-step quota or pause check; eligibility filters extended), preflight item 17. v10 addendum (2026-09-29), amended the same day: vector memory / RAG was blocked until blocker register Section 20 MR-1 was decided; MR-1 and ADR-14 DECIDED by the owner on 2026-09-29 (`ADR-14_VECTOR_MEMORY_BACKEND.md`: pgvector only, `MemoryScope` contract), so the block is lifted under the deletion contract (`s12_s15_golden/README.md`): the §1 entry, the suite 2 check and the guard `tests/golden/s12/test_arch_no_vector_code.py` are removed. Vector memory stays **out of this phase** (§14, target phase after S15). The owner re-pins the gate and the golden set.
 Previous revision: v9 — v8 plus: documentation repairs C1–C23 pre-applied by the owner (the agent
 never edits specification documents); the term "Runner" replaced by "Worker Runtime"; new
 rulings C24–C38 (canonical transition tables, fence-token sequence, lease status column,
@@ -94,16 +94,9 @@ Out of scope: multi-node fleet, Redis, real providers, frontend, SDK
 - Implement worker version or deployment lifecycle beyond reading the version fields
   S12 needs.
 - Implement sub-agent spawning, batch processing (C40), replanning (C41), worker
-  groups, config versioning, webhooks, session memory, or any execution path that
+  groups, config versioning, webhooks, session memory, vector memory (§14), or any execution path that
   bypasses S0–S11 (FINAL_ARCHITECTURE I-029). `runtime_type` never selects an
   adapter in S12 (C39).
-- Write any vector code: no `lancedb`, `lance` or `pgvector` dependency or import, no
-  `CREATE EXTENSION vector` or `vector(n)` column, no vector memory backend, embedding
-  adapter or vector capability. Blocked until blocker register Section 20 MR-1 (memory
-  scope contract and physical layout, ADR-14) is DECIDED and propagated. Enforced by the
-  owner's golden guard `tests/golden/s12/test_arch_no_vector_code.py` at every milestone exit.
-  When MR-1 is decided, the owner deletes this entry and the guard in the same change
-  (deletion contract: `s12_s15_golden/README.md`).
 - Delete or weaken existing tests to restore green.
 
 ---
@@ -1810,9 +1803,11 @@ count as not completed. Specifically:
   config versioning; state-change webhooks; L2 session memory; memory
   classification; progressive autonomy; PolicyEngine; browser/RPA adapters and
   skills; templates, plans, entitlements and marketplace listing
-- Vector memory / RAG (blocker register Section 20, items MR-1…MR-4; draft ADR-14):
-  **no vector code of any kind until MR-1 is DECIDED and propagated** (§1). Target
-  phase: memory / LLM layer, after S15. Guard: `tests/golden/s12/test_arch_no_vector_code.py` (suite 2)
+- Vector memory / RAG (blocker register Section 20; ADR-14 and MR-1 DECIDED
+  2026-09-29: pgvector only, `MemoryScope` contract). Target phase: memory / LLM layer,
+  after S15. Nothing of it is implemented, migrated or tested in this phase; MR-3
+  (embedding contract), MR-4 (pipeline rulings) and MR-9 (`MemoryWriteBarrier`) are
+  still open
 - Real provider adapters
 - LayaDecisionAdapter (design note `LAYA_DECISION_ADAPTER.md`, status DEFERRED;
   target phase: LLM layer). File its blocker entries LB1–LB11 in the register with
@@ -1899,10 +1894,6 @@ repeated key does not execute twice.
    - No durable execution writes outside `fenced_write()`.
    - No filesystem checkpoint code.
    - Fault injection inert outside test mode.
-   - (v10) No vector code: no `lancedb`/`lance`/`pgvector` import (static or dynamic) in
-     `src/`, `tests/`, `tools/` or migrations; no such dependency in any manifest; no
-     `CREATE EXTENSION vector` or `vector(n)` column. Owner guard
-     `tests/golden/s12/test_arch_no_vector_code.py` with sabotage self-tests; runs at every milestone exit.
 3. **S12 entry.** Each check in 7.1 fails closed with its specific reason and writes
    nothing. Duplicate `request_id` returns the existing execution. Plan tampered
    between S11 and S12 is denied.

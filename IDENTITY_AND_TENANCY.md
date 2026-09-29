@@ -918,6 +918,21 @@ class ResourceScope:
     # 3. Audit trail (which resource was accessed)
 ```
 
+### 8.8 Memory Scope Derivation
+
+> **ADR-14 (DECIDED 2026-09-29):** memory phase, after S15.
+
+`MemoryScope` (DATA_CONTRACTS §54) is derived from the `ExecutionContext` of the run, never from LLM output or request parameters:
+
+| Field | Source |
+|---|---|
+| `tenant_id`, `workspace_id` | The run's tenant and workspace (always required) |
+| `worker_id` | The worker executing the run; `None` only for workspace-wide or user-only entries |
+| `user_id` | `PrincipalChain.original_principal_id` (not a delegating worker); `None` for runs started by an event |
+| `session_id` | The worker session, for L2 only |
+
+A run reads its fixed read set, `(worker, user)`, `(worker, no user)`, `(no worker, user)` and workspace-wide, and nothing else. Memory is private to its worker within the workspace; sharing means writing to the workspace-wide scope. Cross-workspace memory does not exist; only `purge` takes a tenant-only scope.
+
 ---
 
 ## 10. Implementation Rules

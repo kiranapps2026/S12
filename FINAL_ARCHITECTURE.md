@@ -1,7 +1,8 @@
 # SuprAgents — Final Architecture Document
 
-**Version**: 4.5.1 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**Version**: 4.5.2 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
 **4.4.0 (2026-09-28)**: absorbs the decisions of the later documents (WORKER_LIFECYCLE_VERIFICATION_ADMISSION, SUPERSESSION_AWARE_BLOCKER_REGISTER, XS-1) and the S12–S15 gate v9 rulings, so no document contradicts this one (I-015). Each changed passage carries a `S12–S15 gate v9 repair` marker; the full list is gate C38.
+**4.5.2 (2026-09-29, ADR-14 DECIDED)**: the vector backend is pgvector in PostgreSQL (§20, §21, §29, §37); §36 replaces the scope-less synchronous `MemoryBackend` with the scoped async interface of ADR-14 (register MR-1, MR-2, MR-7). Memory remains a post-S15 phase.
 **4.5.1 (2026-09-29, audit round 2)**: §26 `workers` DDL uses `TEXT` keys and shows the management columns; §50 acceptance gate and harness cover I-001…I-029 and a note maps the four invariant numbering schemes; §51 row 16 follows the revised gate C39 (pause at S0.1 by S0–S11 ruling R-P; no per-step pause or quota check).
 **4.5.0 (2026-09-29)**: worker-management propagation from `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md`, per the owner-confirmed rulings RD-1…RD-18 in `WORKER_MGMT_SPEC_REVIEW.md` Part E and gate v10 C39–C41. Section numbering cleaned up (RD-16): the orphaned duplicate sections are renumbered §37b, §37c, §37d, §50 and §51; every number cited by another document (§38 Runtime Contract, §39, §40, §41 Event Correlation, §43, §45, §46) is unchanged. Each changed passage carries a `Worker-management repair (RD-n)` marker.
 **Date**: 2026-09-26 | **Source**: `rebuild/` design documents + 10-repo gap analysis + P0+P1 audit
@@ -1132,13 +1133,11 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 | Database | PostgreSQL 16+ | ACID, RLS, JSONB, proven at scale |
 | Migrations | Alembic | Versioned schema changes |
 | ORM | SQLAlchemy 2.0 | Async support, type safety |
-| Vector Search | LanceDB | Embedded, fast, no separate service |
+| Vector Search | pgvector (PostgreSQL extension) | Tenant isolation by RLS, same transactions and backups as the rest of the data (ADR-14) |
 | Cache | Redis | Session cache, rate limiting |
 | Queue | In-process dispatch (single node); PostgreSQL is the claim authority; notification channel deferred to the fleet phase | PostgreSQL is not a message bus (§37); gate C1 |
 | Observability | OpenTelemetry + Jaeger | Distributed tracing |
 | Testing | pytest + httpx | Async support, fixture ecosystem |
-
-> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This table row is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
 
 ### Infrastructure
 | Component | Technology | Rationale |
@@ -1160,7 +1159,7 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 │  Domain knowledge, learned preferences, historical patterns  │
 │  Persists across worker restarts                              │
 │  Curated, summarized, confidence-scored                       │
-│  Storage: PostgreSQL (JSONB) + LanceDB (vector)              │
+│  Storage: PostgreSQL (JSONB) + pgvector (vector)             │
 ├─────────────────────────────────────────────────────────────┤
 │  LAYER 2 — Session Memory                                    │
 │  Conversation history, decisions made, results obtained      │
@@ -1181,8 +1180,6 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 │  Storage: In-memory (LLM context)                            │
 └────────────────────────────────��────────────────────────────┘
 ```
-
-> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This Layer 3 storage line is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
 
 ### Memory Principles
 
@@ -1536,14 +1533,12 @@ with tracer.start_as_current_span("pipeline.s0.entry") as span:
 | **Capability-driven design** | Decouples intent from implementation | Requires registry maintenance |
 | **Adapter isolation** | Prevents cascading failures | More boilerplate per provider |
 | **RLS at database level** | Tenant isolation enforced by DB, not application | Requires careful query design |
-| **LanceDB for vector search** | Embedded, no separate service | Newer technology, smaller ecosystem |
+| **pgvector for vector search** (ADR-14) | Tenant isolation by RLS (I-001), writes atomic with their events (I-020), one backup procedure, shared across nodes | Vector search load on the primary database; a very large tenant gets its own partition, and a future backend needs its own ADR |
 | **One execution path for every runtime type** (RD-8, RD-9) | Browser, RPA, vision, rules, data and human workers keep S8 authorization, S10 confirmation and the S11 manifest; `runtime_type` selects routing, binding and worker eligibility, never skipped stages | Simple recorded workflows still pass through every stage (FAST/REFLEX keep them cheap) |
 | **Progressive autonomy is restrict-only** (RD-14) | The existing `AutonomyLevel` stays the one autonomy enum; any per-capability refinement can only tighten it | Promotion is an admin decision, not automatic |
 | **Memory is not authorization** (§21) | Memory informs LLM behavior; the kernel decides what is allowed | Policy text must be maintained in policy tables, not memory |
 | **Replanning = child execution** (RD-11) | A new plan runs as a new execution through S0→S15 with its own manifest; the plan of a running execution never changes (I-006, I-017) | A replan costs a new S0–S11 pass |
 | **Worker checks are eligibility filters** (RD-4) | Admission runs before a worker is chosen, so worker pause, assignment and runtime match filter candidates at selection time | Two places to look: admission (tenant/workspace/system) and selection (worker) |
-
-> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This "LanceDB for vector search" row is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
 
 ---
 
@@ -1781,25 +1776,35 @@ An adapter returning HTTP 200 is NOT sufficient for SUCCESS. The kernel must ver
 ---
 ## 36. Pluggable Memory Backends
 
-LanceDB is the default vector backend but is pluggable.
+Memory backends are pluggable behind one interface. The vector backend is **pgvector in PostgreSQL**; LanceDB was not chosen (ADR-14, DECIDED 2026-09-29). Target phase: memory / LLM layer, after S15 (gate v10 §14).
 
-> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This section (backend list and the scope-less, synchronous interface, see ADR-14 Part 1) is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
-
-**Backend interface**:
+**Backend interface** (async; a scope is mandatory on every call; contracts in DATA_CONTRACTS §54):
 ```python
 class MemoryBackend(Protocol):
-    def write(self, entry: MemoryEntry) -> bool: ...
-    def read(self, query: MemoryQuery) -> list[MemoryEntry]: ...
-    def search(self, vector: list[float], limit: int) -> list[MemoryEntry]: ...
-    def close(self) -> None: ...
+    async def write(self, tx: Transaction, scope: MemoryScope, entry: MemoryEntry) -> WriteResult: ...
+    async def read(self, scope: MemoryScope, query: MemoryQuery) -> list[MemoryEntry]: ...
+    async def search(self, scope: MemoryScope, vector: Sequence[float],
+                     limit: int, filters: MemoryFilter | None = None) -> list[MemoryHit]: ...
+    async def delete(self, tx: Transaction, scope: MemoryScope, entry_id: str) -> bool: ...
+    async def purge(self, scope: MemoryScope | TenantScope) -> int: ...
+    async def close(self) -> None: ...
 ```
+
+**Rules** (ADR-14 §3.1, §3.3):
+1. The scope comes from `ExecutionContext` / `PrincipalChain` only (user = original principal), never from LLM output or request parameters.
+2. The tenant boundary is enforced by RLS (I-001); the workspace, worker, user and session boundaries by the backend's mandatory predicates.
+3. `read` and `search` cover a fixed read set: `(worker, user)`, `(worker, no user)`, `(no worker, user)`, workspace-wide. Memory is private to its worker; shared memory is written to the workspace-wide scope.
+4. `MemoryFilter` only narrows (tags, time range, source, minimum confidence).
+5. `write` and `delete` take the caller's transaction, so the memory row and its event commit together (I-014, I-020).
+6. The backend never calls an embedding provider (§6 dependency direction; register MR-3).
+7. `purge` accepts a tenant-only scope, may be called only by an owner/admin member or the off-boarding job, and is audited.
 
 **Implementations**:
 | Backend | Use Case | Persistence |
 |---------|----------|-------------|
-| LanceDB | Vector search, embeddings | File-based |
-| PostgreSQL | Structured memory, checkpoints | Durable |
-| Redis | Ephemeral cache, session | Volatile |
+| PostgreSQL + pgvector | Vector search (`memory_vectors`: RLS, LIST partitions for large tenants, HNSW per partition), structured memory, checkpoints | Durable; DATABASE §5 backups |
+| Amazon S3 (payload store behind the PostgreSQL backend, not a `MemoryBackend`) | Payloads above `memory_payload_inline_max_bytes` (default 256 KiB) | Durable; per-tenant envelope encryption, crypto-shredding (ADR-14 Part 3) |
+| In-process LRU cache | Hot reads; every key holds the full `MemoryScope`, and `purge` invalidates it | Volatile (a shared Redis cache waits for the fleet phase) |
 
 **Validation test**: `test_memory_backend_swap()` — verifies backend can be swapped without changing kernel.
 
@@ -1813,9 +1818,7 @@ PostgreSQL is the durable source of truth for all execution state. It is NOT the
 | State storage | PostgreSQL | ACID, RLS, durability |
 | Message passing | In-process or dedicated queue | PostgreSQL is not a message bus |
 | Ephemeral state | Redis | Fast, TTL-based |
-| Vector search | LanceDB | Embedded, no separate service |
-
-> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This table row is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1).
+| Vector search | pgvector (in PostgreSQL) | Durable, RLS; state, not messaging |
 
 **Rule**: PostgreSQL stores what must survive restarts. Nothing else does.
 

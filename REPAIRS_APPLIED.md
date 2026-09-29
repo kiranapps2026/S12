@@ -210,3 +210,25 @@ per piece of state; (4) leaves a machine-readable reason for every decision.
 | BUILD_READINESS_MATRIX.md | Row 29 (EVENT_GATEWAY) | EVT-LOCK |
 | STATE_TRANSITIONS.md | Header citations of DATA_CONTRACTS corrected (§9, §16, §46, §47) | found during WM-O1 |
 | SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Snapshot banners on §14–§17; WM-O1, WM-O2 closed; §19.6 | REG-SNAP |
+
+---
+
+## ADR-14 DECIDED — MR-1 (2026-09-29)
+
+The owner accepted ADR-14 §3.3 as written (D1 private memory within a workspace; D2 RLS for the tenant boundary only; points 1–10) after answering Q1 (pgvector only), Q4, Q6 and Q7 (90 days). Q3, Q5 and Q8 are deferred to the memory phase.
+
+| Document | Change | Item |
+|---|---|---|
+| ADR-14_VECTOR_MEMORY_BACKEND.md | Status DECIDED; §3.1 interface (`session_id`, `TenantScope`, `delete`, caller transaction, fixed read set); §3.3 binding | MR-1, MR-2 |
+| FINAL_ARCHITECTURE.md (4.5.2) | pgvector in §20, §21, §29, §37; §36 rewritten | MR-2, MR-7 |
+| DATABASE.md | `memory_vectors`, `memory_tenant_keys` (memory phase, not created in S12–S15); §5 90-day retention bound | ADR-14 §5 |
+| DATA_CONTRACTS.md | §54 memory contracts | MR-1, MR-7 |
+| SECURITY.md, IDENTITY_AND_TENANCY.md, RELIABILITY.md | §12b, §8.8, §15 | ADR-14 §5 |
+| VALIDATION.md | Memory tests; standing-guard row removed | ADR-14 §6; deletion contract |
+| S12_S15_EXECUTION_GATE.md | Header amendment; §1 vector entry and suite 2 check removed; §1 lists vector memory as out of phase; §14 entry updated | Deletion contract 2–5 |
+| S12_S15_IMPLEMENTATION_PLAN.md | Milestone-exit bullet, M21 item, §5 item 5, risk row | Deletion contract 6–7 |
+| s12_s15_golden/ | Guard deleted; README records it and keeps the contract as a pattern | Deletion contract 1, 10 |
+| SUPERSESSION_AWARE_BLOCKER_REGISTER.md | ADR-14 DECIDED; Section 20 block lifted; MR-1, MR-2 DECIDED; MR-5, MR-7 resolved; MR-3/MR-4 no longer blocked by MR-1 | Deletion contract 9 |
+| MEMORY_ARCHITECTURE.md, README.md, BUILD_READINESS_MATRIX.md | Status lines | — |
+
+**Owner action:** re-pin the gate, the plan and the other changed documents on the VPS, and remove the guard from the golden pin list (it was never installed if batch B1 has not run).

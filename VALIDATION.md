@@ -675,7 +675,29 @@ def test_confirmation_expires():
 | `test_no_adapter_choice_from_runtime_type()` | Architecture | S12 never reads `runtime_type` to choose an adapter (RD-9) |
 | `test_no_deferred_worker_tables()` | Architecture | No spawn/batch/group/webhook tables or `parent_execution_id` in this phase |
 | `test_worker_fk_types_text()` | Schema | Every worker foreign key is `TEXT` (RD-1) |
-| `test_no_vector_code_in_repository()` | Architecture (standing guard) | No vector dependency, import or migration before register Section 20 MR-1 (gate v10 §1, §14); file `tests/golden/s12/test_arch_no_vector_code.py` with sabotage self-tests |
+
+### Memory (ADR-14; memory phase, after S15 — not run in S12–S15)
+
+| Test | Proves |
+|---|---|
+| `test_memory_calls_require_scope()` | No backend method can be called without a `MemoryScope` |
+| `test_cross_tenant_vector_search_impossible()` | With RLS on and the application predicate removed, tenant A never sees tenant B's vectors |
+| `test_scope_from_context_not_llm()` | LLM/request parameters cannot change any scope field |
+| `test_read_set_is_fixed()` | `read`/`search` return only `(worker, user)`, `(worker, no user)`, `(no worker, user)` and workspace-wide entries |
+| `test_worker_cannot_read_other_worker_memory()` | Worker A never reads worker B's entries in the same workspace |
+| `test_l2_requires_session_id()` | L2 without `session_id`, or L3 with one, is rejected (and by the table CHECK) |
+| `test_filter_narrows_never_widens()` | `MemoryFilter` cannot broaden the read set |
+| `test_memory_write_and_event_atomic()` | A failed ledger/outbox write leaves no memory row, and vice versa |
+| `test_embedding_model_mismatch_rejected()` | A vector of another model or dimension is rejected |
+| `test_purge_requires_owner_admin_or_system()` | Other principals cannot purge; every purge is audited |
+| `test_tenant_memory_purge()` | `purge` removes every entry in scope and records the erasure |
+| `test_s3_key_built_from_scope_only()` | The object key comes only from the scope |
+| `test_s3_session_policy_limits_tenant_prefix()` | Tenant A's credentials cannot touch tenant B's prefix |
+| `test_payload_threshold_inline_vs_s3()` | Payloads up to the threshold stay inline; larger ones go to S3 |
+| `test_no_row_references_unwritten_object()` | A failed upload never produces a committed `payload_ref` |
+| `test_orphan_object_swept()` | An orphan object is deleted by the sweeper |
+| `test_tenant_erasure_crypto_shred()` | After DEK destruction, old object versions cannot be decrypted |
+| `test_restore_replays_erasures()` | A restored database does not serve erased data |
 
 ## 11. Architecture Test Harness
 

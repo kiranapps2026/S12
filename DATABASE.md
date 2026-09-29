@@ -1159,7 +1159,69 @@ class MigrationRunner:
 
 ---
 
+### Memory tables (ADR-14; memory phase, after S15 — **not created in S12–S15**)
+
+Defined now so the memory phase starts from the decided layout (ADR-14 §3.1–§3.3, Part 3). No S12–S15 migration creates them (gate v10 §14).
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;                    -- memory-phase migration only
+
+CREATE TABLE memory_vectors (
+    entry_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    worker_id TEXT REFERENCES workers(worker_id),        -- NULL = entry has no worker
+    user_id TEXT REFERENCES users(user_id),              -- original principal; NULL = not user-specific
+    layer TEXT NOT NULL CHECK (layer IN ('L2', 'L3')),
+    session_id TEXT,                                     -- required for L2, forbidden for L3
+    embedding_model TEXT NOT NULL,
+    embedding_dim INTEGER NOT NULL,
+    embedding vector NOT NULL,                           -- untyped column; typed per index below
+    content_hash TEXT NOT NULL,
+    payload JSONB,                                       -- inline up to memory_payload_inline_max_bytes
+    payload_ref TEXT,                                    -- S3 key when larger (ADR-14 Part 3)
+    source TEXT NOT NULL,
+    confidence REAL,
+    tags TEXT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, entry_id),                   -- includes the partition key
+    CHECK ((layer = 'L2') = (session_id IS NOT NULL)),
+    CHECK (vector_dims(embedding) = embedding_dim),
+    CHECK (payload IS NULL OR payload_ref IS NULL)
+) PARTITION BY LIST (tenant_id);
+CREATE TABLE memory_vectors_default PARTITION OF memory_vectors DEFAULT;
+-- A tenant above the row-count threshold (settings object) gets its own partition:
+--   CREATE TABLE memory_vectors_<tenant> PARTITION OF memory_vectors FOR VALUES IN ('<tenant_id>');
+ALTER TABLE memory_vectors ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON memory_vectors
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
+CREATE INDEX idx_memory_scope ON memory_vectors (tenant_id, workspace_id, worker_id, user_id, layer, session_id);
+-- ANN index per partition and embedding model (the cast fixes the dimension), for example:
+--   CREATE INDEX ON memory_vectors_default
+--       USING hnsw ((embedding::vector(1536)) vector_cosine_ops) WHERE embedding_model = '<model>';
+
+CREATE TABLE memory_tenant_keys (
+    tenant_id TEXT PRIMARY KEY REFERENCES tenants(tenant_id),
+    wrapped_dek BYTEA,                                   -- NULL once destroyed (crypto-shredding)
+    kek_version TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    destroyed_at TIMESTAMPTZ,
+    CHECK ((wrapped_dek IS NULL) = (destroyed_at IS NOT NULL))
+);
+ALTER TABLE memory_tenant_keys ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON memory_tenant_keys
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
+```
+
+Rules: workspace, worker, user and session boundaries are enforced by the backend's predicates, not by RLS (ADR-14 §3.3 D2). The **erasure register** is deliberately **not** a table here: it is kept outside the database backups (ADR-14 §4a.4) so that a restore can replay it.
+
+---
+
 ## 5. Backup & Restore
+
+> **Retention bound (ADR-14 Q7, owner 2026-09-29):** every backup and archived WAL segment that can contain memory data is deleted within **90 days** (the erasure deadline). The logical dumps below keep 30 days; `pg_basebackup` backups and the WAL archive need the same ≤ 90-day bound. After any restore, the memory erasure register is replayed before the database serves traffic (ADR-14 §4a.4; RELIABILITY §15).
 
 ### PostgreSQL Native Backup
 

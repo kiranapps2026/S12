@@ -62,6 +62,7 @@
 51. [OperationQuota — Count-Based Quota](#51-operationquota--count-based-quota)
 52. [Worker-Management Reason Codes](#52-worker-management-reason-codes)
 53. [SkillDefinition and SkillStep (DEFERRED)](#53-skilldefinition-and-skillstep-deferred)
+54. [Memory Contracts — MemoryScope and MemoryBackend (DEFERRED, ADR-14)](#54-memory-contracts--memoryscope-and-memorybackend-deferred-adr-14)
 
 > **Worker-management repair (RD-16 family):** §38–§49 exist in the body but were never added to this table of contents; new sections start at §50 so no existing number is reused; the §38–§49 entries were added in audit round 2 (D7) (the duplicate §31 was resolved as §31 / §31a — WM-O1).
 
@@ -2828,3 +2829,67 @@ class SkillDefinition:
 3. The VOCABULARY_INDEX "Skill" definition must be reconciled with data-only compositions before this lands.
 
 Contracts deliberately **not** added: `BatchSplit` (would change the certified `NormalizedInput`; batch is BATCH-strategy PlanSteps, gate C40), `BatchConsolidation` (consolidation is gate §10), `BrowserExecutionContext` (one execution path, RD-8).
+
+---
+
+## 54. Memory Contracts — MemoryScope and MemoryBackend (DEFERRED, ADR-14)
+
+> **ADR-14 (DECIDED 2026-09-29; register MR-1, MR-7):** contracts for the memory phase (after S15). Nothing here is implemented in S12–S15 (gate v10 §14). The interface is FINAL_ARCHITECTURE §36; the rules are ADR-14 §3.1 and §3.3.
+
+```python
+@dataclass(frozen=True)
+class MemoryScope:
+    tenant_id: str                 # from ExecutionContext; never from LLM output or request parameters
+    workspace_id: str              # always required
+    worker_id: str | None          # None = entry has no worker
+    user_id: str | None            # PrincipalChain.original_principal_id; None for event-started runs
+    layer: Literal["L2", "L3"]
+    session_id: str | None = None  # required when layer == "L2", forbidden for L3
+
+@dataclass(frozen=True)
+class TenantScope:                 # accepted only by MemoryBackend.purge()
+    tenant_id: str
+
+@dataclass(frozen=True)
+class MemoryEntry:
+    entry_id: str
+    embedding: Sequence[float]     # computed by the caller (register MR-3); never by the backend
+    embedding_model: str
+    embedding_dim: int
+    content_hash: str              # sha256 of the plaintext payload
+    payload: dict | None           # inline, up to memory_payload_inline_max_bytes
+    payload_ref: str | None        # S3 key, built by the backend from the scope only
+    source: str
+    confidence: float | None
+    tags: tuple[str, ...]
+    created_at: datetime           # database time (I-019)
+
+@dataclass(frozen=True)
+class MemoryFilter:                # narrows the read set; has no scope field
+    tags: tuple[str, ...] = ()
+    created_after: datetime | None = None
+    created_before: datetime | None = None
+    source: str | None = None
+    min_confidence: float | None = None
+
+@dataclass(frozen=True)
+class MemoryQuery:
+    entry_ids: tuple[str, ...] = ()
+    filter: MemoryFilter | None = None
+    limit: int = 100
+
+@dataclass(frozen=True)
+class MemoryHit:
+    entry: MemoryEntry
+    distance: float                # same embedding_model as the query vector, or rejected
+
+@dataclass(frozen=True)
+class WriteResult:
+    entry_id: str
+    created: bool                  # False = same content_hash already present in scope (idempotent)
+```
+
+Rules:
+1. `read` and `search` cover only the fixed read set derived from the scope: `(worker, user)`, `(worker, no user)`, `(no worker, user)`, workspace-wide. `write` and `delete` target exactly the given scope.
+2. A vector whose `embedding_model` or `embedding_dim` differs from the stored entries is rejected, never compared.
+3. `purge` is limited to an owner/admin member of the scope's workspace (or the tenant's owner/admin for `TenantScope`) and the system off-boarding job; every purge is audited and recorded in the erasure register (SECURITY §12b).

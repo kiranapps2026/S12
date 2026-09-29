@@ -6,16 +6,17 @@ there, pins them, and the coding agent never edits them.
 
 | File | Kind | Rule | Source |
 |---|---|---|---|
-| `tests/golden/s12/test_arch_no_vector_code.py` | Standing architecture guard (every milestone exit, from M1) | No vector code before blocker register Section 20 MR-1 is decided | Gate v10 §1, §14, suite 2; ADR-14 |
+| — | — | No drafts at present | — |
 
-The guard reads files with `ast`/regex only and imports no project code. It finds the
-repository root from `S12_REPO_ROOT`, or four levels above the file. Its self-tests
-prove each violation kind is caught (22 cases, including `scripts/`, top-level files and
-nested `pyproject.toml`), that clean code, relative imports of local modules named `lance`,
-docstrings and virtual-environment directories pass, and that the guard never flags its
-own sabotage data once installed (audit round 2 C7: the first draft did, because it
-scanned `tests/` for SQL).
-## Deletion contract — no permanent block
+**Removed 2026-09-29:** `tests/golden/s12/test_arch_no_vector_code.py` (standing guard: no vector
+code before blocker register Section 20 MR-1). MR-1 and ADR-14 were decided by the owner, so the
+guard and every reference below were removed in one change, as the deletion contract requires.
+The owner removes it from the pin list in the implementation repository.
+
+The removed guard read files with `ast`/regex only and imported no project code; its design
+(and its 22 sabotage self-tests) remain in git history for the next standing guard.
+
+## Deletion contract — no permanent block (applied 2026-09-29; kept as the pattern for the next guard)
 
 **When MR-1 is decided, delete this guard file and the gate §1 entry in the same change.**
 A guard without its gate rule, or a gate rule without its guard, is a defect. That same

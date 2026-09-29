@@ -22,6 +22,7 @@
 11. [External Event Security](#11-external-event-security)
 12. [Secret Lifecycle Management](#12-secret-lifecycle-management)
 12a. [Worker Management Security](#12a-worker-management-security)
+12b. [Memory Security](#12b-memory-security)
 13. [Security Checklist](#13-security-checklist)
 
 ---
@@ -986,6 +987,22 @@ CI pipeline runs secret scanning:
 8. **Deferred features, rules fixed now:** worker webhooks store a secret **reference** resolved through `CredentialProvider`, never the secret (I-018); webhook URLs are validated against SSRF (no private, loopback or link-local targets; https only) and dispatched through the outbox (I-020). Spawned child workers get capabilities and grants ⊆ the parent's.
 
 **Validation:** gate suite 20; `test_settings_cannot_grant_capability()`, `test_assignment_uses_original_principal()`, `test_admin_bypass_read_live_and_audited()`.
+
+---
+
+## 12b. Memory Security
+
+> **ADR-14 (DECIDED 2026-09-29):** rules for the memory phase (after S15); nothing here is implemented in S12–S15 (gate v10 §14).
+
+1. **Scope from context only.** `MemoryScope` is built from `ExecutionContext` / `PrincipalChain` (user = original principal), never from LLM output or request parameters. `MemoryFilter` can only narrow.
+2. **Isolation.** The tenant boundary is RLS (I-001). Workspace, worker, user and session boundaries are the backend's mandatory predicates. A worker reads only its own entries, the user's entries and the workspace-wide scope; it never reads another worker's memory.
+3. **Memory is not authorization.** No memory entry grants a capability, confirms an action or skips S8/S10 (FINAL_ARCHITECTURE §21, I-007).
+4. **S3 access.** Only the memory service reaches S3, with short-lived STS credentials from `CredentialProvider` (I-018) whose session policy allows only `tenants/{tenant_id}/*`. Object keys are built from the validated scope only. Block Public Access and a TLS-only bucket policy are on; the memory bucket never uses Object Lock.
+5. **Encryption.** Payloads in S3 use client-side envelope encryption with a per-tenant DEK wrapped by the KEK (`memory_tenant_keys`).
+6. **Erasure.** `delete` and `purge` remove rows and write their event in one transaction; a job deletes every S3 object version. Tenant erasure destroys the tenant DEK. `purge` is limited to owner/admin members or the off-boarding job and is audited. Every erasure is recorded in an erasure register kept outside the database backups; residual copies disappear within the 90-day erasure deadline (DATABASE §5).
+7. **Cache.** Every cache key contains the full `MemoryScope`; `purge` invalidates matching entries.
+
+**Validation:** VALIDATION.md "Memory (ADR-14)" tests.
 
 ---
 

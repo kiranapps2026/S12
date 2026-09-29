@@ -54,7 +54,7 @@ This directory contains **only the documents required to build the implementatio
 | `S12_S15_IMPLEMENTATION_PLAN.md` (v3) | Milestones M0–M21 (incl. M8a), golden tests, checkpoints |
 | `S12_SESSION0_PREFLIGHT_PROMPT.md` | Session 0 (preflight) prompt for gate v10 |
 | `s0_s11_autopilot/` | S0–S11 certification kit and runbook rulings R-Z, **R-P** (pause at S0.1) |
-| `s12_s15_golden/` | Owner-owned golden-test drafts (vector-code guard) |
+| `s12_s15_golden/` | Owner-owned golden-test drafts (none at present; the vector-code guard was removed when MR-1 was decided) and the deletion-contract pattern |
 | `SUPERSESSION_AWARE_BLOCKER_REGISTER.md` | Open, decided and deferred items; §18 (v9), §19 (v10 worker management), §20 (memory / RAG) |
 | `REPAIRS_APPLIED.md` | Change log of every documentation repair |
 | `XS-1_REGISTER_ENTRY.md`, `LAYA_DECISION_ADAPTER.md` | Resolved entry (C22) and a deferred design note |
@@ -66,7 +66,7 @@ This directory contains **only the documents required to build the implementatio
 | `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` (v1.2.1) | Worker-management design and roadmap; gate C39–C41 govern |
 | `WORKER_MGMT_SPEC_REVIEW.md` | Review, owner rulings RD-1…RD-18, audit round 2 and propagation record |
 | `MEMORY_ARCHITECTURE.md` | Worker memory (deferred; repairs pending, register §20) |
-| `ADR-14_VECTOR_MEMORY_BACKEND.md` | ADR (partially decided, owner 2026-09-29): vector backend = pgvector only, tier-2 store = Amazon S3, erasure deadline 90 days; the `MemoryScope` contract (MR-1) is still open |
+| `ADR-14_VECTOR_MEMORY_BACKEND.md` | ADR (DECIDED, owner 2026-09-29): vector backend = pgvector only, `MemoryScope` contract (memory private to its worker, RLS for the tenant boundary), tier-2 store = Amazon S3, erasure deadline 90 days; memory phase after S15 |
 | `ADAPTABILITY_PRINCIPLES.md` | Rationale for FINAL_ARCHITECTURE §37a |
 
 ### Traceability

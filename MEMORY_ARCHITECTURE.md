@@ -1,8 +1,8 @@
 # Worker Memory Architecture
 
 **Purpose**: Complete specification for how AI workers remember, forget, learn, and share state across time, sessions, and worker instances. Memory is what transforms a stateless agent into a persistent worker.
-**Status**: DEFERRED (post-S15, memory / LLM layer) — REPAIRS PENDING. Nothing here is implemented, migrated or tested in S12–S15 (gate v10 §14). **No vector code** until SUPERSESSION_AWARE_BLOCKER_REGISTER.md Section 20 MR-1 is decided (gate v10 §1).
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §21 Memory Architecture, §36 Pluggable Memory Backends, I-001, I-014, I-018, I-019; [ADR-14_VECTOR_MEMORY_BACKEND.md](ADR-14_VECTOR_MEMORY_BACKEND.md) (partially decided: pgvector only, S3; MR-1 open); [S12_S15_EXECUTION_GATE.md](S12_S15_EXECUTION_GATE.md) v10. Where this document and FINAL_ARCHITECTURE differ, FINAL_ARCHITECTURE wins (I-015).
+**Status**: DEFERRED (post-S15, memory / LLM layer) — REPAIRS PENDING. Nothing here is implemented, migrated or tested in S12–S15 (gate v10 §14). The vector store and the memory scope contract are **DECIDED** by ADR-14 (2026-09-29): pgvector in PostgreSQL only, a mandatory `MemoryScope` on every call, memory private to its worker within a workspace. Where this document's code differs (LanceDB, unscoped calls, a second interface), ADR-14 and FINAL_ARCHITECTURE §36 win; the code is rewritten in the memory phase.
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §21 Memory Architecture, §36 Pluggable Memory Backends, I-001, I-014, I-018, I-019; [ADR-14_VECTOR_MEMORY_BACKEND.md](ADR-14_VECTOR_MEMORY_BACKEND.md) (DECIDED 2026-09-29); [S12_S15_EXECUTION_GATE.md](S12_S15_EXECUTION_GATE.md) v10. Where this document and FINAL_ARCHITECTURE differ, FINAL_ARCHITECTURE wins (I-015).
 **Repair markers (2026-09-29)**: passages that conflict with the master documents carry `> **Memory repair (MR-n):**` notes (items MR-5…MR-10 in SUPERSESSION_AWARE_BLOCKER_REGISTER.md Section 20). Text is corrected only where a binding rule already decides the answer; passages that depend on MR-1 (scope contract) or MR-3 (embedding contract) are flagged, not redesigned.
 
 ---
@@ -190,7 +190,7 @@ class LongTermMemory:
 
 Workers depend on `MemoryBackend`, never on a specific implementation. LanceDB is the default vector backend; PostgreSQL handles structured data; object storage handles bulk archival.
 
-> **Superseded in part — ADR-14 Q1 (owner, 2026-09-29):** LanceDB is **not** the vector backend. The only vector backend is **pgvector in PostgreSQL** (RLS, I-001; no I-001 exception). This section, and every LanceDB reference in this document, is rewritten when ADR-14 is DECIDED; until MR-1 is decided no vector code of any kind is written (gate v10 §1). Object storage for large payloads is Amazon S3 (ADR-14 Part 3).
+> **ADR-14 (DECIDED 2026-09-29):** LanceDB is not used. The vector backend is pgvector in PostgreSQL, and the interface is the scoped async `MemoryBackend` of ADR-14 §3.1 (FINAL_ARCHITECTURE §36, DATA_CONTRACTS §54), which replaces the one below (MR-7). Every LanceDB reference and unscoped call in this document is superseded; the code stays as a behavioural sketch until the memory phase rewrites it. Object storage for large payloads is Amazon S3 (ADR-14 Part 3).
 
 | Memory Type | Primary Backend | Vector Backend | Notes |
 |-------------|----------------|----------------|-------|

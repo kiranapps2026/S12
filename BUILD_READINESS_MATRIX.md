@@ -48,7 +48,7 @@
 | 11 | `RESOLVE_LAYER.md` | COMPLETE | 2026-09-25 | Capability → Kernel → Binding → Adapter |
 | 12 | `MUTATION_SAFETY.md` | COMPLETE | 2026-09-25 | Mutation taxonomy, retry, confirmation |
 | 13 | `SKILL_FACTORY_ARCHITECTURE.md` | ABSENT | 2026-09-29 | Not in this directory (README "What's NOT Here": deferred); gate preflight item 8 checks it. Not needed for S12–S15 |
-| 14 | `MEMORY_ARCHITECTURE.md` | REPAIRS PENDING | 2026-09-29 | Worker memory, context lifecycle, cross-session state. Present since 2026-09-29; findings MR-5…MR-10 (register Section 20); vector parts blocked by MR-1. Deferred to the memory phase, not needed for S12–S15 |
+| 14 | `MEMORY_ARCHITECTURE.md` | REPAIRS PENDING | 2026-09-29 | Worker memory, context lifecycle, cross-session state. Present since 2026-09-29; findings MR-5…MR-10 (register Section 20); vector store and scope contract decided by ADR-14 (2026-09-29); the document's code is rewritten in the memory phase. Deferred to the memory phase, not needed for S12–S15 |
 
 ## Tier 3 — Required Before M1 Complete
 

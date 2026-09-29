@@ -1765,4 +1765,16 @@ class TenantRateLimiter:
 
 ---
 
+## 15. Memory Erasure and Payload Jobs (ADR-14; memory phase, after S15)
+
+| Job | Rule |
+|---|---|
+| Object deletion | Triggered by the outbox event of `delete` / `purge`; deletes the S3 object **and all its versions**; idempotent, retried with backoff; alerts if an object outlives its row beyond the retry window |
+| Orphan sweeper | Deletes S3 objects with no referencing row that are older than 24 hours (a crash between upload and commit) |
+| Crypto-shredding | Tenant erasure destroys the tenant DEK (`memory_tenant_keys.wrapped_dek` → NULL) in the purge transaction |
+| Restore replay | After any database restore, every erasure in the erasure register recorded after the backup's point in time is replayed **before** the database serves traffic |
+| Retention | Backups and archived WAL containing memory data, and noncurrent S3 versions, are gone within the 90-day erasure deadline (ADR-14 Q7; DATABASE §5) |
+
+---
+
 *End of Reliability.*

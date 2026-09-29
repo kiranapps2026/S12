@@ -1,12 +1,13 @@
 # ADR-14 — Vector Memory Backend and Tenant Isolation
 
-**Status**: DRAFT — PARTIALLY DECIDED (owner, 2026-09-29).
+**Status**: **DECIDED** (owner, 2026-09-29).
 **Decided by the owner (2026-09-29):** tier-2 object store = **Amazon S3** (Part 3; Cloudflare R2 considered and not chosen); **Q1 = Option A, pgvector only** (Part 2; Q2 is therefore moot); **Q6** = the memory service runs in the bucket's AWS region; **Q4** = erasure covers backups; **Q7** = erasure deadline **90 days** (§4a.4, §7).
-**Still open:** Part 1 (the `MemoryScope` contract, register MR-1; proposed owner decisions in §3.3), Q3, Q5, Q8. The block on vector code stays until MR-1 is DECIDED; the document changes in §5 are applied when the whole ADR is DECIDED.
+**Part 1 decided by the owner (2026-09-29):** the `MemoryScope` contract, with the §3.3 proposals accepted as written (D1 private memory within a workspace; D2 RLS for the tenant boundary only; points 1–10). Register MR-1 is DECIDED.
+**Deferred to the memory phase (non-blocking):** Q3, Q5, Q8; their recommendations are the working assumptions until the owner answers. The §5 consequences were applied on 2026-09-29, and the vector-code block was lifted in the same change (deletion contract, `s12_s15_golden/README.md`).
 **Date**: 2026-09-29
 **Register**: `SUPERSESSION_AWARE_BLOCKER_REGISTER.md` Section 13 (ADR-14) and Section 20 (Memory / RAG group, items MR-1 and MR-2)
 **Target phase**: post-S15 (memory / LLM layer). Nothing here is implemented, migrated or tested in S12–S15.
-**Blocking rule**: **no vector code** — no dependency, backend, migration, adapter or capability — is written until Part 1 of this ADR is DECIDED and propagated. Tenant isolation is chosen together with the store, because retrofitting it onto an embedded store is harder than choosing the right store up front.
+**Blocking rule (lifted 2026-09-29)**: no vector code was to be written until Part 1 of this ADR was DECIDED and propagated. Part 1 was decided on 2026-09-29 and the block lifted. Vector memory remains outside the S12–S15 phase (gate v10 §14); its target phase is the memory / LLM layer, after S15.
 
 ---
 
@@ -46,17 +47,23 @@ Following the gate's conflict-resolution principle (§3), the first driver outra
 @dataclass(frozen=True)
 class MemoryScope:
     tenant_id: str                 # always required
-    workspace_id: str              # always required
-    worker_id: str | None          # None = workspace-wide memory
-    user_id: str | None            # None = not user-specific
+    workspace_id: str              # always required (§3.3 point 1)
+    worker_id: str | None          # None = entries with no worker
+    user_id: str | None            # original principal (§3.3 point 3); None = not user-specific
     layer: Literal["L2", "L3"]     # L0/L1 are never vector-stored
+    session_id: str | None = None  # required when layer == "L2", forbidden for L3 (§3.3 point 2)
+
+@dataclass(frozen=True)
+class TenantScope:                 # accepted only by purge() (§3.3 point 1 exception)
+    tenant_id: str
 
 class MemoryBackend(Protocol):
-    async def write(self, scope: MemoryScope, entry: MemoryEntry) -> WriteResult: ...
+    async def write(self, tx: Transaction, scope: MemoryScope, entry: MemoryEntry) -> WriteResult: ...
     async def read(self, scope: MemoryScope, query: MemoryQuery) -> list[MemoryEntry]: ...
     async def search(self, scope: MemoryScope, vector: Sequence[float],
                      limit: int, filters: MemoryFilter | None = None) -> list[MemoryHit]: ...
-    async def purge(self, scope: MemoryScope) -> int: ...
+    async def delete(self, tx: Transaction, scope: MemoryScope, entry_id: str) -> bool: ...
+    async def purge(self, scope: MemoryScope | TenantScope) -> int: ...
     async def close(self) -> None: ...
 ```
 
@@ -64,7 +71,7 @@ Rules:
 
 1. **Scope is mandatory and comes from `ExecutionContext` / `PrincipalChain`, never from LLM output or request parameters.** A capability parameter can narrow the search (a `MemoryFilter`), never widen it.
 2. **The backend enforces scope itself.** Callers never pass a raw filter string that could replace it. There is no method that searches without a scope, and no cross-tenant API.
-3. **Scope matching is exact on `tenant_id` and `workspace_id`**; `worker_id` / `user_id` of `None` in the scope means "entries with no worker/user", not "any worker/user". Broader reads are separate, explicit scopes the caller must be authorized for.
+3. **Scope matching is exact on `tenant_id` and `workspace_id`**; `worker_id` / `user_id` of `None` in the scope means "entries with no worker/user", not "any worker/user". `write` and `delete` target exactly the given scope. `read` and `search` cover the **fixed read set** derived by the backend from the run's scope, and nothing else: `(worker, user)`, `(worker, no user)`, `(no worker, user)` and workspace-wide `(no worker, no user)` (§3.3 D1, points 4–5). One worker never reads another worker's entries.
 4. **Async**, consistent with adapters and runtimes.
 5. **Vectors only.** The backend never calls an embedding provider (Layer 0 cannot import Layer 1). The caller embeds first (MR-3).
 6. **`purge(scope)`** deletes everything in a scope (tenant off-boarding, erasure requests) and is audited.
@@ -80,21 +87,21 @@ Rules:
 | Path / injection risk | None (parameterized SQL) | `tenant_id` must match a strict pattern before any path is built (path traversal) |
 | Approximate-nearest-neighbour index | HNSW per partition, so filtering does not destroy recall | IVF-PQ / HNSW per tenant dataset |
 
-### 3.3 Proposed owner decisions for MR-1 (proposals, not decisions)
+### 3.3 Owner decisions for MR-1 (DECIDED 2026-09-29)
 
-**Status: PROPOSED, 2026-09-29.** Nothing in this section is decided until the owner accepts or amends it; after that it replaces the open points in §3.1 and §3.2, and MR-1 is marked DECIDED under the deletion contract (`s12_s15_golden/README.md`). The owner needs to think hard about only two items (D1, D2); the ten points below have defaults that can be accepted or amended.
+**Status: DECIDED — accepted by the owner as written, 2026-09-29.** This section is binding; §3.1 incorporates it. MR-1 is DECIDED and the vector-code block was lifted under the deletion contract (`s12_s15_golden/README.md`).
 
 **D1 — Product decision: is memory private or shared within a workspace?**
-Proposal: **private.** Worker A cannot read worker B's memory; data meant for sharing is written to the workspace-wide scope.
+Decision: **private.** Worker A cannot read worker B's memory; data meant for sharing is written to the workspace-wide scope.
 Why: widening later is additive (no column changes, no data moves; the contract simply allows more scopes to be read), while narrowing later is not (anything already shared cannot be un-shared, and workers and users may already rely on it). Private is therefore the reversible default. It also matches what a worker is: an execution context acting for a principal, not a shared session.
 
 **D2 — Hardening decision: RLS below the tenant boundary?**
-Proposal: **no.** RLS enforces the tenant boundary only (I-001); the workspace, worker, user and session boundaries are enforced by the backend's mandatory predicates built from `MemoryScope`.
+Decision: **no.** RLS enforces the tenant boundary only (I-001); the workspace, worker, user and session boundaries are enforced by the backend's mandatory predicates built from `MemoryScope`.
 Why: RLS below the tenant would have to encode the four-scope read set (point 4) and the L2 `session_id` rule (point 2) in policy SQL, which duplicates the backend's rule in a second place that must be kept in step with it. The cost is not latency (`SET LOCAL` per transaction is cheap). The boundary that must never fail, the tenant, is already enforced by the database. Adding RLS for workspace and worker later needs no schema change, because the columns exist either way.
 
-**Ten points to accept or amend**
+**Ten points (accepted)**
 
-| # | Proposal | Why |
+| # | Decision | Why |
 |---|---|---|
 | 1 | `workspace_id` is always required for `write`, `read`, `search` and `delete`; no cross-workspace memory. **Exception:** `purge` accepts a tenant-only scope (tenant off-boarding and erasure); no other method does. | Memory is written from a run, and the objects a run depends on (`workers`, `execution_runs`, `connections`, `capability_grants`) all carry a `workspace_id` (DATABASE.md), so every memory entry has a well-defined workspace. Not every table carries one: many are scoped by tenant only. |
 | 2 | Add `session_id` to `MemoryScope`: required when `layer = "L2"`, forbidden for L3. | L2 is session memory by definition (FINAL_ARCHITECTURE §21). |
@@ -185,7 +192,7 @@ A shared cache (Redis) is out of scope until the fleet phase (gate §1; MEMORY_A
 
 ---
 
-## 5. Consequences (Option A decided; applied when the whole ADR is DECIDED)
+## 5. Consequences (applied 2026-09-29)
 
 | Document | Change |
 |---|---|
@@ -238,10 +245,9 @@ The question numbers are stable (other documents cite them). They are listed in 
 
 **The memory bucket never uses Object Lock, whatever Q4, Q7 or Q8 say:** live erasure (`purge`, Part 1) and the deletion job must always be able to delete objects and their versions (Q4, Q7). (Destroying a tenant key would make locked ciphertext unreadable, but the lock would still block deletion itself.) Only Q8 can add Object Lock, and only on a separate bucket with its own access controls, lifecycle and audit trail, which the memory service never writes to.
 
-**Owner input still needed:**
+**Owner input remaining (none blocking):**
 
 | Priority | Item | Why |
 |---|---|---|
-| 1 | **Part 1 — `MemoryScope` contract (register MR-1)**: accept or amend the proposals in §3.3 (D1 private memory, D2 no RLS below the tenant, points 1–10) | With Q1 answered, this is the only decision that still gates vector code; deciding it lifts the block under the deletion contract (`s12_s15_golden/README.md`) |
-| — | Q3, Q5, Q8 | Can be answered on technical merit and do not block the next session; Q5 should be revisited after the first memory-service load test |
-| Done | Q1, Q6, Q4, Q7 (owner, 2026-09-29); Q2 moot | — |
+| — | Q3, Q5, Q8 | Deferred to the memory phase; they can be answered on technical merit and block nothing; Q5 should be revisited after the first memory-service load test |
+| Done | Part 1 / MR-1 (§3.3), Q1, Q6, Q4, Q7 (owner, 2026-09-29); Q2 moot | — |
