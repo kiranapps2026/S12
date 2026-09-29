@@ -32,7 +32,6 @@ LAYER_ORDER = {
     "engine/execution": 5,
     "engine/reliability": 6,
     "engine/providers": 7,
-    "engine/observability": 8,
     "adapters": 9,  # outermost: depends on everything above, nothing depends on it
 }
 

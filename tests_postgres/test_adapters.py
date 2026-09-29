@@ -305,3 +305,67 @@ def test_activation_needs_a_real_tenant_workspace_pair(pg):
             with pytest.raises(DependencyUnavailable):
                 await reader.read(tenant, ws)
     pg(body)
+
+
+# ---- stage event log --------------------------------------------------------------------
+
+def _event(tenant=A, stage="S3", status="normal", reason=None):
+    from contracts.stage_events import StageEvent
+    return StageEvent(stage=stage, status=status, reason=reason, duration_ms=1.5,
+                      trace_id="tr-1", request_id="rq-1", tenant_id=tenant)
+
+
+def test_events_are_stored_and_tenant_isolated(pg):
+    from adapters.postgres.events import PostgresEventSink
+
+    async def body(db):
+        sink = PostgresEventSink(db)
+        await sink.emit(_event(A, "S3"))
+        await sink.emit(_event(B, "S4", "deny", "why"))
+        async with db.tenant_transaction(A) as c:
+            a = [dict(r) for r in await c.fetch("SELECT tenant_id, stage, status, reason FROM pipeline_events")]
+        async with db.tenant_transaction(B) as c:
+            b = [dict(r) for r in await c.fetch("SELECT tenant_id, stage, status, reason FROM pipeline_events")]
+        async with db.tenant_transaction(None) as c:
+            none = await c.fetchval("SELECT count(*) FROM pipeline_events")
+        return a, b, none
+    a, b, none = pg(body)
+    assert a == [{"tenant_id": A, "stage": "S3", "status": "normal", "reason": None}]
+    assert b == [{"tenant_id": B, "stage": "S4", "status": "deny", "reason": "why"}]
+    assert none == 0
+
+
+def test_an_event_without_a_tenant_is_accepted_but_a_forged_tenant_is_not(pg):
+    from adapters.postgres.events import PostgresEventSink
+
+    async def body(db):
+        sink = PostgresEventSink(db)
+        await sink.emit(_event(None, "S0", "deny", "missing_tenant_id"))      # allowed: S0 stopped early
+        async with db.tenant_transaction(A) as c:                               # cannot write another tenant's row
+            with pytest.raises(Exception):
+                await c.execute("INSERT INTO pipeline_events (tenant_id, stage, status, duration_ms)"
+                                " VALUES ('tenant-b', 'S3', 'normal', 1)")
+    pg(body)
+
+
+def test_the_event_log_is_append_only_for_the_application_role(pg):
+    from adapters.postgres.events import PostgresEventSink
+
+    async def body(db):
+        await PostgresEventSink(db).emit(_event())
+        for sql in ("UPDATE pipeline_events SET status = 'deny'", "DELETE FROM pipeline_events"):
+            async with db.tenant_transaction(A) as c:
+                with pytest.raises(Exception, match="permission denied"):
+                    await c.execute(sql)
+        async with db.tenant_transaction(A) as c:
+            return await c.fetchval("SELECT count(*) FROM pipeline_events")
+    assert pg(body) == 1
+
+
+def test_an_invalid_status_is_rejected_by_the_database(pg):
+    from adapters.postgres.events import PostgresEventSink
+
+    async def body(db):
+        with pytest.raises(Exception):
+            await PostgresEventSink(db).emit(_event(status="approved"))
+    pg(body)

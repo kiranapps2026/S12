@@ -66,6 +66,20 @@ class StaticActivation:
             workspace_activation_at=self.workspace_activation_at)
 
 
+class InMemoryEvents:
+    """Fixture EventSink: records every stage event; `fail` makes emit raise."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+        self.fail = False
+        self.fail_on_stage: str | None = None
+
+    async def emit(self, event):
+        if self.fail or event.stage == self.fail_on_stage:
+            raise RuntimeError("ledger down")
+        self.events.append(event)
+
+
 class StaticScopes:
     """Fixture RunScopeFactory: the same scope for every tenant."""
 
@@ -89,6 +103,7 @@ def make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies
         confirmation_store=scenario.confirmation_store,
         suspended=InMemorySuspendedRuns(),
         activation=StaticActivation(),
+        events=InMemoryEvents(),
     )
 
 

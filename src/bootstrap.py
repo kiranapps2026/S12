@@ -5,6 +5,7 @@ from adapters.postgres.activation import PostgresActivationReader
 from adapters.postgres.api_keys import PostgresApiKeyAuthenticator
 from adapters.postgres.confirmations import PostgresConfirmationStore
 from adapters.postgres.database import Database
+from adapters.postgres.events import PostgresEventSink
 from adapters.postgres.registry import PostgresCapabilityRegistry
 from adapters.postgres.scope import PostgresRunScopes
 from adapters.postgres.suspended_runs import PostgresSuspendedRunStore
@@ -37,4 +38,5 @@ def build_runner(database: Database, intent_model: IntentModel) -> PipelineRunne
         confirmation_store=PostgresConfirmationStore(database),
         suspended=PostgresSuspendedRunStore(database),
         activation=PostgresActivationReader(database),
+        events=PostgresEventSink(database),
     ))

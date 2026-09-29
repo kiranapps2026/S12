@@ -127,8 +127,8 @@ def test_database_outage_fails_closed(pg):
 
 
 def test_pool_failure_after_authentication_never_runs_the_pipeline(pg):
-    """The database goes away after authentication: S0.1 cannot read the activation state,
-    so the request is denied at S0 and nothing after S0 ran."""
+    """The database goes away after authentication: S0's event cannot be recorded, so the run
+    ends in ERROR at S0 and nothing after S0 ran."""
     async def body(db):
         runner = build_runner(db, EchoIntentModel())
         from tests.fixtures.pipeline import make_entry
@@ -138,7 +138,7 @@ def test_pool_failure_after_authentication_never_runs_the_pipeline(pg):
         return await runner.run(entry)
     result = pg(body)
     assert (result.status.value, result.reason, result.stages_run) == (
-        "DENY", "activation_state_unavailable", ("S0",))
+        "ERROR", "ledger_unavailable", ("S0",))
 
 
 # ---- confirmation reply over HTTP, real database ----------------------------------------------
@@ -270,3 +270,26 @@ def test_paused_tenant_and_scheduled_activation_over_http(pg):
 def test_a_pause_on_another_tenant_does_not_affect_this_one(pg):
     _, j, _ = _scenario(pg, "contact.list", "UPDATE tenants SET paused_until = now() + interval '1 hour' WHERE tenant_id = 'tenant-b'")
     assert j["status"] == "NORMAL"
+
+
+def test_a_run_leaves_an_ordered_event_trail_per_tenant(pg):
+    async def body(db):
+        auth = PostgresApiKeyAuthenticator(db)
+        keys = {t: await auth.issue(_principal(t)) for t in ("tenant-a", "tenant-b")}
+        app = create_app(pipeline=build_runner(db, EchoIntentModel()), authenticator=auth)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+            ok = (await _start(client, keys["tenant-a"], "contact.list"))
+            bad = (await _start(client, keys["tenant-b"], "contact.teleport"))
+        rows = {}
+        for t in ("tenant-a", "tenant-b"):
+            async with db.tenant_transaction(t) as c:
+                rows[t] = [dict(r) for r in await c.fetch(
+                    "SELECT stage, status, reason, trace_id FROM pipeline_events ORDER BY event_id")]
+        return ok, bad, rows
+    ok, bad, rows = pg(body)
+    assert [r["stage"] for r in rows["tenant-a"]] == ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"]
+    assert {r["status"] for r in rows["tenant-a"]} == {"normal"}
+    assert len({r["trace_id"] for r in rows["tenant-a"]}) == 1 and ok["trace_id"] == rows["tenant-a"][0]["trace_id"]
+    assert [(r["stage"], r["status"], r["reason"]) for r in rows["tenant-b"]][-1] == ("S2", "clarify", "intent_unclear")
+    assert not any(r["stage"] == "S3" for r in rows["tenant-b"])
+

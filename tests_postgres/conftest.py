@@ -49,7 +49,9 @@ async def _rebuild(url: str) -> None:
     try:
         await connection.execute(
             f"GRANT USAGE ON SCHEMA public TO {APP_ROLE};"
-            f"GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO {APP_ROLE}")
+            f"GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO {APP_ROLE};"
+            f"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {APP_ROLE};"
+            f"REVOKE UPDATE ON pipeline_events FROM {APP_ROLE}")     # the event log is append-only
     finally:
         await connection.close()
 

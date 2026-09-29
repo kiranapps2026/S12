@@ -11,6 +11,8 @@ Source: DATA_CONTRACTS.md §2, PIPELINE_STAGES.md §11, RUNBOOK R-C/R-I/R-N
 - Enforcement does not trust a handler's status alone: after S7, S8, S10 and S11 the
   runner checks the stage's own output and stops the run if it says "no".
 - Dependencies arrive from one composition root, build_pipeline(); there are no globals.
+- Every stage outcome is written to the event log (EventSink); if a stage's event cannot be
+  recorded the run stops with ERROR ledger_unavailable, so no progress goes unaudited.
 - S0.1 (activation check) runs right after S0, before anything else, and on every reply.
 - Tenant-specific dependencies (live kill switch, RLS-bound authorization state, policy
   versions) are resolved once per run, right after S0 identified the tenant, through the
@@ -29,6 +31,7 @@ from contracts.capability import CapabilityRegistry
 from contracts.intent_model import IntentModel
 from contracts.errors import UnknownConfirmation
 from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE, PipelineState
+from contracts.stage_events import EventSink, StageEvent
 from contracts.suspended_runs import SuspendedRunStore
 from contracts.safety import PathDecision
 from contracts.stage_registry import StageStatus
@@ -62,6 +65,7 @@ class PipelineDependencies:
     confirmation_store: ConfirmationStore
     suspended: SuspendedRunStore
     activation: ActivationStateReader
+    events: EventSink
 
 
 @dataclass(frozen=True)
@@ -145,24 +149,27 @@ class PipelineRunner:
             state = await s0(entry)
         except Exception as exc:  # noqa: BLE001 — becomes ERROR, never escapes
             logger.exception("S0 failed")
-            return self._result(PipelineState(), "S0", StageStatus.ERROR,
-                                type(exc).__name__, stages, start)
+            return await self._finish(PipelineState(), "S0", StageStatus.ERROR,
+                                      type(exc).__name__, stages, start)
         stages.append("S0")
         stop = self._stop_check("S0", state)
         if stop is not None or stop_after == "S0":
-            return self._result(state, "S0", *(stop or (StageStatus.NORMAL, None)), stages, start)
+            return await self._finish(state, "S0", *(stop or (StageStatus.NORMAL, None)), stages, start)
+        if not await self._record(state, "S0", StageStatus.NORMAL, None, start):
+            return await self._finish(state, "S0", StageStatus.ERROR, "ledger_unavailable",
+                                      stages, start, record=False)
 
         # S0.1: a paused / not-yet-active tenant or workspace runs no S1–S11 work
         denied = await activation_denial(state, self._deps.activation)
         if denied is not None:
-            return self._result(state.with_status(StageStatus.DENY, denied), "S0",
-                                StageStatus.DENY, denied, stages, start)
+            return await self._finish(state.with_status(StageStatus.DENY, denied), "S0.1",
+                                      StageStatus.DENY, denied, stages, start, final_stage="S0")
 
         try:
             scope = await self._scope_for(state)
-        except Exception as exc:  # noqa: BLE001 — fail closed: no scope, no run
+        except Exception:  # noqa: BLE001 — fail closed: no scope, no run
             logger.exception("Run scope unavailable")
-            return self._result(state, "S0", StageStatus.ERROR, "scope_unavailable", stages, start)
+            return await self._finish(state, "S0", StageStatus.ERROR, "scope_unavailable", stages, start)
         result = await self._run_from(state, self.handlers(scope), PRE_EXECUTION_SEQUENCE[1:],
                                       stages, start, stop_after)
         if (result.final_stage == "S10" and result.status is StageStatus.CLARIFY
@@ -187,27 +194,32 @@ class PipelineRunner:
             raise UnknownConfirmation(confirmation_id)
         denied = await activation_denial(suspended, self._deps.activation)   # S0.1 applies to replies
         if denied is not None:
-            return self._result(suspended, "S0", StageStatus.DENY, denied, stages, start)
+            return await self._finish(suspended, "S0.1", StageStatus.DENY, denied, stages, start,
+                                      final_stage="S0")
         try:
             if not approved:
                 rejected = await self._deps.confirmation_store.reject(
                     confirmation_id, tenant_id=tenant_id, user_id=user_id)
                 reason = "confirmation_rejected" if rejected else "confirmation_mismatch"
-                return self._result(suspended, "S10", StageStatus.DENY, reason, stages, start)
+                return await self._finish(suspended, "S10", StageStatus.DENY, reason, stages, start)
             scope = await self._scope_for(suspended)
             stale = await recheck_safety(suspended, scope.s8)
             if stale is not None:
-                return self._result(suspended, "S8", StageStatus.DENY, stale[0], stages, start)
+                return await self._finish(suspended, "S8", StageStatus.DENY, stale[0], stages, start)
             state = await resume_confirmation(suspended, self._deps.confirmation_store, user_id=user_id)
         except Exception as exc:  # noqa: BLE001 — becomes ERROR, never escapes
             logger.exception("Confirmation reply failed")
-            return self._result(suspended, "S10", StageStatus.ERROR, type(exc).__name__, stages, start)
+            return await self._finish(suspended, "S10", StageStatus.ERROR, type(exc).__name__, stages, start)
         if state.stage_status is not StageStatus.NORMAL:
-            return self._result(state, "S10", state.stage_status or StageStatus.ERROR,
-                                state.deny_reason, stages, start)
+            return await self._finish(state, "S10", state.stage_status or StageStatus.ERROR,
+                                      state.deny_reason, stages, start)
         stop = self._stop_check("S10", state)
         if stop is not None:
-            return self._result(state, "S10", *stop, stages, start)
+            return await self._finish(state, "S10", *stop, stages, start)
+        # the confirmation was consumed: record that step, then run S11
+        if not await self._record(state, "S10", StageStatus.NORMAL, None, start):
+            return await self._finish(state, "S10", StageStatus.ERROR, "ledger_unavailable",
+                                      stages, start, record=False)
         return await self._run_from(state, self.handlers(scope), ("S11",), stages, start, None)
 
     async def _suspend(self, result: PipelineRunResult) -> PipelineRunResult:
@@ -221,8 +233,8 @@ class PipelineRunner:
                 confirmation_id=state.confirmation.confirmation.confirmation_id)
         except Exception:  # noqa: BLE001
             logger.exception("Suspended run could not be stored")
-            return dataclasses.replace(result, status=StageStatus.ERROR,
-                                       reason="suspended_run_unrecorded")
+            return await self._finish(state, "S10", StageStatus.ERROR, "suspended_run_unrecorded",
+                                      list(result.stages_run), time.monotonic())
         return result
 
     async def _run_from(self, state: PipelineState, handlers: dict[str, StageHandler],
@@ -231,20 +243,61 @@ class PipelineRunner:
         final_stage = stages[-1] if stages else "S0"
         for stage_id in sequence:
             final_stage = stage_id
+            began = time.monotonic()
             try:
                 state = await handlers[stage_id](state)
             except Exception as exc:  # noqa: BLE001 — becomes ERROR, never escapes
                 logger.exception("Stage %s raised", stage_id)
-                return self._result(state, stage_id, StageStatus.ERROR,
-                                    type(exc).__name__, stages, start)
+                return await self._finish(state, stage_id, StageStatus.ERROR,
+                                          type(exc).__name__, stages, start)
             stages.append(stage_id)
             stop = self._stop_check(stage_id, state)
+            status, reason = stop if stop is not None else (StageStatus.NORMAL, None)
+            # every stage outcome is recorded; if it cannot be, nothing further runs
+            if not await self._record(state, stage_id, status, reason, began) and stop is None:
+                return await self._finish(state, stage_id, StageStatus.ERROR, "ledger_unavailable",
+                                          stages, start, record=False)
             if stop is not None:
                 logger.info("Run stopped at %s: %s (%s)", stage_id, stop[0], stop[1])
-                return self._result(state, stage_id, *stop, stages, start)
+                return await self._finish(state, stage_id, *stop, stages, start, record=False)
             if stop_after == stage_id:
                 break
-        return self._result(state, final_stage, StageStatus.NORMAL, None, stages, start)
+        return await self._finish(state, final_stage, StageStatus.NORMAL, None, stages, start,
+                                  record=False)
+
+    async def _record(self, state: PipelineState, stage: str, status: StageStatus,
+                      reason: str | None, began: float) -> bool:
+        """Write one stage event. Returns False if it could not be written."""
+        ctx = state.execution_context if isinstance(state, PipelineState) else None
+        entry = state.entry_request if isinstance(state, PipelineState) else None
+        event = StageEvent(
+            stage=stage,
+            status=status.value.lower() if status.value in ("NORMAL", "CLARIFY", "DENY", "ERROR") else "error",
+            reason=reason,
+            duration_ms=(time.monotonic() - began) * 1000,
+            trace_id=ctx.trace_id if ctx else None,
+            request_id=ctx.request_id if ctx else None,
+            tenant_id=ctx.tenant_id if ctx else (entry.tenant_id if entry and entry.tenant_id else None),
+        )
+        try:
+            await self._deps.events.emit(event)
+        except Exception:  # noqa: BLE001
+            logger.exception("Stage event could not be recorded (stage=%s)", stage)
+            return False
+        return True
+
+    async def _finish(self, state: PipelineState, stage_id: str, status: StageStatus,
+                      reason: str | None, stages: list[str], start: float, *,
+                      final_stage: str | None = None, record: bool = True) -> PipelineRunResult:
+        """Build the result; unless the caller already recorded it, record its stage event
+        first (a NORMAL result whose event cannot be written becomes ERROR)."""
+        if record and not await self._record(state, stage_id, status, reason, start):
+            if status is StageStatus.NORMAL:
+                status, reason = StageStatus.ERROR, "ledger_unavailable"
+        return PipelineRunResult(
+            final_state=state, final_stage=final_stage or stage_id, status=status, reason=reason,
+            stages_run=tuple(stages), duration_ms=(time.monotonic() - start) * 1000,
+        )
 
     @staticmethod
     def _stop_check(stage_id: str, state) -> tuple[StageStatus, str | None] | None:
@@ -256,14 +309,6 @@ class PipelineRunner:
         if status is not StageStatus.NORMAL:
             return status, state.deny_reason
         return _enforce(stage_id, state)
-
-    @staticmethod
-    def _result(state: PipelineState, stage_id: str, status: StageStatus, reason: str | None,
-                stages: list[str], start: float) -> PipelineRunResult:
-        return PipelineRunResult(
-            final_state=state, final_stage=stage_id, status=status, reason=reason,
-            stages_run=tuple(stages), duration_ms=(time.monotonic() - start) * 1000,
-        )
 
 
 def build_pipeline(deps: PipelineDependencies) -> PipelineRunner:
