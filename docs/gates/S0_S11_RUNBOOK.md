@@ -361,8 +361,11 @@ step count. Missing metadata → StageStatus DENY `capability_metadata_missing`.
 - `risk = frozen_binding.effective_risk`
 - `mutations = (frozen_binding.effective_mutation,) * steps_estimated` (tuple)
 - `cost = capability.cost * steps_estimated`
-- `requires_confirmation = ("IRREVERSIBLE" in mutations) or ("D" in mutations and
-  capability.cost > 5) or (cost > 20) or (risk > 0.7)`
+- `requires_confirmation = ("IRREVERSIBLE" in mutations) or ("D" in mutations) or
+  (cost > 20) or (risk > 0.7)`
+Every D and IRREVERSIBLE plan is confirmed, whatever its cost or risk (amended: PIPELINE_STAGES
+§12 "never execute D/IRREVERSIBLE unconfirmed" wins over the older DATA_CONTRACTS §7 "D only
+above cost 5"). Cross-provider (3+) cannot occur: one binding, one provider (R-U).
 Comparisons are strict (`>`). The cost rule is S6's job; "enforced at S12" is wrong.
 
 R-T. **Write order and scenario fixtures.**
@@ -879,7 +882,7 @@ tests/contracts/test_pipeline_state.py::test_write_order_enforced
 tests/stages/test_s7_path_routing.py::test_s7_routing_table
 tests/stages/test_s7_path_routing.py::test_s7_never_emits_agentic
 tests/stages/test_s6_task_profile.py::test_s6_copies_risk_and_mutations_from_frozen_binding
-tests/stages/test_s6_task_profile.py::test_s6_confirmation_table      (9 cases)
+tests/stages/test_s6_task_profile.py::test_s6_confirmation_table      (10 cases)
 tests/stages/test_s7_path_routing.py::test_s7_threshold_unavailable_denies
 tests/stages/test_s9_plan_creation.py::test_s9_plan_shape
 tests/stages/test_s9_plan_creation.py::test_s9_uses_frozen_risk_when_task_profile_tampered
@@ -938,7 +941,8 @@ from tests.fixtures.states import state_ready_for
 CASES = [  # id, mutation, risk, cost_per_step, steps, expected
     ("irreversible",            "IRREVERSIBLE", 0.1, 1, 1, True),
     ("delete_cost_6",           "D",            0.3, 6, 1, True),
-    ("delete_cost_5_boundary",  "D",            0.3, 5, 1, False),
+    ("delete_cost_5_confirmed", "D",            0.3, 5, 1, True),    # R-V amended: D is always confirmed
+    ("delete_cost_1_low_risk", "D",            0.1, 1, 1, True),
     ("write_cost_6_not_delete", "W",            0.3, 6, 1, False),
     ("total_cost_21",           "W",            0.3, 7, 3, True),
     ("total_cost_20_boundary",  "W",            0.3, 5, 4, False),

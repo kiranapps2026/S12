@@ -21,7 +21,8 @@ from tests.fixtures.states import run_stage, state_ready_for
 CASES = [  # id, mutation, risk, cost_per_step, steps, expected requires_confirmation
     ("irreversible",            "IRREVERSIBLE", 0.1, 1, 1, True),
     ("delete_cost_6",           "D",            0.3, 6, 1, True),
-    ("delete_cost_5_boundary",  "D",            0.3, 5, 1, False),
+    ("delete_cost_5_confirmed", "D",            0.3, 5, 1, True),    # R-V amended: D is always confirmed
+    ("delete_cost_1_low_risk", "D",            0.1, 1, 1, True),
     ("write_cost_6_not_delete", "W",            0.3, 6, 1, False),
     ("total_cost_21",           "W",            0.3, 7, 3, True),
     ("total_cost_20_boundary",  "W",            0.3, 5, 4, False),

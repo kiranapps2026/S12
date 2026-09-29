@@ -43,20 +43,20 @@ async def handle(state: PipelineState) -> PipelineState:
     if context is None:
         raise TaskProfileAssemblyError("No ExecutionContext from S0")
 
-    # Confirmation per DATA_CONTRACTS §7 — full 4-rule table (R-V):
-    #   Rule 1: IRREVERSIBLE mutation → always confirm
-    #   Rule 2: effective_risk > 0.7 → confirm
-    #   Rule 3: DELETE + per_step_cost > 5 → confirm
-    #   Rule 4: total_cost (per_step_cost * steps_estimated) > 20 → confirm
+    # Confirmation (R-V, amended): D and IRREVERSIBLE are NEVER executed without confirmation
+    # (PIPELINE_STAGES §12 wins over the older DATA_CONTRACTS §7 "D only above cost 5").
+    #   Rule 1: any D or IRREVERSIBLE mutation -> confirm, whatever the cost or risk
+    #   Rule 2: effective_risk > 0.7 -> confirm
+    #   Rule 3: total_cost (per_step_cost * steps_estimated) > 20 -> confirm
+    # Comparisons are strict. Cross-provider (3+) cannot occur: one binding, one provider (R-U).
     graph_analysis = state.graph_analysis
     capability_match = state.capability_match
     per_step_cost = capability_match.estimated_cost_units if capability_match else 1
     steps_est = len(graph_analysis.execution_steps) if (graph_analysis and graph_analysis.execution_steps) else 1
     total_cost = per_step_cost * steps_est
     requires_confirmation = (
-        frozen.effective_mutation == "IRREVERSIBLE"
+        frozen.effective_mutation in ("D", "IRREVERSIBLE")
         or frozen.effective_risk > 0.7
-        or (frozen.effective_mutation == "D" and per_step_cost > 5)
         or total_cost > 20
     )
 
