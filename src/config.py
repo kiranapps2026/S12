@@ -80,6 +80,9 @@ class Settings(BaseSettings):
 
     # === Secrets ===
     deepseek_api_key: str = ""
+    # Key-encryption key for webhook signing secrets: 32 random bytes, base64 (never in the database)
+    webhook_kek: str = ""
+    webhook_kek_version: int = 1
 
     # === HTTP ===
     cors_origins: str = ""  # comma-separated allowed origins; empty = no CORS

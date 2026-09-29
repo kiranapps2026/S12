@@ -56,6 +56,7 @@ async def handle(entry: EntryRequest) -> PipelineState:
         conversation_id=entry.conversation_id,
         connection_id=entry.connection_id,
         idempotency_key=entry.idempotency_key,
+        task_id=entry.event_id,          # EVENT_DRIVEN: the gateway's event id; else assigned at S2
         resource_scope=entry.resource_scope,
         tags=frozenset(entry.tags),
     )

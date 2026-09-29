@@ -36,7 +36,7 @@ def _production_lifespan(database_url: str, intent_model: IntentModel | None):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         from adapters.postgres.database import Database
-        from bootstrap import build_authenticator, build_intent_model, build_runner
+        from bootstrap import build_authenticator, build_intent_model, build_runner, build_webhook_gateway
         from contracts.errors import DependencyUnavailable
         from contracts.stage_registry import validate_stage_order
 
@@ -64,6 +64,7 @@ def _production_lifespan(database_url: str, intent_model: IntentModel | None):
 
             app.state.database = database
             app.state.authenticator = build_authenticator(database)
+            app.state.webhooks = build_webhook_gateway(database, settings)
             app.state.pipeline = build_runner(database, model) if model is not None else None
             if app.state.pipeline is None:
                 logger.warning("No intent model configured (DEEPSEEK_API_KEY): /execute answers 503")
@@ -75,6 +76,7 @@ def _production_lifespan(database_url: str, intent_model: IntentModel | None):
             logger.info("Shutting down SuprAgents API...")
             app.state.pipeline = None
             app.state.authenticator = None
+            app.state.webhooks = None
             app.state.database = None
             await database.close()
             logger.info("Shutdown complete")
@@ -88,11 +90,11 @@ async def _static_lifespan(app: FastAPI):
     yield
 
 
-def create_app(pipeline=None, authenticator=None, *, database_url: str | None = None,
-               intent_model: IntentModel | None = None,
+def create_app(pipeline=None, authenticator=None, *, webhooks=None,
+               database_url: str | None = None, intent_model: IntentModel | None = None,
                cors_origins: tuple[str, ...] = ()) -> FastAPI:
     """Create the FastAPI application (see the module docstring)."""
-    if database_url and (pipeline is not None or authenticator is not None):
+    if database_url and (pipeline is not None or authenticator is not None or webhooks is not None):
         raise ValueError("pass either database_url or injected pipeline/authenticator, not both")
 
     app = FastAPI(
@@ -103,6 +105,7 @@ def create_app(pipeline=None, authenticator=None, *, database_url: str | None = 
     )
     app.state.pipeline = pipeline
     app.state.authenticator = authenticator
+    app.state.webhooks = webhooks
     app.state.database = None
 
     if cors_origins:

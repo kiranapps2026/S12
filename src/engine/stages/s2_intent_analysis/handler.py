@@ -113,7 +113,7 @@ async def handle(state: PipelineState, model: IntentModel | None,
             raw_llm_output=completion.text,
             attempt=attempt,
         )
-        state = state.replace_context("S2", task_id=str(uuid.uuid4()))  # R-M
+        state = state.replace_context("S2", task_id=state.execution_context.task_id or str(uuid.uuid4()))  # R-M; EVENT_DRIVEN keeps event_id
         state = state.with_stage_output("S2", result)
         if result.intent_type == INTENT_PROHIBITED:
             return state.with_status(StageStatus.DENY, "intent_prohibited")

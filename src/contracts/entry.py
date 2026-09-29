@@ -23,3 +23,4 @@ class EntryRequest:
     idempotency_key: str = ""
     resource_scope: str = ""
     tags: frozenset = frozenset()
+    event_id: str | None = None   # set by the event gateway only: becomes task_id (EVENT_DRIVEN)
