@@ -13,17 +13,20 @@ from adapters.postgres.scope import PostgresRunScopes
 from adapters.runtime.circuit_breaker import InProcessCircuitBreaker
 from app import create_app
 from contracts.principal import Principal
-from contracts.stage_outputs import IntentResult
 from engine.control_plane.pipeline_state_runner import PipelineDependencies, build_pipeline
 
 
-class EchoIntentLLM:
-    """Test LLM: the message text IS the intent name (e.g. "contact.list")."""
+class EchoIntentModel:
+    """Test IntentModel: the message text IS the intent name (e.g. "contact.list"); if the
+    registry does not offer it, the answer is "unknown" like a real constrained model."""
 
-    async def analyze_intent(self, sanitized_input):
-        intent = sanitized_input.get("message", "")
-        return IntentResult(intent_type=intent, target_entities=("default",), operations=(intent,),
-                            parameters={"steps": 1}, is_workflow=False, confidence=0.95)
+    async def complete(self, text, intents, feedback):
+        import json
+        from contracts.intent_model import IntentCompletion
+        intent = text if text in intents else "unknown"
+        return IntentCompletion(
+            text=json.dumps({"intent": intent, "confidence": 0.95, "parameters": {}}),
+            model="echo", total_tokens=1)
 
 
 def _principal(tenant):
@@ -36,7 +39,7 @@ def _scenario(pg, intent, *setup_sql, tenant="tenant-a", key_of=None, headers=No
         auth = PostgresApiKeyAuthenticator(db)
         keys = {t: await auth.issue(_principal(t)) for t in ("tenant-a", "tenant-b")}
         deps = PipelineDependencies(
-            llm=EchoIntentLLM(), registry=PostgresCapabilityRegistry(db),
+            intent_model=EchoIntentModel(), registry=PostgresCapabilityRegistry(db),
             scopes=PostgresRunScopes(db, InProcessCircuitBreaker()),
             confirmation_store=PostgresConfirmationStore(db))
         app = create_app(pipeline=build_pipeline(deps), authenticator=auth)
@@ -103,7 +106,12 @@ def test_risk_above_threshold_is_denied_at_s7(pg):
 
 def test_unknown_intent_asks_for_clarification(pg):
     _, j, _ = _scenario(pg, "contact.teleport")
-    assert (j["status"], j["final_stage"], j["reason"]) == ("CLARIFY", "S3", "no_capability")
+    assert (j["status"], j["final_stage"], j["reason"]) == ("CLARIFY", "S2", "intent_unclear")
+
+
+def test_intent_of_a_disabled_capability_is_not_offered_to_the_model(pg):
+    _, j, _ = _scenario(pg, "contact.list", "UPDATE capabilities SET truth_state = 'DRAFT' WHERE intent = 'contact.list'")
+    assert (j["final_stage"], j["reason"]) == ("S2", "intent_unclear")
 
 
 def test_bad_or_missing_key_is_401(pg):
@@ -116,7 +124,7 @@ def test_database_outage_fails_closed(pg):
         auth = PostgresApiKeyAuthenticator(db)
         key = await auth.issue(_principal("tenant-a"))
         deps = PipelineDependencies(
-            llm=EchoIntentLLM(), registry=PostgresCapabilityRegistry(db),
+            intent_model=EchoIntentModel(), registry=PostgresCapabilityRegistry(db),
             scopes=PostgresRunScopes(db, InProcessCircuitBreaker()),
             confirmation_store=PostgresConfirmationStore(db))
         app = create_app(pipeline=build_pipeline(deps), authenticator=auth)
@@ -132,7 +140,7 @@ def test_pool_failure_after_authentication_never_runs_the_pipeline(pg):
     """Key resolves, then the scope read fails: ERROR at S0, nothing after S0 ran."""
     async def body(db):
         deps = PipelineDependencies(
-            llm=EchoIntentLLM(), registry=PostgresCapabilityRegistry(db),
+            intent_model=EchoIntentModel(), registry=PostgresCapabilityRegistry(db),
             scopes=PostgresRunScopes(db, InProcessCircuitBreaker()),
             confirmation_store=PostgresConfirmationStore(db))
         runner = build_pipeline(deps)

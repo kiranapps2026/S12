@@ -50,6 +50,16 @@ class PostgresCapabilityRegistry(CapabilityRegistry):
                                           intent.get("intent_type", ""))
         return [_metadata(r) for r in rows]
 
+    async def known_intents(self, tenant_id: str) -> tuple[str, ...]:
+        async with self._db.transaction() as connection:
+            rows = await connection.fetch("""
+                SELECT DISTINCT c.intent
+                  FROM capabilities c
+                  JOIN bindings b ON b.capability_id = c.capability_id AND b.is_active
+                  JOIN kernel_ops k ON k.kernel_op_id = b.kernel_op_id AND k.truth_state = 'PRODUCTION_ENABLED'
+                 WHERE c.truth_state = 'PRODUCTION_ENABLED' ORDER BY c.intent""")
+        return tuple(r["intent"] for r in rows)
+
     async def get_capability(self, capability_id: str) -> CapabilityMetadata | None:
         async with self._db.transaction() as connection:
             rows = await connection.fetch(_BEST_BINDING.format(where="c.capability_id = $1"),

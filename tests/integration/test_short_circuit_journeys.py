@@ -15,7 +15,7 @@ from engine.control_plane.pipeline_state_runner import build_pipeline
 from tests.fixtures.deps import ConfigurableAuthState, make_s8_deps
 from tests.fixtures.pipeline import make_entry, make_pipeline_deps, run_pipeline
 from tests.fixtures.scenarios import make_scenario
-from tests.fixtures.states import _ScenarioDrivenLLM
+from tests.fixtures.states import ScenarioIntentModel
 
 REQ = {"message": "do it", "connection_id": "conn-1"}
 
@@ -28,28 +28,16 @@ def _assert_no_output_after(result, stage):
     assert stage not in later and all(s not in result.stages_run for s in later)
 
 
-class _CannedLLM(_ScenarioDrivenLLM):
-    """Mock LLM with a canned intent_type (S2 is never bypassed)."""
-
-    def __init__(self, scenario, intent_type):
-        super().__init__(scenario)
-        self._intent_type = intent_type
-
-    async def analyze_intent(self, sanitized_input):
-        base = await super().analyze_intent(sanitized_input)
-        return dataclasses.replace(base, intent_type=self._intent_type)
-
-
 def test_s2_deny():
     sc = make_scenario()
-    result = run_pipeline(REQ, sc, llm=_CannedLLM(sc, "prohibited"))
+    result = run_pipeline(REQ, sc, model=ScenarioIntentModel(sc, intent="prohibited"))
     assert (result.final_stage, result.status, result.reason) == ("S2", StageStatus.DENY, "intent_prohibited")
     _assert_no_output_after(result, "S2")
 
 
 def test_s2_clarify():
     sc = make_scenario()
-    result = run_pipeline(REQ, sc, llm=_CannedLLM(sc, "unknown"))
+    result = run_pipeline(REQ, sc, model=ScenarioIntentModel(sc, intent="unknown"))
     assert (result.final_stage, result.status, result.reason) == ("S2", StageStatus.CLARIFY, "intent_unclear")
     _assert_no_output_after(result, "S2")
 

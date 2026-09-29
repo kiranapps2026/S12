@@ -3,7 +3,7 @@ Pipeline journey helpers — the REAL runner, real handlers, fixture dependencie
 
 Source: R-H (runbook): journeys use real handlers, not hand-built state.
 
-  make_pipeline_deps(scenario, *, llm=None, s8=None) -> PipelineDependencies
+  make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies
   run_pipeline(request, scenario=None, *, stop_after=None, ...) -> PipelineRunResult
   run_through(stage_id, request, deps) -> PipelineState   (must end NORMAL)
 """
@@ -20,7 +20,7 @@ from engine.control_plane.pipeline_state_runner import (
 from engine.stages.s0_entry.handler import EntryRequest
 from tests.fixtures.deps import make_s8_deps
 from tests.fixtures.scenarios import ScenarioRegistry, make_scenario
-from tests.fixtures.states import POLICY_VERSIONS, _ScenarioDrivenLLM
+from tests.fixtures.states import POLICY_VERSIONS, ScenarioIntentModel
 
 
 class StaticScopes:
@@ -38,9 +38,9 @@ class StaticScopes:
         return self._scope
 
 
-def make_pipeline_deps(scenario, *, llm=None, s8=None) -> PipelineDependencies:
+def make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies:
     return PipelineDependencies(
-        llm=llm or _ScenarioDrivenLLM(scenario),
+        intent_model=model or ScenarioIntentModel(scenario),
         registry=ScenarioRegistry(scenario),
         scopes=StaticScopes(scenario, s8),
         confirmation_store=scenario.confirmation_store,
@@ -61,10 +61,10 @@ def make_entry(request: dict | None = None) -> EntryRequest:
 
 
 def run_pipeline(request: dict | None = None, scenario=None, *, stop_after: str | None = None,
-                 llm=None, s8=None, deps: PipelineDependencies | None = None) -> PipelineRunResult:
+                 model=None, s8=None, deps: PipelineDependencies | None = None) -> PipelineRunResult:
     """Run the real S0..S11 runner over the request."""
     scenario = scenario or make_scenario()
-    deps = deps or make_pipeline_deps(scenario, llm=llm, s8=s8)
+    deps = deps or make_pipeline_deps(scenario, model=model, s8=s8)
     return asyncio.run(build_pipeline(deps).run(make_entry(request), stop_after=stop_after))
 
 

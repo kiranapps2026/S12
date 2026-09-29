@@ -23,12 +23,13 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from contracts.capability import CapabilityRegistry
+from contracts.intent_model import IntentModel
 from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE, PipelineState
 from contracts.safety import PathDecision
 from contracts.stage_registry import StageStatus
 from engine.stages.s0_entry.handler import EntryRequest, handle as s0
 from engine.stages.s1_normalize.handler import handle as s1
-from engine.stages.s2_intent_analysis.handler import LLMProvider, handle as s2
+from engine.stages.s2_intent_analysis.handler import handle as s2
 from engine.stages.s3_capability_discovery.handler import handle as s3
 from engine.stages.s4_graph_classification.handler import handle as s4
 from engine.stages.s5_provider_resolution.handler import handle as s5
@@ -49,7 +50,7 @@ StageHandler = Callable[[PipelineState], Awaitable[PipelineState]]
 @dataclass(frozen=True)
 class PipelineDependencies:
     """Everything S0–S11 need from outside. Built once, passed to build_pipeline()."""
-    llm: LLMProvider
+    intent_model: IntentModel
     registry: CapabilityRegistry
     scopes: RunScopeFactory
     confirmation_store: ConfirmationStore
@@ -110,7 +111,7 @@ class PipelineRunner:
         d = self._deps
         table: dict[str, StageHandler] = {
             "S1": s1,
-            "S2": lambda st: s2(st, d.llm),
+            "S2": lambda st: s2(st, d.intent_model, d.registry),
             "S3": lambda st: s3(st, d.registry),
             "S4": s4,
             "S5": lambda st: s5(st, d.registry, scope.policy_versions),

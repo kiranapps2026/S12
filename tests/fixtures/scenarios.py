@@ -193,6 +193,9 @@ class ScenarioRegistry(CapabilityRegistry):
     async def discover(self, intent, tenant_id):
         return self._caps()
 
+    async def known_intents(self, tenant_id):
+        return (_OP_TAG.get(self._sc.mutation, "query"),)
+
     async def get_capability(self, capability_id):
         return next((c for c in self._caps() if c.capability_id == capability_id), None)
 

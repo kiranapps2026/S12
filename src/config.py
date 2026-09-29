@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     memory_backend: str = "postgres"     # postgres, lancedb, memory
     lance_db_path: str = "./data/lancedb"
 
+    # === Secrets ===
+    deepseek_api_key: str = ""
+
     # === Feature Flags ===
     feature_kill_switch: bool = True
     feature_mutation_safety: bool = True

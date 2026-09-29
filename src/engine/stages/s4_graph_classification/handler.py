@@ -47,16 +47,17 @@ def _build_dependencies(steps: tuple[dict, ...]) -> dict[str, tuple[str, ...]]:
     return deps
 
 
-MAX_STEPS = 50  # sanity bound on the LLM-suggested step count
+MAX_STEPS = 50  # sanity bound on the model-suggested item count
 
 
 def _step_count(intent) -> int:
-    """Step count suggested by S2. It shapes the plan only: risk, mutation and cost
-    per step come from the frozen binding. Anything unusable counts as one step."""
-    raw = (intent.parameters or {}).get("steps") if intent is not None else None
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+    """Step count from S2's `parameters.items` (the same operation on several items).
+    It shapes the plan only: risk, mutation and per-step cost come from the frozen binding.
+    Anything unusable counts as one step."""
+    items = (intent.parameters or {}).get("items") if intent is not None else None
+    if not isinstance(items, list) or not items:
         return 1
-    return min(raw, MAX_STEPS)
+    return min(len(items), MAX_STEPS)
 
 
 async def handle(state: PipelineState) -> PipelineState:

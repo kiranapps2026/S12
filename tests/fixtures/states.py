@@ -14,10 +14,9 @@ import asyncio
 from typing import Any
 
 from contracts.pipeline_state import PipelineState, PRE_EXECUTION_SEQUENCE
-from contracts.stage_outputs import CapabilityMatch, IntentResult
 from tests.fixtures.scenarios import (
     make_scenario as _make_scenario, Scenario,
-    _intent_text, ScenarioRegistry,
+    ScenarioRegistry,
 )
 
 
@@ -76,79 +75,46 @@ def _create_entry_request(
 
 
 def _run_s0_s2(scenario: Scenario) -> PipelineState:
-    """Run S0->S1->S2 with scenario-aware MockLLMProvider.
-
-    The mock LLM receives the scenario's configuration and produces
-    an IntentResult with candidates and step count in parameters.
-    Real handlers produce every output.
-    """
+    """Run S0->S1->S2 with the scenario-driven intent model. Real handlers produce every output."""
     from engine.stages.s0_entry.handler import handle as s0_handle
     from engine.stages.s1_normalize.handler import handle as s1_handle
-    from engine.stages.s2_intent_analysis.handler import (
-        handle as s2_handle,
-        MockLLMProvider,
-    )
+    from engine.stages.s2_intent_analysis.handler import handle as s2_handle
 
-    entry = _create_entry_request()
-    s0 = asyncio.run(s0_handle(entry))
-    state = PipelineState(
-        execution_context=s0.execution_context,
-        entry_request=s0.entry_request,
-    )
-    s1 = asyncio.run(s1_handle(state))
-    state = s1
-
-    # Scenario-configured mock LLM: produces intent, confidence, workflow flag,
-    # and carries capability candidates + step count in IntentResult.parameters
-    mock_llm = _ScenarioDrivenLLM(scenario)
-    s2 = asyncio.run(s2_handle(state, llm=mock_llm))
-    return s2
+    state = asyncio.run(s0_handle(_create_entry_request()))
+    state = asyncio.run(s1_handle(state))
+    state = asyncio.run(s2_handle(state, ScenarioIntentModel(scenario), ScenarioRegistry(scenario)))
+    if scenario.confidence is None:
+        # S2 rejects a missing confidence, so it can never reach S7 through the real S2. S7 must
+        # still treat a missing value as CLARIFY (R-N, defence in depth): this is the one place
+        # the fixture removes it after S2, to exercise that branch.
+        import dataclasses
+        state = dataclasses.replace(
+            state, intent_result=dataclasses.replace(state.intent_result, confidence=None))
+    return state
 
 
-class _ScenarioDrivenLLM:
-    """Mock LLM whose output is configured entirely by the Scenario.
+class ScenarioIntentModel:
+    """Fixture IntentModel whose JSON answer is configured entirely by the Scenario.
 
-    Produces an IntentResult with:
-      - intent_type derived from scenario.mutation
-      - confidence from scenario.confidence
-      - step count in parameters for S4
+    intent: the registry's (single) known intent, or `intent` if given (canned answers);
+    confidence: scenario.confidence; parameters.items: `steps` empty items.
     """
 
-    def __init__(self, scenario: Scenario):
-        self._scenario = scenario
+    def __init__(self, scenario: Scenario, intent: str | None = None, raw: str | None = None):
+        self._scenario, self._intent, self._raw = scenario, intent, raw
+        self.calls: list[tuple] = []
 
-    async def analyze_intent(self, sanitized_input: dict) -> IntentResult:
+    async def complete(self, text, intents, feedback):
+        import json
+        from contracts.intent_model import IntentCompletion
+        self.calls.append((text, intents, feedback))
         sc = self._scenario
-
-        # Intent type from mutation
-        intent_map = {
-            "R": "read", "READ": "read",
-            "W": "write", "WRITE": "write",
-            "D": "delete", "DELETE": "delete",
-            "IRREVERSIBLE": "write",
-        }
-        intent_type = intent_map.get(sc.mutation, "unknown")
-        ops_map = {
-            "read": ["query"], "write": ["create"], "delete": ["delete"],
-        }
-        operations = ops_map.get(intent_type, ["query"])
-
-        # Build parameters: carries candidates (for S3) and step count (for S4)
-        # The LLM says only what the user asked for; capabilities come from the registry.
-        params: dict[str, Any] = {
-            "message": _intent_text(sc.mutation),
-            "steps": sc.steps,
-        }
-
-        return IntentResult(
-            intent_type=intent_type,
-            target_entities=["default"],
-            operations=operations,
-            parameters=params,
-            is_workflow=False,
-            confidence=sc.confidence,
-            raw_llm_output=f"[mock] intent_type={intent_type}, steps={sc.steps}",
-        )
+        intent = self._intent or (intents[0] if intents else "unknown")
+        body = self._raw if self._raw is not None else json.dumps({
+            "intent": intent, "confidence": 0.9 if sc.confidence is None else sc.confidence,
+            "parameters": {"items": [{} for _ in range(sc.steps)]},
+        })
+        return IntentCompletion(text=body, model="test-model", total_tokens=10)
 
 
 # ---------------------------------------------------------------------------

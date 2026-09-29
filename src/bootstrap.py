@@ -10,17 +10,26 @@ from adapters.runtime.circuit_breaker import InProcessCircuitBreaker
 from engine.control_plane.pipeline_state_runner import (
     PipelineDependencies, PipelineRunner, build_pipeline,
 )
-from engine.stages.s2_intent_analysis.handler import LLMProvider
+from adapters.llm.deepseek import DeepSeekIntentModel
+from config import Settings
+from contracts.intent_model import IntentModel
 
 
 def build_authenticator(database: Database) -> PostgresApiKeyAuthenticator:
     return PostgresApiKeyAuthenticator(database)
 
 
-def build_runner(database: Database, llm: LLMProvider) -> PipelineRunner:
-    """The S0–S11 runner over the real adapters. `llm` is required: S2 has no default."""
+def build_intent_model(settings: Settings) -> IntentModel:
+    """The DeepSeek model. The key comes from DEEPSEEK_API_KEY; nothing else is configurable."""
+    if not settings.deepseek_api_key:
+        raise ValueError("DEEPSEEK_API_KEY is not set (put it in .env)")
+    return DeepSeekIntentModel(settings.deepseek_api_key)
+
+
+def build_runner(database: Database, intent_model: IntentModel) -> PipelineRunner:
+    """The S0–S11 runner over the real adapters. `intent_model` is required: S2 has no default."""
     return build_pipeline(PipelineDependencies(
-        llm=llm,
+        intent_model=intent_model,
         registry=PostgresCapabilityRegistry(database),
         scopes=PostgresRunScopes(database, InProcessCircuitBreaker()),
         confirmation_store=PostgresConfirmationStore(database),

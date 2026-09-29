@@ -99,3 +99,8 @@ class CapabilityRegistry:
     async def list_bindings(self, capability_id: str) -> list[BindingRow]:
         """List all bindings for a capability."""
         raise NotImplementedError
+
+    async def known_intents(self, tenant_id: str) -> tuple[str, ...]:
+        """Intents of production-enabled capabilities with a live binding: the only choices
+        offered to the S2 model."""
+        raise NotImplementedError

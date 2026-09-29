@@ -24,7 +24,7 @@ from contracts.kernel_policy import KernelPolicy
 from contracts.stage_outputs import CapabilityMatch
 from engine.stages.s0_entry.handler import EntryRequest, handle as s0_handle
 from engine.stages.s1_normalize.handler import handle as s1_handle
-from engine.stages.s2_intent_analysis.handler import handle as s2_handle, MockLLMProvider
+from engine.stages.s2_intent_analysis.handler import handle as s2_handle
 from engine.stages.s3_capability_discovery.handler import handle as s3_handle
 from engine.stages.s4_graph_classification.handler import handle as s4_handle
 from engine.stages.s5_provider_resolution.handler import handle as s5_handle
