@@ -436,3 +436,37 @@ def test_an_inactive_binding_has_no_version(pg):
         from adapters.postgres.registry import PostgresBindingVersionReader
         return await PostgresBindingVersionReader(db).binding_version("bind.contact.list")
     assert pg(body, "UPDATE bindings SET is_active = false WHERE binding_id = 'bind.contact.list'") is None
+
+
+def _metadata(pg, pinned=("cap-7", "bind-3"), *setup):
+    async def body(db):
+        from adapters.postgres.registry import PostgresKernelOpMetadataReader
+        return await PostgresKernelOpMetadataReader(db).read(
+            ("crm.contact_create", "crm.contact_delete", "crm.contact_list", "crm.unknown"),
+            capability_version=pinned[0], binding_version=pinned[1])
+    return pg(body, *setup)
+
+
+def test_verifier_metadata_comes_from_the_registry_at_the_pinned_versions(pg):
+    found = _metadata(
+        pg, ("cap-7", "bind-3"),
+        "UPDATE kernel_ops SET observation_method = 'get_contact', observation_identifier_field = 'id'"
+        " WHERE kernel_op_id = 'crm.contact_create'",
+        "UPDATE kernel_ops SET observation_method = 'get_contact', observation_expects_absent = true,"
+        " observation_identifier_field = 'id' WHERE kernel_op_id = 'crm.contact_delete'")
+    assert set(found) == {"crm.contact_create", "crm.contact_delete", "crm.contact_list"}
+    assert (found["crm.contact_create"].mutation, found["crm.contact_create"].observation_method,
+            found["crm.contact_create"].expects_absent) == ("W", "get_contact", False)
+    assert found["crm.contact_delete"].expects_absent is True
+    assert found["crm.contact_list"].observation_method is None            # nothing registered for a read
+
+
+def test_verifier_metadata_is_not_served_for_versions_the_registry_has_moved_on_from(pg):
+    assert _metadata(pg, ("cap-6", "bind-3")) is None
+    assert _metadata(pg, ("cap-7", "bind-2")) is None
+
+
+def test_a_deprecated_operation_has_no_verifier_metadata(pg):
+    found = _metadata(pg, ("cap-7", "bind-3"),
+                      "UPDATE kernel_ops SET truth_state = 'DEPRECATED' WHERE kernel_op_id = 'crm.contact_create'")
+    assert "crm.contact_create" not in found

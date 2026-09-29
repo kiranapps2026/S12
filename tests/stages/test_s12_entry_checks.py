@@ -28,6 +28,35 @@ class Bindings:
         return self.versions.get(binding_id, self.default)
 
 
+class Metadata:
+    """Fixture KernelOpMetadataReader: what the registry says about how each operation is observed."""
+    TABLE = {
+        "op.contact.create": ("W", "get_contact", False, "id"),
+        "op.email.send": ("W", "get_message", False, "message_id"),
+        "op.contact.delete": ("D", "get_contact", True, "id"),
+        "op.invoice.void": ("IRREVERSIBLE", "get_invoice", False, "id"),
+        "op.contact.list": ("R", None, False, None),
+        "crm.contact_create": ("W", "get_contact", False, "id"),
+    }
+
+    def __init__(self, drop=(), stale=False, error=None, overrides=None):
+        self.drop, self.stale, self.error, self.overrides, self.calls = set(drop), stale, error, overrides or {}, []
+
+    async def read(self, kernel_op_ids, *, capability_version, binding_version):
+        from contracts.verifier import KernelOpMetadata
+        self.calls.append((tuple(kernel_op_ids), capability_version, binding_version))
+        if self.error:
+            raise self.error
+        if self.stale:
+            return None
+        out = {}
+        for op in kernel_op_ids:
+            if op in self.drop or op not in self.TABLE:
+                continue
+            out[op] = KernelOpMetadata(op, *self.overrides.get(op, self.TABLE[op]))
+        return out
+
+
 def _state(chain=False):
     """A state that S11 certified."""
     if chain:
@@ -39,8 +68,9 @@ def _state(chain=False):
     return result.final_state
 
 
-def _check(state, bindings=None, activation=None):
-    d = asyncio.run(check_entry(state, bindings=bindings or Bindings(), activation=activation or StaticActivation()))
+def _check(state, bindings=None, activation=None, metadata=None):
+    d = asyncio.run(check_entry(state, bindings=bindings or Bindings(), activation=activation or StaticActivation(),
+                                metadata=metadata or Metadata()))
     return d.allowed, d.reason
 
 
@@ -240,3 +270,104 @@ def test_denials_are_reported_not_raised_and_the_state_is_untouched():
     before = dataclasses.asdict(s)
     assert _check(_mutate(s, validation_result=None))[0] is False
     assert dataclasses.asdict(s) == before
+
+
+# ---- item 6: verifiers -----------------------------------------------------------------------
+
+def _decide(state, metadata=None):
+    return asyncio.run(check_entry(state, bindings=Bindings(), activation=StaticActivation(),
+                                   metadata=metadata or Metadata()))
+
+
+def test_item_6_a_read_only_plan_needs_no_verifier_and_no_metadata():
+    d = asyncio.run(check_entry(_state(), bindings=Bindings(), activation=StaticActivation(), metadata=None))
+    assert (d.allowed, d.verifiers) == (True, ())
+
+
+def test_item_6_every_mutating_step_gets_a_verifier_built_from_its_own_step_and_binding():
+    s = _state(chain=True)
+    d = _decide(s)
+    assert d.allowed and len(d.verifiers) == 2
+    a, b = d.verifiers
+    steps, bindings = s.plan.plan.steps, s.frozen_bindings
+    assert (a.step_id, a.kernel_op_id, a.binding_id) == (steps[0].id, "op.contact.create", bindings[0].binding_id)
+    assert (b.step_id, b.kernel_op_id, b.binding_id) == (steps[1].id, "op.email.send", bindings[1].binding_id)
+    assert a.execution_id == s.plan.execution_id
+    assert a.observation_method == "get_contact" and b.observation_method == "get_message"
+    assert a.expected_state == {"exists": True, "properties": {"name": "Ana"}}         # from the step's parameters
+    assert a.observation_params == {"identifier_from_result": "id"}
+    assert (a.max_attempts, a.attempt_delay_ms) == (3, 1000)
+
+
+def test_item_6_a_delete_is_verified_by_absence():
+    from tests.fixtures.multi import ChainModel, chain_deps
+    deps = chain_deps(ChainModel([("contact.create", {}), ("contact.delete", {"id": "c1"})]))
+    r = asyncio.run(build_pipeline(deps).run(make_entry(ENTRY)))
+    assert r.reason == "confirmation_required"
+    done = asyncio.run(build_pipeline(deps).reply("tenant-1", r.final_state.confirmation.confirmation.confirmation_id,
+                                                  "user-1", True))
+    assert done.status.value == "NORMAL"
+    d = _decide(done.final_state)
+    assert [v.expected_state for v in d.verifiers] == [{"exists": True, "properties": {}}, {"exists": False}]
+
+
+def test_item_6_reads_in_a_mixed_plan_get_no_verifier():
+    from tests.fixtures.multi import ChainModel, chain_deps
+    deps = chain_deps(ChainModel([("contact.list", {}), ("contact.create", {"name": "A"})]))
+    s = asyncio.run(build_pipeline(deps).run(make_entry(ENTRY))).final_state
+    assert [v.kernel_op_id for v in _decide(s).verifiers] == ["op.contact.create"]
+
+
+def test_item_6_the_factory_is_deterministic_and_reads_nothing_else():
+    s = _state(chain=True)
+    first, second = _decide(s).verifiers, _decide(s).verifiers
+    assert first == second                                                    # same ids on a rebuild
+    other = _state(chain=True)                                                # another execution
+    assert {v.verifier_id for v in _decide(other).verifiers}.isdisjoint({v.verifier_id for v in first})
+    assert len({v.verifier_id for v in first}) == 2
+    import ast, inspect, textwrap
+    from engine.stages.s12_entry import verifiers
+    tree = ast.parse(textwrap.dedent(inspect.getsource(verifiers.build_verifier)))
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | \
+            {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert not names & {"time", "random", "uuid4", "os", "environ", "now", "datetime"}
+
+
+def test_item_6_metadata_is_read_once_at_the_manifests_pinned_versions():
+    s = _state(chain=True)
+    reader = Metadata()
+    _decide(s, reader)
+    assert reader.calls == [(("op.contact.create", "op.email.send"),
+                             s.execution_manifest.capability_version, s.execution_manifest.binding_version)]
+
+
+@pytest.mark.parametrize("reader", [
+    Metadata(drop=["op.email.send"]),                                        # no metadata for an operation
+    Metadata(overrides={"op.email.send": ("W", None, False, None)}),         # no observation method
+    Metadata(overrides={"op.email.send": ("W", "", False, None)}),
+    Metadata(overrides={"op.email.send": ("D", "get_message", True, "id")}), # registry disagrees on the mutation
+    Metadata(stale=True),                                                    # pinned versions no longer served
+    Metadata(error=RuntimeError("registry down")),
+])
+def test_item_6_a_mutating_step_that_cannot_be_verified_is_never_admitted(reader):
+    assert _check(_state(chain=True), metadata=reader) == (False, "verifier_metadata_unavailable")
+
+
+def test_item_6_a_missing_metadata_source_denies_a_mutating_plan():
+    d = asyncio.run(check_entry(_state(chain=True), bindings=Bindings(), activation=StaticActivation(), metadata=None))
+    assert (d.allowed, d.reason) == (False, "verifier_metadata_unavailable")
+
+
+def test_item_6_runs_after_the_binding_check_and_before_the_pause_check():
+    paused = StaticActivation()
+    paused.tenant_paused_until = 10**12
+    s = _state(chain=True)
+    assert _check(s, activation=paused, metadata=Metadata(stale=True)) == (False, "verifier_metadata_unavailable")
+    assert _check(s, Bindings(default="x"), metadata=Metadata(stale=True)) == (False, "binding_version_mismatch")
+    assert _check(s, activation=paused) == (False, "tenant_paused")
+
+
+def test_a_denied_entry_carries_no_verifiers():
+    d = asyncio.run(check_entry(_state(chain=True), bindings=Bindings(), activation=StaticActivation(),
+                                metadata=Metadata(stale=True)))
+    assert d.verifiers == ()

@@ -4,8 +4,8 @@ S12 entry checks — gate §7.1 items 1–5b and 7, in the gate's order. First f
 A pure decision: nothing is written, nothing is re-authorised, nothing is re-resolved. The caller
 (the S12 admission step, when it exists) writes only after `allowed` is True.
 
-Item 6 (build the verifiers, D1) is NOT here: it needs the verifier contracts, which belong to a
-later milestone. Its reason `verifier_metadata_unavailable` is therefore not produced yet.
+Item 6 (build the verifiers, D1) is in verifiers.py and runs here between items 5b and 7; on
+success the decision carries the verifiers, to be persisted with the execution (gate §7.3).
 
 Multi-step plans (M2a) follow docs/proposals/S12_MULTI_STEP.md G1/G2/G7: one frozen binding per
 plan step; each DISTINCT binding row is read once and its version must equal the manifest's.
@@ -25,7 +25,9 @@ from contracts.binding_reader import BindingVersionReader
 from contracts.pipeline_state import PipelineState
 from contracts.plan_hash import canonical_plan_digest
 from contracts.stage_outputs import StepOutputReference, StepParameterBinding
+from contracts.verifier import KernelOpMetadataReader, Verifier
 from engine.stages.plan_steps import plan_step_bindings
+from engine.stages.s12_entry.verifiers import build_verifiers
 from engine.stages.s0_entry.activation import UNAVAILABLE as ACTIVATION_UNAVAILABLE, inactive_reason
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ _MAX_DEPTH = 20
 class EntryDecision:
     allowed: bool
     reason: str | None = None
+    verifiers: tuple[Verifier, ...] = ()     # item 6: one per W/D/IRREVERSIBLE step, in plan order
 
 
 def _deny(reason: str) -> EntryDecision:
@@ -96,7 +99,8 @@ def _binding_ids(state: PipelineState) -> tuple[str, ...] | None:
 
 
 async def check_entry(state: PipelineState, *, bindings: BindingVersionReader | None,
-                      activation: ActivationStateReader | None) -> EntryDecision:
+                      activation: ActivationStateReader | None,
+                      metadata: KernelOpMetadataReader | None = None) -> EntryDecision:
     ctx, manifest, plan_result = state.execution_context, state.execution_manifest, state.plan
 
     # 1. S11 succeeded and issued the manifest.
@@ -146,7 +150,10 @@ async def check_entry(state: PipelineState, *, bindings: BindingVersionReader | 
         if version is None or version != manifest.binding_version:
             return _deny(BINDING_VERSION_MISMATCH)
 
-    # 6. Verifiers (D1): not built yet.
+    # 6. Verifiers (D1): built from the step and the registry metadata at the manifest's versions.
+    built = await build_verifiers(state, metadata)
+    if built.reason is not None:
+        return _deny(built.reason)
 
     # 7. Pause safety net (C39): the S0.1 check, again, at the database's current time.
     if activation is None:
@@ -159,4 +166,4 @@ async def check_entry(state: PipelineState, *, bindings: BindingVersionReader | 
     reason = inactive_reason(state_now)
     if reason is not None:
         return _deny(reason)
-    return EntryDecision(True)
+    return EntryDecision(True, verifiers=built.verifiers)

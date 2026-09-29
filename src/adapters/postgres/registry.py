@@ -112,3 +112,30 @@ class PostgresBindingVersionReader:
                 "SELECT rv.binding_version FROM bindings b, registry_versions rv"
                 " WHERE b.binding_id = $1 AND b.is_active", binding_id)
         return None if row is None else row["binding_version"]
+
+
+class PostgresKernelOpMetadataReader:
+    """Verifier metadata (gate D1), read at the versions the manifest pinned. The registry serves one
+    version set (registry_versions); if it has moved on since S11 the pinned metadata is gone and the
+    reader returns None, so S12 entry denies rather than build a verifier from other versions."""
+
+    def __init__(self, database: Database) -> None:
+        self._db = database
+
+    async def read(self, kernel_op_ids, *, capability_version: str, binding_version: str):
+        from contracts.verifier import KernelOpMetadata
+        async with self._db.transaction() as connection:
+            versions = await connection.fetchrow(
+                "SELECT capability_version, binding_version FROM registry_versions")
+            if versions is None:
+                raise DependencyUnavailable("registry_versions is empty")
+            if (versions["capability_version"], versions["binding_version"]) != (capability_version, binding_version):
+                return None
+            rows = await connection.fetch(
+                "SELECT kernel_op_id, mutation, observation_method, observation_expects_absent,"
+                "       observation_identifier_field"
+                "  FROM kernel_ops WHERE kernel_op_id = ANY($1::text[]) AND truth_state = 'PRODUCTION_ENABLED'",
+                list(kernel_op_ids))
+        return {r["kernel_op_id"]: KernelOpMetadata(
+            r["kernel_op_id"], r["mutation"], r["observation_method"],
+            r["observation_expects_absent"], r["observation_identifier_field"]) for r in rows}

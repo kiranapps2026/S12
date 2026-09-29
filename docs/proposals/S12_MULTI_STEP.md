@@ -42,7 +42,7 @@ Building S12 around a single binding now would be built twice.
 `engine/stages/s12_entry/checks.py::check_entry` implements gate §7.1 items 1, 1a, 2, 3, 4, 5, 5a, 5b
 and 7 in the gate's order, as a pure decision (writes nothing, re-authorises nothing), for single-step
 plans and, following G1/G2/G7 above, multi-step plans. It is not wired into the runner: S12 does not
-exist yet. Item 6 (verifiers, D1) is not built. `PostgresBindingVersionReader` reads a binding's
+exist yet. `PostgresBindingVersionReader` reads a binding's
 version once by `binding_id` (active rows only).
 
 Points the gate owner should know:
@@ -55,4 +55,18 @@ Points the gate owner should know:
   denied; that is the fail-closed side.
 - Reason names not fixed by the gate: `plan_not_validated` (item 1), `binding_missing` (item 3),
   `binding_unavailable` (registry unreadable, 5b).
-- Next, per the gate order: verifiers (item 6), then durable admission (§7.2).
+- **Item 6 (verifiers, D1) is built** (`s12_entry/verifiers.py`, contract `contracts/verifier.py`):
+  one `Verifier` per W/D/IRREVERSIBLE step in plan order (reads get none), built by a pure
+  `build_verifier(step, ...)`. The verifier id is a UUIDv5 of (execution, step, operation, binding)
+  instead of the "UUID v4" of DATA_CONTRACTS §34, because D1 requires the factory to be
+  deterministic and recovery must rebuild the same ids. `expected_state` is derived from the step
+  (`{"exists": true, "properties": <step params>}`, or `{"exists": false}` for an operation registered as
+  expecting absence), because `Step` has no `expected_state` field. The resource identifier is read from
+  the adapter result at run time (`observation_params.identifier_from_result`), the one thing taken from it.
+- **New schema (migration 008, needs a ruling):** `kernel_ops.observation_method`,
+  `observation_expects_absent`, `observation_identifier_field`. The specs call for an observation-method
+  registry but no table holds one. A mutating operation with no method is refused at entry
+  (`verifier_metadata_unavailable`), as is metadata for versions the registry no longer serves.
+  Until real operations have these columns filled, every W/D/IRREVERSIBLE plan is denied at S12 entry
+  (fail closed).
+- Next: durable admission (§7.2), which persists the verifiers with the execution (§7.3).
