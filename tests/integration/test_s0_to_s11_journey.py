@@ -45,6 +45,7 @@ class TestS0ToS11Journey:
             "entry_channel": "api",
             "tenant_id": "t1",
             "user_id": "u1",
+            "connection_id": "conn-1",
         })
         assert fast.safety_result is not None
 
@@ -53,6 +54,7 @@ class TestS0ToS11Journey:
             "entry_channel": "api",
             "tenant_id": "t1",
             "user_id": "u1",
+            "connection_id": "conn-1",
         })
         assert wf.safety_result is not None
 
@@ -78,6 +80,7 @@ class TestS0ToS11Journey:
             "entry_channel": "api",
             "tenant_id": "t1",
             "user_id": "u1",
+            "connection_id": "conn-1",
         })
         assert state.plan.execution_id != state.execution_context.request_id
 
@@ -139,3 +142,31 @@ class TestS11ProducesManifest:
         assert manifest.plan_hash == plan.plan_hash
         assert manifest.trace_id == ctx.trace_id
         assert plan.execution_id != ctx.request_id
+
+
+def test_full_journey_real_handlers():
+    """Real runner, real handlers, S0..S11: the identifiers and hashes line up."""
+    from contracts.plan_hash import canonical_plan_digest
+    from contracts.stage_registry import StageStatus
+    from tests.fixtures.pipeline import run_pipeline
+    from tests.fixtures.scenarios import make_scenario
+
+    sc = make_scenario(mutation="D", risk=0.9, steps=2, graph="chain", confidence=0.8)
+    result = run_pipeline({"message": "delete it", "connection_id": "conn-1"}, sc)
+    assert result.status is StageStatus.CLARIFY          # S10 waits for the user
+
+    import asyncio
+    from engine.control_plane.pipeline_state_runner import build_pipeline
+    from tests.fixtures.pipeline import make_entry, make_pipeline_deps
+    runner = build_pipeline(make_pipeline_deps(sc))
+    paused = asyncio.run(runner.run(make_entry({"message": "delete it", "connection_id": "conn-1"})))
+    final = asyncio.run(runner.resume(paused.final_state))
+    assert final.status is StageStatus.NORMAL
+
+    state = final.final_state
+    plan_result, ctx = state.plan, state.execution_context
+    assert plan_result.execution_id != ctx.request_id
+    assert state.confirmation.confirmation.plan_hash == plan_result.plan_hash
+    assert state.execution_manifest.execution_id == plan_result.execution_id
+    assert canonical_plan_digest(plan_result.plan) == plan_result.plan_hash
+    assert state.execution_manifest.auth_result_id == ctx.auth_result_id

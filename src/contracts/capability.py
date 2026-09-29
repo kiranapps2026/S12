@@ -74,6 +74,8 @@ class BindingRow:
     risk_policy_version: str
     authorization_version: str
     effective_risk: float                # 0.0-1.0, frozen at S5
+    kernel_op_id: str = ""               # Kernel operation this binding executes
+    engine_module: str = ""              # Python module path of the engine
     selection_rank: int = 0
     is_active: bool = True
     metadata: dict[str, str] = field(default_factory=dict)

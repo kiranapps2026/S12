@@ -17,7 +17,7 @@ from contracts.pipeline_state import PipelineState, PRE_EXECUTION_SEQUENCE
 from contracts.stage_outputs import CapabilityMatch, IntentResult
 from tests.fixtures.scenarios import (
     make_scenario as _make_scenario, Scenario,
-    _intent_text, _build_capability_dicts,
+    _intent_text, ScenarioRegistry,
 )
 
 
@@ -111,9 +111,7 @@ class _ScenarioDrivenLLM:
     Produces an IntentResult with:
       - intent_type derived from scenario.mutation
       - confidence from scenario.confidence
-      - candidates (capability dicts) in parameters for S3
       - step count in parameters for S4
-      - is_workflow flag
     """
 
     def __init__(self, scenario: Scenario):
@@ -136,14 +134,11 @@ class _ScenarioDrivenLLM:
         operations = ops_map.get(intent_type, ["query"])
 
         # Build parameters: carries candidates (for S3) and step count (for S4)
+        # The LLM says only what the user asked for; capabilities come from the registry.
         params: dict[str, Any] = {
             "message": _intent_text(sc.mutation),
             "steps": sc.steps,
         }
-        if sc.capabilities > 1:
-            params["multi_capability"] = True
-        # Candidates go in parameters — S3 reads them from there
-        params["candidates"] = _build_capability_dicts(sc)
 
         return IntentResult(
             intent_type=intent_type,
@@ -185,9 +180,9 @@ def _stage_runners(scenario: Scenario):
     from engine.stages.s10_confirmation.handler import handle as s10
     from engine.stages.s11_plan_validation.handler import handle as s11
     return {
-        "S3": lambda st: s3(st),
+        "S3": lambda st: s3(st, ScenarioRegistry(scenario)),
         "S4": lambda st: s4(st),
-        "S5": lambda st: s5(st),
+        "S5": lambda st: s5(st, ScenarioRegistry(scenario)),
         "S6": lambda st: s6(st),
         "S7": lambda st: s7(st, policy=_policy(scenario)),
         "S8": lambda st: s8(st, _s8_deps()),

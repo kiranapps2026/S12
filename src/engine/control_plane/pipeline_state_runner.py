@@ -1,190 +1,194 @@
 """
-PipelineState-backed pipeline runner for S0–S11.
+The S0–S11 pipeline runner — the one execution path before S12.
 
-Each stage receives a PipelineState and returns an updated PipelineState.
-ExecutionContext is never mutated after S0 creation — it is read-only
-within the PipelineState accumulator.
+Source: DATA_CONTRACTS.md §2, PIPELINE_STAGES.md §11, RUNBOOK R-C/R-I/R-N
 
-Source: DATA_CONTRACTS.md §2, PIPELINE_STAGES.md §11
+- Stages run in PRE_EXECUTION_SEQUENCE order, S0 first; every handler is awaited.
+- A stage continues the run only with StageStatus.NORMAL. DENY / CLARIFY / ERROR (or a
+  missing status) stop it; no later stage runs and none writes output.
+- An uncaught exception in a stage becomes ERROR and stops the run; it is never re-raised
+  into the caller and never leaves a half-run state that looks successful.
+- Enforcement does not trust a handler's status alone: after S7, S8, S10 and S11 the
+  runner checks the stage's own output and stops the run if it says "no".
+- Dependencies arrive from one composition root, build_pipeline(); there are no globals.
 """
-
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Awaitable, Callable, Mapping
 
-from contracts.stage_registry import (
-    PIPELINE_SEQUENCE, CORDON_STAGES, StageContract,
-    get_stage, get_next_stage, StageOutcome, StageStatus,
-)
-from contracts.execution_context import ExecutionContext
-from contracts.pipeline_state import PipelineState, STAGE_OUTPUT_FIELD
+from contracts.capability import CapabilityRegistry
+from contracts.kernel_policy import KernelPolicy
+from contracts.pipeline_state import PRE_EXECUTION_SEQUENCE, PipelineState
+from contracts.safety import PathDecision
+from contracts.stage_registry import StageStatus
+from engine.stages.s0_entry.handler import EntryRequest, handle as s0
+from engine.stages.s1_normalize.handler import handle as s1
+from engine.stages.s2_intent_analysis.handler import LLMProvider, handle as s2
+from engine.stages.s3_capability_discovery.handler import handle as s3
+from engine.stages.s4_graph_classification.handler import handle as s4
+from engine.stages.s5_provider_resolution.handler import handle as s5
+from engine.stages.s6_task_profile_assembly.handler import handle as s6
+from engine.stages.s7_path_decision.handler import handle as s7
+from engine.stages.s8_safety_gate.dependencies import S8Dependencies
+from engine.stages.s8_safety_gate.handler import handle as s8
+from engine.stages.s9_plan_creation.handler import handle as s9
+from engine.stages.s10_confirmation.handler import handle as s10, resume_confirmation
+from engine.stages.s10_confirmation.store import ConfirmationStore
+from engine.stages.s11_plan_validation.handler import handle as s11
 
 logger = logging.getLogger(__name__)
 
-# Type for PipelineState handlers: (PipelineState) -> PipelineState
-HandlerFunc = Callable[[PipelineState], PipelineState]
+StageHandler = Callable[[PipelineState], Awaitable[PipelineState]]
 
 
-@dataclass
+@dataclass(frozen=True)
+class PipelineDependencies:
+    """Everything S0–S11 need from outside. Built once, passed to build_pipeline()."""
+    llm: LLMProvider
+    registry: CapabilityRegistry
+    policy: KernelPolicy
+    s8: S8Dependencies
+    confirmation_store: ConfirmationStore
+
+
+@dataclass(frozen=True)
 class PipelineRunResult:
-    """Result of running the S0–S11 pipeline."""
+    """Result of an S0–S11 run."""
     final_state: PipelineState
-    final_stage: str
-    outcome: StageOutcome
-    status: StageStatus | None = None
-    error: str | None = None
-    cordon_stage: str | None = None
-    cordon_reason: str | None = None
-    failed_check: str | None = None
+    final_stage: str                       # the stage that ended the run
+    status: StageStatus                    # NORMAL only if the run completed
+    reason: str | None = None
+    stages_run: tuple[str, ...] = ()
     duration_ms: float = 0.0
 
 
+def _enforce(stage_id: str, state: PipelineState) -> tuple[StageStatus, str] | None:
+    """Independent check of a stage's own output; returns a stop (status, reason) or None."""
+    if stage_id == "S7" and state.path_decision is not None:
+        d = state.path_decision
+        if d.decision is PathDecision.DENY:
+            return StageStatus.DENY, d.reason or "path_denied"
+        if d.decision is PathDecision.CLARIFY:
+            return StageStatus.CLARIFY, d.reason or "path_clarify"
+    elif stage_id == "S8":
+        sr = state.safety_result
+        if sr is None or sr.allowed is not True:
+            return StageStatus.DENY, (sr.reason if sr else None) or "safety_not_passed"
+    elif stage_id == "S10":
+        outcome = state.confirmation
+        if outcome is None:
+            return StageStatus.ERROR, "confirmation_missing"
+        if outcome.required and (outcome.confirmation is None
+                                 or outcome.confirmation.consumed_at is None):
+            return StageStatus.CLARIFY, "confirmation_required"
+    elif stage_id == "S11":
+        vr = state.validation_result
+        if vr is None or vr.is_valid is not True or state.execution_manifest is None:
+            return StageStatus.DENY, (vr.errors[0] if vr and vr.errors else "plan_invalid")
+    return None
+
+
 class PipelineRunner:
-    """
-    Executes the S0–S11 pipeline using PipelineState as the accumulator.
+    """Runs S0–S11. Construct with build_pipeline()."""
 
-    Each stage receives PipelineState, returns updated PipelineState.
-    ExecutionContext is never mutated after S0 creation.
-    """
+    def __init__(self, handlers: Mapping[str, StageHandler], deps: PipelineDependencies) -> None:
+        missing = [s for s in PRE_EXECUTION_SEQUENCE[1:] if s not in handlers]
+        if missing:
+            raise ValueError(f"PipelineRunner missing handlers for {missing}")
+        self._handlers = dict(handlers)
+        self._deps = deps
 
-    def __init__(self) -> None:
-        self._handlers: dict[str, HandlerFunc] = {}
-        self._running = False
+    async def run(self, entry: EntryRequest, *, stop_after: str | None = None) -> PipelineRunResult:
+        """Run S0 then S1..S11 (or up to and including `stop_after`)."""
+        start = time.monotonic()
+        stages: list[str] = []
 
-    def register_handler(self, stage_id: str, handler_func: HandlerFunc) -> None:
-        """Register a PipelineState-based stage handler."""
-        if stage_id not in STAGE_OUTPUT_FIELD:
-            raise KeyError(f"Unknown stage: {stage_id}")
-        self._handlers[stage_id] = handler_func
-        logger.debug("Registered handler for %s", stage_id)
+        try:
+            state = await s0(entry)
+        except Exception as exc:  # noqa: BLE001 — becomes ERROR, never escapes
+            logger.exception("S0 failed")
+            return self._result(PipelineState(), "S0", StageStatus.ERROR,
+                                type(exc).__name__, stages, start)
+        stages.append("S0")
+        stop = self._stop_check("S0", state)
+        if stop is not None or stop_after == "S0":
+            return self._result(state, "S0", *(stop or (StageStatus.NORMAL, None)), stages, start)
 
-    async def run(self, entry_request: Any) -> PipelineRunResult:
-        """
-        Run the S0–S11 pipeline from an entry request.
+        return await self._run_from(state, PRE_EXECUTION_SEQUENCE[1:], stages, start, stop_after)
 
-        Args:
-            entry_request: EntryRequest or dict with raw_payload, tenant_id, etc.
+    async def resume(self, suspended: PipelineState) -> PipelineRunResult:
+        """Confirmed re-entry after S10: consume the confirmation, then run S11."""
+        start = time.monotonic()
+        stages = list(PRE_EXECUTION_SEQUENCE[:11])
+        try:
+            state = resume_confirmation(suspended, self._deps.confirmation_store)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("S10 resume failed")
+            return self._result(suspended, "S10", StageStatus.ERROR, type(exc).__name__, stages, start)
+        if state.stage_status is not StageStatus.NORMAL:
+            return self._result(state, "S10", state.stage_status or StageStatus.ERROR,
+                                state.deny_reason, stages, start)
+        stop = self._stop_check("S10", state)
+        if stop is not None:
+            return self._result(state, "S10", *stop, stages, start)
+        return await self._run_from(state, ("S11",), stages, start, None)
 
-        Returns:
-            PipelineRunResult with final state and outcome
-        """
-        start_time = time.monotonic()
-
-        # S0: Create initial ExecutionContext
-        import dataclasses
-
-        initial_ec = ExecutionContext(
-            trace_id="",
-            request_id="",
-            tenant_id=getattr(entry_request, 'tenant_id', ''),
-            user_id=getattr(entry_request, 'user_id', '') or 'system',
-            workspace_id=getattr(entry_request, 'tenant_id', ''),
-            conversation_id=getattr(entry_request, 'conversation_id', None),
-            connection_id=getattr(entry_request, 'connection_id', None),
-        )
-
-        state = PipelineState(execution_context=initial_ec)
-        outcome = StageOutcome.CONTINUE
-        stage_status = StageStatus.NORMAL
-        cordon_stage = None
-        cordon_reason = None
-        failed_check = None
-        final_stage = "S0"
-        error = None
-
-        for stage_id in PIPELINE_SEQUENCE[:12]:  # S0 through S11
-            if not self._running:
-                break
-
+    async def _run_from(self, state: PipelineState, sequence: tuple[str, ...],
+                        stages: list[str], start: float, stop_after: str | None) -> PipelineRunResult:
+        final_stage = stages[-1] if stages else "S0"
+        for stage_id in sequence:
             final_stage = stage_id
-            stage_contract = get_stage(stage_id)
-            logger.info("Executing %s: %s", stage_id, stage_contract.display_name)
+            try:
+                state = await self._handlers[stage_id](state)
+            except Exception as exc:  # noqa: BLE001 — becomes ERROR, never escapes
+                logger.exception("Stage %s raised", stage_id)
+                return self._result(state, stage_id, StageStatus.ERROR,
+                                    type(exc).__name__, stages, start)
+            stages.append(stage_id)
+            stop = self._stop_check(stage_id, state)
+            if stop is not None:
+                logger.info("Run stopped at %s: %s (%s)", stage_id, stop[0], stop[1])
+                return self._result(state, stage_id, *stop, stages, start)
+            if stop_after == stage_id:
+                break
+        return self._result(state, final_stage, StageStatus.NORMAL, None, stages, start)
 
-            # Execute stage handler if registered
-            handler = self._handlers.get(stage_id)
-            if handler:
-                try:
-                    state = handler(state)
-                except Exception as e:
-                    logger.error("Stage %s failed: %s", stage_id, e)
-                    outcome = StageOutcome.FAILED
-                    stage_status = StageStatus.ERROR
-                    error = str(e)
-                    break
+    @staticmethod
+    def _stop_check(stage_id: str, state) -> tuple[StageStatus, str | None] | None:
+        if not isinstance(state, PipelineState):
+            return StageStatus.ERROR, "handler_returned_non_state"
+        status = state.stage_status
+        if status is None:
+            return StageStatus.ERROR, "stage_status_missing"
+        if status is not StageStatus.NORMAL:
+            return status, state.deny_reason
+        return _enforce(stage_id, state)
 
-            # Check cordon outcomes
-            if stage_id in CORDON_STAGES:
-                cordon = self._check_cordon(state, stage_id)
-                if cordon:
-                    failed_check = cordon.get("failed_check")
-                    cordon_reason = cordon.get("reason")
-                    outcome = self._map_status_to_outcome(StageStatus.DENY)
-                    stage_status = StageStatus.DENY
-                    cordon_stage = stage_id
-                    logger.warning(
-                        "Cordon at %s: %s (check: %s)",
-                        stage_id, cordon_reason, failed_check,
-                    )
-                    break
-
-        duration_ms = (time.monotonic() - start_time) * 1000
-
+    @staticmethod
+    def _result(state: PipelineState, stage_id: str, status: StageStatus, reason: str | None,
+                stages: list[str], start: float) -> PipelineRunResult:
         return PipelineRunResult(
-            final_state=state,
-            final_stage=final_stage,
-            outcome=outcome,
-            status=stage_status,
-            error=error,
-            cordon_stage=cordon_stage,
-            cordon_reason=cordon_reason,
-            failed_check=failed_check,
-            duration_ms=duration_ms,
+            final_state=state, final_stage=stage_id, status=status, reason=reason,
+            stages_run=tuple(stages), duration_ms=(time.monotonic() - start) * 1000,
         )
 
-    def _check_cordon(self, state: PipelineState, stage_id: str) -> dict | None:
-        """Check if execution should be cordoned at this stage."""
-        if stage_id == "S7":
-            pd = state.path_decision
-            if pd and hasattr(pd, 'can_proceed'):
-                if not pd.can_proceed:
-                    return {"failed_check": "path_routing", "reason": pd.reason}
-        elif stage_id == "S8":
-            sr = state.safety_result
-            if sr and hasattr(sr, 'allowed'):
-                if not sr.allowed:
-                    return {"failed_check": sr.failed_check, "reason": sr.reason or "safety gate denied"}
-        elif stage_id == "S10":
-            conf = state.confirmation
-            if conf and hasattr(conf, 'status'):
-                if conf.status in ("rejected", "expired"):
-                    return {"failed_check": "confirmation_" + conf.status, "reason": f"Confirmation {conf.status}"}
-        elif stage_id == "S11":
-            vr = state.validation_result
-            if vr and hasattr(vr, 'is_valid'):
-                if not vr.is_valid:
-                    return {"failed_check": vr.failed_check, "reason": vr.reason or "Plan validation failed"}
-        return None
 
-    def _map_status_to_outcome(self, status: StageStatus) -> StageOutcome:
-        """Map StageStatus to StageOutcome for the pipeline runner."""
-        mapping = {
-            StageStatus.NORMAL: StageOutcome.CONTINUE,
-            StageStatus.CLARIFY: StageOutcome.DELEGATE,
-            StageStatus.DENY: StageOutcome.CORDON,
-            StageStatus.ERROR: StageOutcome.FAILED,
-            StageStatus.PROBE: StageOutcome.RETRY,
-        }
-        return mapping.get(status, StageOutcome.FAILED)
-
-    async def start(self) -> None:
-        """Start the pipeline runner."""
-        self._running = True
-        logger.info("PipelineRunner started")
-
-    async def stop(self) -> None:
-        """Stop the pipeline runner."""
-        self._running = False
-        logger.info("PipelineRunner stopped")
+def build_pipeline(deps: PipelineDependencies) -> PipelineRunner:
+    """The composition root for S0–S11: the only place handlers meet dependencies."""
+    handlers: dict[str, StageHandler] = {
+        "S1": s1,
+        "S2": lambda st: s2(st, deps.llm),
+        "S3": lambda st: s3(st, deps.registry),
+        "S4": s4,
+        "S5": lambda st: s5(st, deps.registry),
+        "S6": s6,
+        "S7": lambda st: s7(st, deps.policy),
+        "S8": lambda st: s8(st, deps.s8),
+        "S9": s9,
+        "S10": lambda st: s10(st, deps.confirmation_store),
+        "S11": s11,
+    }
+    return PipelineRunner(handlers, deps)

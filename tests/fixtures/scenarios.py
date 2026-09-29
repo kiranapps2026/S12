@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from engine.stages.s10_confirmation.store import ConfirmationStoreImpl
 
-from contracts.capability import CapabilityMetadata
+from contracts.capability import BindingRow, CapabilityMetadata, CapabilityRegistry
 
 
 class RecordingConfirmationStore:
@@ -157,3 +157,52 @@ def _build_capability_dicts(scenario: Scenario) -> list[dict]:
             "tags": [],
         })
     return [primary] + extras
+
+
+_OP_TAG = {"R": "query", "W": "create", "D": "delete", "IRREVERSIBLE": "create"}
+
+
+class ScenarioRegistry(CapabilityRegistry):
+    """Fixture capability registry configured entirely by a Scenario (R-T).
+
+    Not in src/: production registries read the database. `capabilities=0` yields an
+    empty registry; extra capabilities are alternatives with the same properties.
+    """
+
+    def __init__(self, scenario: Scenario) -> None:
+        self._sc = scenario
+
+    def _caps(self) -> list[CapabilityMetadata]:
+        sc = self._sc
+        rf = sc.effective_risk_floor()
+        rr = sc.risk_rule if sc.risk_rule is not None else 0.0
+        ri = sc.risk_implied if sc.risk_implied is not None else 0.0
+        return [
+            CapabilityMetadata(
+                capability_id=f"cap-{i + 1}",
+                name="TestCap" if i == 0 else f"AltCap{i}",
+                description="", namespace="test", input_schema={}, output_schema={},
+                risk_floor=rf, risk_rule=rr, risk_implied=ri,
+                mutation_type=sc.mutation, estimated_cost_units=sc.cost,
+                tags=[_OP_TAG.get(sc.mutation, "query")],
+            )
+            for i in range(sc.capabilities)
+        ]
+
+    async def discover(self, intent, tenant_id):
+        return self._caps()
+
+    async def get_capability(self, capability_id):
+        return next((c for c in self._caps() if c.capability_id == capability_id), None)
+
+    async def list_bindings(self, capability_id):
+        return [
+            BindingRow(
+                binding_id=f"binding-{capability_id}", capability_id=capability_id,
+                provider="local", adapter_class="DefaultAdapter",
+                capability_version="1.0.0", binding_version="1.0.0",
+                policy_version="policy-1", risk_policy_version="1.0.0",
+                authorization_version="1.0.0", effective_risk=0.0,
+                kernel_op_id=f"kernel-op-{capability_id}", engine_module="engines.default",
+            )
+        ]

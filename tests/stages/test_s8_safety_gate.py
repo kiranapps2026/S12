@@ -10,6 +10,7 @@ Source: DATA_CONTRACTS §8, PIPELINE_STAGES §10
 from __future__ import annotations
 
 import asyncio
+from tests.fixtures.deps import make_s8_deps
 import uuid
 import dataclasses
 import time
@@ -438,6 +439,7 @@ class TestMissingDependencyDenies:
     """Missing deps → DENY with _unavailable."""
 
     @pytest.mark.parametrize("omit_field,expected_check", [
+        ("policy", "kill_switch"),
         ("auth_state", "user_active"),
         ("circuit_breaker", "circuit_breaker"),
         ("mutation_policy", "mutation_safety"),
@@ -446,7 +448,8 @@ class TestMissingDependencyDenies:
         """Missing dependency → DENY with correct unavailable reason."""
         state = state_ready_for_s8()
         deps = S8Dependencies(
-            policy=KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=0.95),
+            policy=None if omit_field == "policy" else KernelPolicy(
+                kill_switch_engaged=False, risk_deny_threshold=0.95),
             auth_state=None if omit_field == "auth_state" else ConfigurableAuthState(),
             circuit_breaker=None if omit_field == "circuit_breaker" else ConfigurableCircuitBreaker(),
             mutation_policy=None if omit_field == "mutation_policy" else ConfigurableMutationPolicy(),
@@ -620,6 +623,14 @@ class TestMissingUpstreamOutputs:
         )
         result = asyncio.run(handle(state, deps)).safety_result
         assert (result.allowed, result.failed_check) == (False, "missing_task_profile")
+
+    def test_s8_missing_task_profile_denies(self):
+        """R-L: no task_profile -> DENY, reason missing_task_profile, status DENY."""
+        state = dataclasses.replace(state_ready_for_s8(), task_profile=None)
+        out = asyncio.run(handle(state, make_s8_deps(kill_switch=False)))
+        assert (out.safety_result.allowed, out.safety_result.reason) == (False, "missing_task_profile")
+        assert str(out.stage_status).lower() == "deny"
+        assert out.execution_context.auth_passed is False
 
     def test_missing_frozen_binding_denies(self):
         """No frozen_binding_identity → DENY missing_frozen_binding."""

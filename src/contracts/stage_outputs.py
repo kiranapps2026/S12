@@ -70,6 +70,7 @@ class CapabilityMatch:
     estimated_cost_units: int = 1  # Budget cost per step (S6 reads this)
     risk_rule: float = 0.0  # Policy-derived risk (S5 uses in max formula)
     risk_implied: float = 0.0  # Context-implied risk (S5 uses in max formula)
+    candidate_count: int = 1  # Distinct capabilities the registry returned (S4/S7 read this)
 
 
 
