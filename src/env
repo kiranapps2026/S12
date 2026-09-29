@@ -1,3 +1,0 @@
-DEEPSEEK_API_KEY=sk-d8f4ed57c0794eb5bf74c8de519160df
-TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/suprpg_test
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/suprpg
