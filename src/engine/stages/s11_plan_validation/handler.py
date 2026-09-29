@@ -58,6 +58,11 @@ def _chain_matches(state: PipelineState, plan) -> bool:
     expected = plan_step_bindings(state)
     if expected is None or len(expected) != len(plan.steps):
         return False
+    # The manifest carries ONE version of each kind and S12 entry compares the binding row's
+    # version to it (gate C32): a chain whose bindings disagree cannot be represented, so it is refused.
+    for name in ("capability_version", "binding_version", "risk_policy_version", "authorization_version"):
+        if len({getattr(item.binding, name) for item in expected}) != 1:
+            return False
     for item, step in zip(expected, plan.steps):
         if (step.id != item.step_data.get("step_id")
                 or step.kernel_op_id != item.binding.kernel_op_id
@@ -125,8 +130,8 @@ async def handle(state: PipelineState) -> PipelineState:
     bindings = state.bindings
 
     def version(name: str) -> str:
-        """One version for a single binding; the distinct versions, sorted, for a chain."""
-        return "|".join(sorted({getattr(b, name) for b in bindings}))
+        """The one version every binding carries (a chain with mixed versions was refused above)."""
+        return getattr(bindings[0], name)
 
     manifest = ExecutionManifest(
         execution_id=plan_result.execution_id,
