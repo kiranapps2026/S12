@@ -27,7 +27,7 @@ Order matters: A → B → (C, D in parallel) → tag → E → F. Blocking item
 ### Phase A — Owner rulings and integrity (blocks the tag)
 | # | Item | Who |
 |---|---|---|
-| A1 **[B]** | Update `$expected` in `tools/owner_verify.ps1` to the current certifier hash, re-run `owner_pin.ps1` for pinned files | owner |
+| A1 **[B]** | ~~Update `$expected` in `tools/owner_verify.ps1`~~ done on the owner's instruction (equals the certifier hash and `docs/gates/owner_certify.sha256`); it must be updated again after any certifier edit | done |
 | A2 **[B]** | Rule R-AA (S0.1 pause check), the S1 reference-resolution choices | owner |
 | A3 **[B]** | Rule E1–E5 (webhook credential columns, `event_log` payload, synchronous run, no RLS on credentials, webhook-only sources) | owner |
 | A4 **[B]** | Ratify or overrule the working M2 rulings R-AB…R-AL (`M2_RULINGS.md`) | owner |
@@ -63,10 +63,10 @@ Everything about plans that combine capabilities, in one place.
 | # | Item | Blocks the tag? |
 |---|---|---|
 | **D1 — M2a finish** | | |
-| D1a | Live proof: a real model answering with `steps`; prompt tuning; ordering errors ("email before create") | **yes** |
-| D1b | Ratified M2 rulings and R-AF inverse behaviour confirmed with real registry data (`kernel_ops.inverse` is empty in seed data) | **yes** |
-| D1c | S12 per-step contract accepted: G1–G8; S12 entry, admission and loop already work per step (prototype) | **yes** (decision) |
-| D1d | Observation metadata for real operations (migration 008 columns are empty, so every W/D/IRREVERSIBLE plan is denied at S12 entry) | **yes** for any mutating chain |
+| D1a | Live proof: a real model answering with `steps`; prompt tuning; ordering errors ("email before create") | **yes** — live test written (`test_live_chain.py`), needs the owner's key to run |
+| D1b | Ratified M2 rulings; R-AF inverse verified with registry data | inverse path proven end to end on seed data; rulings still yours (A4) |
+| D1c | S12 per-step contract accepted: G1–G8; S12 entry, admission and loop already work per step (prototype) | **yes** (decision, A5) |
+| D1d | Observation metadata for real operations | mechanism, template and readiness query in `D1_CHAIN_CATALOG.md`; **the owner's real catalog still has to be filled** |
 | D1e | Pre-flight parameter validation against a kernel input schema (none exists; R-AE accepted unvalidated parameters for M2a) | no (M2b prerequisite) |
 | D1f | Compensation policy for a failed step after earlier ones succeeded (S13 rollback, D2/M17) | no (S13) |
 | **D2 — M2b step-to-step data flow** | | |

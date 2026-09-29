@@ -47,3 +47,15 @@ async def _seed_tenant(connection, tenant: str) -> None:
                              " VALUES ($1, $2, $3, $4)", f"{tenant}.member", tenant, f"{tenant}.user", f"{tenant}.ws")
     await connection.execute("INSERT INTO connections (connection_id, tenant_id, user_id, workspace_id)"
                              " VALUES ($1, $2, $3, $4)", f"{tenant}.conn", tenant, f"{tenant}.user", f"{tenant}.ws")
+
+
+#: What the registry must say about the seed operations for chains to run end to end (D1): the inverse of
+#: a create, and how each mutation is observed. Applied per test as setup SQL; the default seed leaves
+#: these empty on purpose (tests that prove a missing observation method is refused rely on that).
+CHAIN_CATALOG_SQL = (
+    "UPDATE kernel_ops SET inverse = 'crm.contact_delete' WHERE kernel_op_id = 'crm.contact_create'",
+    "UPDATE kernel_ops SET observation_method = 'get_contact', observation_identifier_field = 'id'"
+    " WHERE kernel_op_id = 'crm.contact_create'",
+    "UPDATE kernel_ops SET observation_method = 'get_contact', observation_expects_absent = true,"
+    " observation_identifier_field = 'id' WHERE kernel_op_id = 'crm.contact_delete'",
+)

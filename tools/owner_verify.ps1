@@ -3,7 +3,7 @@
 $ErrorActionPreference = "Stop"
 Set-Location "C:\Users\Administrator\Documents\1SuperAgents"
 
-$expected = "E5D5AB0D99D7D427B965526C3D7309BBF46127D7FE31B4416E03860C5748F4DF"
+$expected = "6B9D1C301DC1D4461923610F652806DAB0015FB2D4B63CBF113772F94A734043"
 $actual = (Get-FileHash tools\owner_certify.py -Algorithm SHA256).Hash
 if ($actual -ne $expected) { Write-Host "FAIL: certifier was modified ($actual). Certification void." -ForegroundColor Red; exit 1 }
 $stored = (Get-Content docs\gates\owner_certify.sha256 -Raw).Trim()
