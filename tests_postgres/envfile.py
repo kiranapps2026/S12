@@ -13,7 +13,10 @@ ROOT = Path(__file__).resolve().parent.parent
 def load_dotenv(path: Path = ROOT / ".env") -> None:
     if not path.is_file():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    raw = path.read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        raise RuntimeError(f"{path.name} is UTF-16 (PowerShell '>' does that): re-save it as UTF-8")
+    for line in raw.decode("utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
