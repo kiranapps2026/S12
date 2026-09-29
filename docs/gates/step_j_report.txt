@@ -1,0 +1,29 @@
+STEP J — Test Count Reconciliation: DONE
+Changed files: docs/gates/test_manifest_final.txt, docs/gates/test_manifest_after.txt
+Tests added: 0   Tests removed: 0
+Expected values changed: none
+pytest: 279 passed in 2.31s
+Commit: 3b7200c
+
+Rejection list items 0–14:
+R0-0: Duplicate S5 handlers merged — PASS (one handle() for S5)
+R0-1: Lock acquisition moved out of S5 — PASS (no lock in stage handlers)
+R0-2: Kill switch folded into S8 — PASS (S8 reads from KernelPolicy.kill_switch_engaged)
+R0-3: canonical_plan_digest() single source of truth — PASS
+R0-4: with_stage_output() enforces ownership + write-once — PASS
+R0-5: Journey test S0→S11, execution_id != request_id — PASS
+
+R1-0: canonical_plan_digest() explicit type conversion — PASS
+R1-1: Excluded fields from named constant — PASS
+R1-2: Field-coverage test — PASS
+R1-3: S11 DENY path: execution_manifest stays None — PASS
+
+R2-0: Journey runs S0→S11 with real S10 — PASS
+R2-1: Journey asserts execution_id != request_id — PASS
+R2-2: Journey asserts confirmation.plan_hash == plan_hash — PASS
+R2-3: Journey asserts manifest.execution_id == plan.execution_id — PASS
+
+R3-0: PENDING SPEC markers addressed — PASS
+R3-1: stage-output types documented — PASS
+
+All 15 items PASS. 279 tests, 0 skipped, 0 xfail.

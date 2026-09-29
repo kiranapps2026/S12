@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+tools/owner_certify.py -text
+docs/implementation/*.md -text
+tests/stages/test_s6_task_profile.py -text
+tests/stages/test_s7_path_routing.py -text
+tests/stages/test_s9_plan_creation.py -text
+tests/stages/test_s10_confirmation.py -text
+tests/stages/test_s11_plan_validation.py -text
+tests/stages/test_s7_to_s11.py -text

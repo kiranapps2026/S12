@@ -1,0 +1,87 @@
+"""
+S6 Task Profile Assembly — assemble complete task profile from FrozenBindingIdentity.
+
+CRITICAL: S6 reads effective_risk and mutation_type from FrozenBindingIdentity.
+It does NOT recompute risk. Risk was computed ONCE at S5 and frozen there.
+
+Source: DATA_CONTRACTS.md §7, PIPELINE_STAGES.md §8
+Owner: S6 / Task Profile Assembly
+"""
+
+from __future__ import annotations
+
+import logging
+
+from contracts.pipeline_state import PipelineState
+from contracts.frozen_binding import FrozenBindingIdentity
+from contracts.safety import TaskProfile
+
+logger = logging.getLogger(__name__)
+
+
+class TaskProfileAssemblyError(Exception):
+    """Failed to assemble task profile."""
+    pass
+
+
+async def handle(state: PipelineState) -> PipelineState:
+    """
+    S6 handler: assemble TaskProfile from FrozenBindingIdentity.
+
+    Reads FrozenBindingIdentity from PipelineState.frozen_binding_identity (S5 output).
+    Reads execution_context for context fields.
+    Does NOT recompute risk/mutation — reads from frozen binding.
+    Computes requires_confirmation per DATA_CONTRACTS §7 confirmation requirements table.
+
+    Returns updated PipelineState with task_profile set.
+    """
+    frozen = state.frozen_binding_identity
+    if frozen is None:
+        raise TaskProfileAssemblyError("No FrozenBindingIdentity from S5")
+
+    context = state.execution_context
+    if context is None:
+        raise TaskProfileAssemblyError("No ExecutionContext from S0")
+
+    # Confirmation per DATA_CONTRACTS §7 — full 4-rule table (R-V):
+    #   Rule 1: IRREVERSIBLE mutation → always confirm
+    #   Rule 2: effective_risk > 0.7 → confirm
+    #   Rule 3: DELETE + per_step_cost > 5 → confirm
+    #   Rule 4: total_cost (per_step_cost * steps_estimated) > 20 → confirm
+    graph_analysis = state.graph_analysis
+    capability_match = state.capability_match
+    per_step_cost = capability_match.estimated_cost_units if capability_match else 1
+    steps_est = len(graph_analysis.execution_steps) if (graph_analysis and graph_analysis.execution_steps) else 1
+    total_cost = per_step_cost * steps_est
+    requires_confirmation = (
+        frozen.effective_mutation == "IRREVERSIBLE"
+        or frozen.effective_risk > 0.7
+        or (frozen.effective_mutation == "D" and per_step_cost > 5)
+        or total_cost > 20
+    )
+
+    # Get sanitized input for metadata
+    norm_input = state.normalized_input
+
+    # Assemble TaskProfile from FrozenBindingIdentity (risk/mutation READ from frozen, NOT recomputed)
+    task_profile = TaskProfile(
+        intent="unknown",
+        capabilities=(frozen.capability_id,),
+        graph_type=graph_analysis.complexity if graph_analysis else "simple",
+        steps_estimated=steps_est,
+        mutations=(frozen.effective_mutation,) * steps_est,
+        risk=frozen.effective_risk,
+        cost=total_cost,
+        requires_confirmation=requires_confirmation,
+        resource_scope=context.resource_scope or context.tenant_id,
+        providers=(frozen.provider,),
+    )
+
+    logger.info(
+        "S6: assembled task profile: risk=%.4f, mutation=%s, requires_confirmation=%s",
+        task_profile.risk,
+        task_profile.mutations[0],
+        task_profile.requires_confirmation,
+    )
+
+    return state.with_stage_output("S6", task_profile)

@@ -1,0 +1,19 @@
+ID | check | PASS/FAIL | detail
+---|-------|-----------|--------
+CHK-01 | CHK-01 | PASS | 0 matches
+CHK-02 | CHK-02 | PASS | none present
+CHK-03 | CHK-03 | PASS | 0 raw dict/Any fields
+CHK-04 | CHK-04 | PASS | both cases raised
+CHK-05 | CHK-05 | FAIL | got ('S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12', 'S13', 'S14', 'S15')
+CHK-06 | CHK-06 | FAIL | field has default/default_factory
+CHK-07 | CHK-07 | PASS | 0 matches
+NO_HIDDEN_GLOBALS | NO_HIDDEN_GLOBALS | FAIL | checker error: 'Attribute' object has no attribute 'id'
+CHK-09 | CHK-09 | FAIL | src\contracts\authorization_state_provider.py:InMemoryAuthorizationStateProvider; src\engine\stages\s8_safety_gate\dependencies.py:InMemoryAuthorizationStateProvider
+CHK-10 | CHK-10 | FAIL | src\contracts\configuration_version.py; src\engine\stages\s14_verification\handler.py
+CHK-11 | CHK-11 | PASS | 0 matches
+CHK-12 | CHK-12 | FAIL | missing: ['test_kill_switch_engaged_denies', 'test_kill_switch_policy_missing_denies', 'test_kill_switch_policy_raises_denies', 'test_kill_switch_evaluated_first', 'test_status_denials', 'test_all_checks_pass_allows', 'test_s8_matrix', 'test_all_unknown_denies', 'test_missing_dependency_denies', 'test_llm_injection_does_not_change_decision', 'test_s8_missing_task_profile_denies', 'test_stage_sequence_is_s0_to_s11', 'test_uncaught_exception_becomes_error_and_stops', 'test_no_binding_fields_on_context', 'test_s5_writes_only_policy_version_fields', 'test_with_stage_output_rejects_wrong_type', 'test_with_stage_output_rejects_non_owner', 'test_with_stage_output_rejects_second_write', 'test_s11_writes_two_owned_fields', 'test_s6_to_s11_no_resolver_calls', 'test_frozen_binding_identity_preserved', 'test_full_journey_real_handlers', 'test_s2_deny', 'test_s2_clarify', 'test_s8_deny', 'test_s10_expired_deny', 'test_s11_plan_mutation_deny']
+CHK-13 | CHK-13 | FAIL | ======================== 5 failed, 197 passed in 2.28s ========================
+CHK-14 | CHK-14 | PASS | collected 202
+CHK-15 | CHK-15 | FAIL | missing: ['docs\\gates\\test_manifest_final.txt']
+
+Total: 15 checks, 7 PASS, 8 FAIL
