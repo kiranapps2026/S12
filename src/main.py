@@ -52,8 +52,9 @@ def validate_contracts() -> bool:
         return False
 
 
-async def run_kernel() -> None:
-    """Run the main execution kernel."""
+def run_kernel() -> None:
+    """Serve the HTTP API. The S0–S11 runner is built by the composition root and
+    injected into the app; there is no separate engine loop."""
     if not validate_contracts():
         logger.error("Contract validation failed — aborting startup")
         sys.exit(1)
@@ -61,34 +62,13 @@ async def run_kernel() -> None:
     logger.info("SuprAgents kernel starting...")
     logger.info("Pipeline: %s", " → ".join(PIPELINE_SEQUENCE))
 
-    # Import here to avoid circular imports and allow contract validation first
-    from db.session import DatabaseSession
-    from engine.control_plane.pipeline import PipelineEngine
-    from engine.observability.ledger import EventLedger
+    import uvicorn
+    from app import create_app
 
-    db = DatabaseSession()
-    ledger = EventLedger(db)
-    pipeline = PipelineEngine(db, ledger)
-
-    # Setup signal handlers for graceful shutdown
-    shutdown_event = asyncio.Event()
-
-    def handle_signal(signum: int, _frame: Any) -> None:
-        logger.info("Received signal %d, shutting down...", signum)
-        shutdown_event.set()
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-    try:
-        await pipeline.start()
-        logger.info("Pipeline engine started — waiting for requests")
-        await shutdown_event.wait()
-    finally:
-        logger.info("Shutting down pipeline engine...")
-        await pipeline.stop()
-        await db.close()
-        logger.info("Shutdown complete")
+    # Production pipeline/authenticator wiring (DB registry, auth-state provider, LLM,
+    # confirmation store) is not part of this branch yet: without them /execute answers
+    # 503 rather than running unauthenticated.
+    uvicorn.run(create_app(), host="0.0.0.0", port=8000)
 
 
 async def run_migrations() -> None:
@@ -176,7 +156,7 @@ def main() -> int:
         # Worker startup — handled by worker module
         pass
     else:
-        asyncio.run(run_kernel())
+        run_kernel()
 
     return 0
 

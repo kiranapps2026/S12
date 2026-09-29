@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import settings
+from config import get_settings
 from db.session import DatabaseSession
 
 logger = logging.getLogger(__name__)
@@ -42,14 +42,22 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+def create_app(pipeline=None, authenticator=None) -> FastAPI:
+    """Create the FastAPI application.
+
+    `pipeline` (a PipelineRunner from build_pipeline) and `authenticator` are injected by
+    the composition root. Without them /execute answers 503 — it never runs unauthenticated
+    or on a half-built pipeline.
+    """
     app = FastAPI(
         title="SuprAgents API",
         description="Multi-tenant durable execution kernel for AI workers",
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    app.state.pipeline = pipeline
+    app.state.authenticator = authenticator
 
     # CORS middleware
     app.add_middleware(
@@ -72,7 +80,7 @@ def create_app() -> FastAPI:
     # Health check
     @app.get("/health")
     async def health_check():
-        return {"status": "healthy", "app": settings.app_name}
+        return {"status": "healthy", "app": get_settings().app_name}
 
     # Include routers
     from engine.control_plane.api import router as control_plane_router

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from ..core.config import settings
+from config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 def get_engine() -> AsyncEngine:
     """Get or create the async database engine (lazy singleton via function attribute)."""
     if get_engine._value is None:
+        settings = get_settings()
         get_engine._value = create_async_engine(
             settings.database_url,
             pool_size=settings.db_pool_size,

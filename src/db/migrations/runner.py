@@ -44,7 +44,8 @@ class MigrationRunner:
         self._ensure_alembic_setup()
 
         # Set database URL for Alembic
-        from config import settings
+        from config import get_settings
+        settings = get_settings()
         os.environ["DATABASE_URL"] = settings.database_url
 
         # Run Alembic upgrade
@@ -186,14 +187,14 @@ from alembic import context
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from config import settings
+from config import get_settings
 from db.models import Base
 from db.session import get_engine
 
 config = context.config
 
 # Set database URL from settings
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
