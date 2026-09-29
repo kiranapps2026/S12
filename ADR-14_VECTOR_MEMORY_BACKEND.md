@@ -186,11 +186,17 @@ A shared cache (Redis) is out of scope until the fleet phase (gate §1; MEMORY_A
 
 ## 7. Open questions for the owner
 
-1. Option A, B or C (recommended: C)?
-2. If LanceDB is ever enabled: accept an I-001 exception for that store, or require that LanceDB is used only for data that is not tenant-scoped (none known today)?
-3. Can one embedding model be fixed per tenant, or must mixed models coexist (separate tables/partitions per model)?
-4. Does erasure (`purge`) need to cover backups? If yes: immediately (KEK rotation and destruction of the old KEK version, §4a.4) or when backups expire (bounded by backup retention)?
-5. Is the default inline threshold of 256 KiB acceptable (§4a.2)?
-6. Where will the memory service run: in the same AWS region as the bucket, or outside AWS (per-GB transfer charges, §4a.6)?
-7. What is the erasure SLA? It bounds the lifecycle expiry of noncurrent S3 versions and the backup retention.
-8. Does any record class need immutable retention (Object Lock)? If so, which, and in a separate bucket (§4a.4)?
+The question numbers are stable (other documents cite them). Answer them in the **dependency order** below: each answer narrows the ones after it. The recommendations are **not decisions**; nothing in this ADR is decided until the owner answers.
+
+| Order | # | Question | Depends on | Recommendation | What the answer changes |
+|---|---|---|---|---|---|
+| 1 | **Q1** | Vector index: Option A, B or C (Part 2)? | — | **C** — pgvector in PostgreSQL by default; LanceDB optional per deployment | The store every other answer assumes. If A, Q2 is moot |
+| 2 | **Q6** | Where will the memory service run: in the bucket's AWS region, or outside AWS (§4a.6)? | — | **Same AWS region** as the bucket | Outside AWS, S3 reads are charged per GB, which argues for a higher Q5 threshold |
+| 3 | **Q5** | Is the 256 KiB inline threshold acceptable (§4a.2)? | Q1, Q6 | **Yes**, if Q6 is "same region" | Where large **payloads** live. Embeddings stay in PostgreSQL whatever the threshold |
+| 4 | **Q3** | One embedding model per tenant, or several side by side? | Q1 | **One per tenant** | One vector size per tenant partition (simpler schema and index), or one partition per model. It does **not** decide MR-3: where embedding happens (Runtime Contract addition or provider-adapter operation) stays a separate question |
+| 5 | **Q2** | If LanceDB is ever enabled: accept an I-001 exception for it? | Q1 (only if B or C) | **No** — use LanceDB only for data that is not tenant-scoped, or not at all | Whether LanceDB can hold tenant data |
+| 6 | **Q4** | Must erasure cover backups — and if so, **how**? | Q1 | **Yes, immediately:** destroy the tenant key (makes every S3 copy unreadable), then rotate the KEK and destroy the old KEK version (§4a.4) | Without the KEK step, PostgreSQL backups keep the wrapped tenant key until they expire, and erasure in backups completes only then |
+| 7 | **Q7** | What is the erasure deadline? | Q4 | Owner to set (for example 30 days) | Bounds the lifecycle expiry of noncurrent S3 versions, the backup retention and the KEK rotation cadence. It does **not** affect Object Lock |
+| 8 | **Q8** | Does any record class need immutable retention (Object Lock)? | — (independent) | **No**, unless a law requires it; then a **separate** bucket | Only whether a separate locked archive bucket exists |
+
+**The memory bucket never uses Object Lock, whatever Q4, Q7 or Q8 say:** live erasure (`purge`, Part 1) must always be able to delete objects, even if backups are not covered (Q4 = no). Only Q8 can add Object Lock, and only on a separate bucket.
