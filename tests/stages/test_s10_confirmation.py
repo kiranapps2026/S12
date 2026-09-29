@@ -1,5 +1,10 @@
 """
-GOLDEN TEST FILE (OWNER). Pinned by hash; the agent must not edit it.
+GOLDEN TEST FILE (OWNER). Pinned by hash. The agent edits it only on the owner's explicit
+instruction; the amendments below were made on such an instruction.
+AMENDMENTS: reply semantics. A required confirmation stops the run (CLARIFY confirmation_required);
+the confirmed re-entry consumes it with the AUTHENTICATED replier (resume_confirmation), only
+once, only for the user and tenant it was issued to; reject is possible only for that user.
+The fixture `consume` accepts `tenant_id=` (default tenant-1).
 Rulings: runbook R-R (S10 writes ConfirmationOutcome), R-Z (store receives tenant_id and
 execution_id), C20 (conditional consume: expiry, user and plan_hash must match).
 
@@ -86,3 +91,60 @@ def test_s10_wrong_hash_denies():
                    now=time.time()) == "consumed"
     assert consume(sc, c.confirmation_id, user_id=c.user_id, plan_hash=c.plan_hash,
                    now=time.time()) == "confirmation_mismatch"
+
+
+def test_s10_status_not_required_is_normal_required_is_clarify():
+    sc = make_scenario(**LOW)
+    out = run_stage("S10", state_ready_for("S10", sc), sc)
+    assert (str(out.stage_status).lower(), out.deny_reason) == ("normal", None)
+    sc, _, out = _required_state()
+    assert (str(out.stage_status).lower(), out.deny_reason) == ("clarify", "confirmation_required")
+
+
+def test_s10_confirmation_is_bound_to_its_tenant():
+    sc, state, out = _required_state()
+    c = out.confirmation.confirmation
+    assert consume(sc, c.confirmation_id, user_id=c.user_id, plan_hash=c.plan_hash,
+                   now=time.time(), tenant_id="another-tenant") == "confirmation_mismatch"
+    assert consume(sc, c.confirmation_id, user_id=c.user_id, plan_hash=c.plan_hash,
+                   now=time.time()) == "consumed"
+
+
+def test_s10_reject_only_by_its_user_and_then_it_cannot_be_consumed():
+    import asyncio
+    sc, state, out = _required_state()
+    c = out.confirmation.confirmation
+    store = sc.confirmation_store
+    assert asyncio.run(store.reject(c.confirmation_id, tenant_id="tenant-1", user_id="someone-else")) is False
+    assert asyncio.run(store.reject(c.confirmation_id, tenant_id="tenant-2", user_id=c.user_id)) is False
+    assert asyncio.run(store.reject(c.confirmation_id, tenant_id="tenant-1", user_id=c.user_id)) is True
+    assert asyncio.run(store.reject(c.confirmation_id, tenant_id="tenant-1", user_id=c.user_id)) is False
+    assert consume(sc, c.confirmation_id, user_id=c.user_id, plan_hash=c.plan_hash,
+                   now=time.time()) == "confirmation_mismatch"
+
+
+def test_s10_resume_uses_the_replying_user_not_the_stored_one():
+    import asyncio
+    from engine.stages.s10_confirmation.handler import resume_confirmation
+    sc, state, out = _required_state()
+    wrong = asyncio.run(resume_confirmation(out, sc.confirmation_store, user_id="someone-else"))
+    assert (str(wrong.stage_status).lower(), wrong.deny_reason) == ("deny", "confirmation_mismatch")
+    assert wrong.confirmation.confirmation.consumed_at is None
+    right = asyncio.run(resume_confirmation(out, sc.confirmation_store, user_id=out.execution_context.user_id))
+    assert str(right.stage_status).lower() == "normal"
+    assert right.confirmation.confirmation.consumed_at is not None
+    again = asyncio.run(resume_confirmation(out, sc.confirmation_store, user_id=out.execution_context.user_id))
+    assert again.deny_reason == "confirmation_mismatch"                 # single use
+
+
+def test_s10_resume_after_expiry_denies_with_confirmation_expired():
+    import asyncio
+    import dataclasses
+    from contracts.execution_manifest import ConfirmationOutcome
+    from engine.stages.s10_confirmation.handler import resume_confirmation
+    sc, state, out = _required_state()
+    c = out.confirmation.confirmation
+    rows = sc.confirmation_store._inner._rows
+    rows[c.confirmation_id] = (dataclasses.replace(c, expires_at=time.time() - 1), *rows[c.confirmation_id][1:])
+    denied = asyncio.run(resume_confirmation(out, sc.confirmation_store, user_id=c.user_id))
+    assert (str(denied.stage_status).lower(), denied.deny_reason) == ("deny", "confirmation_expired")

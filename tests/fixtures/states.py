@@ -195,9 +195,9 @@ def run_stage(stage_id: str, state: PipelineState, scenario: Scenario) -> Pipeli
 
 
 def consume(scenario: Scenario, confirmation_id: str, *, user_id: str, plan_hash: str,
-            now: float) -> str:
+            now: float, tenant_id: str | None = None) -> str:
     """Call the production store's conditional consume; returns its result code."""
-    tenant_id = getattr(scenario, "tenant_id", "tenant-1")
+    tenant_id = tenant_id or "tenant-1"
     return asyncio.run(scenario.confirmation_store.consume(
         confirmation_id, tenant_id=tenant_id, user_id=user_id, plan_hash=plan_hash, now=now))
 

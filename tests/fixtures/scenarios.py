@@ -207,9 +207,9 @@ class ScenarioRegistry(CapabilityRegistry):
             BindingRow(
                 binding_id=f"binding-{capability_id}", capability_id=capability_id,
                 provider="local", adapter_class="DefaultAdapter",
-                capability_version="1.0.0", binding_version="1.0.0",
-                policy_version="policy-1", risk_policy_version="1.0.0",
-                authorization_version="1.0.0", effective_risk=0.0,
+                capability_version="cap-v7", binding_version="bind-v3",
+                policy_version="policy-1", risk_policy_version="risk-v2",
+                authorization_version="auth-v4", effective_risk=0.0,
                 kernel_op_id=f"kernel-op-{capability_id}", engine_module="engines.default",
             )
         ]

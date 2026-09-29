@@ -15,6 +15,7 @@ import logging
 from contracts.pipeline_state import PipelineState
 from contracts.frozen_binding import FrozenBindingIdentity
 from contracts.safety import TaskProfile
+from contracts.stage_registry import StageStatus
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,13 @@ async def handle(state: PipelineState) -> PipelineState:
     # Comparisons are strict. Cross-provider (3+) cannot occur: one binding, one provider (R-U).
     graph_analysis = state.graph_analysis
     capability_match = state.capability_match
-    per_step_cost = capability_match.estimated_cost_units if capability_match else 1
+    # R-V: the capability metadata for the frozen binding's capability is required; without it
+    # the cost is unknown, and an unknown cost is never assumed to be cheap.
+    if (capability_match is None or capability_match.capability_id != frozen.capability_id
+            or not isinstance(capability_match.estimated_cost_units, int)
+            or capability_match.estimated_cost_units < 1):
+        return state.with_status(StageStatus.DENY, "capability_metadata_missing")
+    per_step_cost = capability_match.estimated_cost_units
     steps_est = len(graph_analysis.execution_steps) if (graph_analysis and graph_analysis.execution_steps) else 1
     total_cost = per_step_cost * steps_est
     requires_confirmation = (

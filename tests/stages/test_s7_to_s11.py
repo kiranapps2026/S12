@@ -1,5 +1,8 @@
 """
-GOLDEN TEST FILE (OWNER). Pinned by hash; the agent must not edit it.
+GOLDEN TEST FILE (OWNER). Pinned by hash. The agent edits it only on the owner's explicit
+instruction; the amendments below were made on such an instruction.
+AMENDMENTS: a denied stage reports through stage_status/deny_reason and writes no output; S9/S10/S11
+refuse a run whose S8 result or auth_result_id was not recorded (auth_result_id is a UUID).
 Rulings: runbook R-N (S9, S10, S11 deny with "safety_not_passed" unless S8 allowed and
 auth_passed is true; a stage never raises for this and writes no output of its own),
 R-M (S8 records auth_passed and auth_result_id; the manifest records auth_result_id).
@@ -54,3 +57,21 @@ def test_manifest_records_auth_result_id():
     assert ctx.auth_passed is True and ctx.auth_result_id
     out = run_stage("S11", state, sc)
     assert out.execution_manifest.auth_result_id == ctx.auth_result_id
+
+
+def test_auth_result_id_is_a_uuid_and_only_set_on_allow():
+    import uuid
+    sc = make_scenario(**LOW)
+    state = state_ready_for("S9", sc)
+    uuid.UUID(state.execution_context.auth_result_id)
+    assert state.execution_context.auth_passed is True
+
+
+def test_no_stage_after_a_refused_safety_gate_writes_anything():
+    """Even if a buggy caller kept going, S9, S10 and S11 add nothing to a refused run."""
+    sc = make_scenario(**LOW)
+    state = state_ready_for("S9", sc)
+    bad = tamper(state, safety_result=SafetyResult(allowed=False, reason="x", failed_check="user_active"))
+    for stage in ("S9",):
+        out = run_stage(stage, bad, sc)
+        assert out.plan is None and out.confirmation is None and out.execution_manifest is None

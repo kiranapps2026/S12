@@ -1,5 +1,9 @@
 """
-GOLDEN TEST FILE (OWNER). Pinned by hash; the agent must not edit it.
+GOLDEN TEST FILE (OWNER). Pinned by hash. The agent edits it only on the owner's explicit
+instruction; the amendments below were made on such an instruction.
+AMENDMENTS: strict '>' at the deny threshold (R-Q row 2); the routing decision also sets the stage
+status the runner acts on (deny -> DENY, clarify -> CLARIFY, fast/workflow -> NORMAL).
+The state run_stage returns carries `stage_status` and `deny_reason`.
 Rulings: runbook R-Q (S7 routing table, first match wins), R-N (unmatched → clarify).
 Fixture contract: see tests/stages/test_s6_task_profile.py header.
 """
@@ -20,6 +24,8 @@ ROUTES = [  # id, scenario kwargs, expected decision, expected reason
     ("chain",            dict(risk=0.2,  steps=3, graph="chain",   confidence=0.8),  "workflow", None),
     ("chain_high_risk",  dict(risk=0.9,  steps=2, graph="chain",   confidence=0.8),  "workflow", None),
     ("above_threshold",  dict(risk=0.97, steps=1, graph="simple",  confidence=0.95), "deny",     "risk_above_threshold"),
+    ("just_above_threshold", dict(risk=0.951, steps=1, graph="simple", confidence=0.95), "deny",    "risk_above_threshold"),
+    ("at_threshold_is_not_denied", dict(risk=0.95, steps=1, graph="simple", confidence=0.95), "workflow", None),
     ("low_confidence",   dict(risk=0.2,  steps=1, graph="simple",  confidence=0.4),  "clarify",  "low_confidence"),
     ("mid_confidence",   dict(risk=0.2,  steps=1, graph="simple",  confidence=0.6),  "clarify",  "unmatched_route"),
     ("complex",          dict(risk=0.2,  steps=7, graph="complex", confidence=0.95), "clarify",  "complex_not_supported"),
@@ -63,3 +69,19 @@ def test_s7_unmatched_combination_clarifies(case):
     sc = make_scenario(**kwargs)
     out = run_stage("S7", state_ready_for("S7", sc), sc).path_decision
     assert _decision(out) == "clarify"
+
+
+@pytest.mark.parametrize("case", ROUTES, ids=[c[0] for c in ROUTES])
+def test_s7_status_follows_the_decision(case):
+    _, kwargs, decision, reason = case
+    sc = make_scenario(**kwargs)
+    out = run_stage("S7", state_ready_for("S7", sc), sc)
+    expected_status = {"deny": "deny", "clarify": "clarify"}.get(decision, "normal")
+    assert (str(out.stage_status).lower(), out.deny_reason) == (expected_status, reason)
+
+
+def test_s7_reads_the_threshold_from_policy_only():
+    """A higher threshold in the policy lets the same risk through; nothing else moves it."""
+    for threshold, decision in ((0.95, "deny"), (0.99, "workflow")):
+        sc = make_scenario(risk=0.97, steps=1, graph="simple", confidence=0.95, risk_deny_threshold=threshold)
+        assert _decision(run_stage("S7", state_ready_for("S7", sc), sc).path_decision) == decision

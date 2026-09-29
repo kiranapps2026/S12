@@ -57,9 +57,12 @@ async def handle(state: PipelineState) -> PipelineState:
     execution_id = str(uuid.uuid4())
     plan_id = str(uuid.uuid4())
 
-    # Build steps from graph analysis if available, otherwise single step
+    # Build steps from graph analysis if available, otherwise single step. Each step carries
+    # the per-step cost (task cost / steps) so the step costs add up to the reserved budget.
     graph_analysis = state.graph_analysis
     steps: list[Step] = []
+    n_steps = max(1, task_profile.steps_estimated)
+    per_step_cost = task_profile.cost // n_steps
 
     if graph_analysis and graph_analysis.execution_steps:
         for step_data in graph_analysis.execution_steps:
@@ -70,7 +73,7 @@ async def handle(state: PipelineState) -> PipelineState:
                 depends_on=tuple(step_data.get("depends_on", [])),
                 mutation=frozen.effective_mutation,
                 risk=frozen.effective_risk,
-                cost=1,
+                cost=per_step_cost,
                 retry_policy=step_data.get("retry_policy", {}),
             )
             steps.append(step)
@@ -84,7 +87,7 @@ async def handle(state: PipelineState) -> PipelineState:
             depends_on=(),
             mutation=frozen.effective_mutation,
             risk=frozen.effective_risk,
-            cost=1,
+            cost=per_step_cost,
             retry_policy={},
         ))
 
