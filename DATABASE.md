@@ -2,6 +2,8 @@
 
 **Purpose**: Complete database schema, migrations, connection management, backup/restore procedures, and data seeding. This is the data layer that supports all other components.
 
+**Worker-management update (2026-09-29)**: gate v10 C39 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E). Worker keys unified to `TEXT` (RD-1); management columns on `workers`, `tenants`, `workspaces`; new table `operation_quotas`; RLS, indexes, integrity rules and migration `018` updated. Changed passages carry a `Worker-management repair (RD-n)` marker.
+
 ---
 
 ## Table of Contents
@@ -389,10 +391,14 @@ CREATE TABLE tenants (
     settings TEXT,                        -- JSON settings
     budget_pool INTEGER DEFAULT 10000,    -- Tenant's shared budget pool (minor units)
     budget_period TEXT DEFAULT 'monthly', -- daily, weekly, monthly
+    paused_until TIMESTAMPTZ,             -- C39 gate 12a: no new runs while > NOW()
+    scheduled_activation_at TIMESTAMPTZ,  -- C39 gate 13a: no new runs until <= NOW()
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 ```
+
+> **Worker-management repair (RD-2, RD-5; gate v10 C39):** `paused_until` and `scheduled_activation_at` are typed columns, not keys inside the TEXT `settings` JSON. They are checked at S12 entry for new runs only and compared with database `NOW()`; a pause never cancels running work (the kill switch does). Existing `REAL` timestamps are unchanged.
 
 #### connections
 
@@ -425,12 +431,16 @@ CREATE TABLE workspaces (
     description TEXT,
     settings TEXT,                           -- JSON settings
     is_active BOOLEAN DEFAULT 1,
+    paused_until TIMESTAMPTZ,                -- C39 gate 12a (see tenants)
+    scheduled_activation_at TIMESTAMPTZ,     -- C39 gate 13a (see tenants)
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
 );
 CREATE INDEX idx_workspaces_tenant ON workspaces(tenant_id);
 ```
+
+> **Worker-management repair (RD-2, RD-5; gate v10 C39):** same semantics as the tenant columns; the effective value is `GREATEST(tenant, workspace)` (WORKER_LIFECYCLE §16.5).
 
 #### execution_runs
 
@@ -686,8 +696,8 @@ CREATE INDEX idx_retry_timestamp ON retry_log(timestamp);
 
 ```sql
 CREATE TABLE workers (
-    worker_id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    worker_id TEXT PRIMARY KEY,                        -- RD-1: TEXT (was UUID)
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),  -- RD-1: TEXT (was UUID, mismatched tenants.tenant_id)
     worker_class VARCHAR(100) NOT NULL,
     runtime_version VARCHAR(50),
     capability_profile JSONB NOT NULL,
@@ -698,12 +708,22 @@ CREATE TABLE workers (
     heartbeat_at TIMESTAMP,
     last_assignment_at TIMESTAMP,
     drain_state VARCHAR(20),
+    -- Worker-management columns (gate v10 C39; mutable, read only by S12 admission/selection)
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,       -- contract: IDENTITY_AND_TENANCY §5
+    assigned_user_id TEXT REFERENCES users(user_id),   -- filter 14; NULL = any user
+    paused_until TIMESTAMPTZ,                          -- filter 12b
+    scheduled_activation_at TIMESTAMPTZ,               -- filter 13b
+    runtime_type TEXT NOT NULL DEFAULT 'llm'
+        CHECK (runtime_type IN ('llm','rules','vision','browser','rpa','data','rag','code','human')),  -- filter 17
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_workers_tenant ON workers(tenant_id);
 CREATE INDEX idx_workers_state ON workers(state);
+CREATE INDEX idx_workers_assigned_user ON workers(assigned_user_id) WHERE assigned_user_id IS NOT NULL;
 ```
+
+> **Worker-management repair (RD-1, RD-2, RD-4, RD-10; gate v10 C39):** owner ruling: `worker_id` and every column that references it are `TEXT`, like every other key in this schema. This overrides the gate §7.3 default (change the referencing column). `tenant_id` also changes to `TEXT`: the former `UUID` could not reference `tenants.tenant_id TEXT`. The management columns are additive; `runtime_type` is the only worker-type enum (plan/event/hybrid is derived from `event_subscriptions`), and its CHECK is generated from `RuntimeType` (DATA_CONTRACTS §50, C28). Pause and activation are not states: a paused worker stays `ACTIVE` and is filtered out of worker selection for **new** leases only. Deferred and **not** added in this phase: `max_sub_agents`, `parent_worker_id`, `depth_level` (spawning).
 
 > **S12–S15 gate v9 repair (C33):** `idx_workers_workspace` was removed: this definition has no `workspace_id` column (WORKER_LIFECYCLE §3 has one; add the index only together with the column).
 
@@ -735,10 +755,10 @@ CREATE INDEX idx_worker_versions_worker_state ON worker_versions(worker_id, stat
 
 ```sql
 CREATE TABLE worker_leases (
-    lease_id UUID PRIMARY KEY,
-    worker_id UUID NOT NULL REFERENCES workers(worker_id),
+    lease_id TEXT PRIMARY KEY,                       -- RD-1: TEXT (referenced by execution_ownership.lease_id TEXT)
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id),  -- RD-1: TEXT
     fence_token BIGINT NOT NULL,
-    task_id UUID,
+    task_id TEXT,                                    -- RD-1: TEXT, matches execution_runs.task_id
     expires_at TIMESTAMP NOT NULL,
     acquired_at TIMESTAMP NOT NULL DEFAULT NOW(),
     released_at TIMESTAMP
@@ -750,15 +770,17 @@ CREATE INDEX idx_worker_leases_fence ON worker_leases(fence_token);
 
 > **S12–S15 gate v9 repair (C25, C26, C34):** Tokens come from the sequence `CREATE SEQUENCE fence_token_seq;` (strictly increasing for every lease acquisition and renewal). Additive columns: `status TEXT NOT NULL DEFAULT 'active'` CHECK in (pending, active, expired, released); `execution_id TEXT NULL` (diagnostics); `tenant_id TEXT NOT NULL`. Index `ON worker_leases(worker_id) WHERE status = 'active'`. A lease is usable only while `status = 'active' AND expires_at > now()`. This is the lease of record; `execution_leases` (§10) is not used.
 
+> **Worker-management repair (RD-1):** `lease_id` and `worker_id` changed from `UUID` to `TEXT`. `worker_id` must match `workers.worker_id`; `lease_id` must match `execution_ownership.lease_id TEXT`, which referenced it with a mismatched type.
+
 
 #### worker_assignments
 
 ```sql
 CREATE TABLE worker_assignments (
-    assignment_id UUID PRIMARY KEY,
-    worker_id UUID NOT NULL REFERENCES workers(worker_id),
-    execution_id UUID NOT NULL REFERENCES execution_runs(execution_id),
-    task_id UUID,
+    assignment_id TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id),              -- RD-1: TEXT
+    execution_id TEXT NOT NULL REFERENCES execution_runs(execution_id), -- RD-1: TEXT (execution_runs.execution_id is TEXT)
+    task_id TEXT,                                    -- RD-1: TEXT, matches execution_runs.task_id
     state VARCHAR(20) NOT NULL,
     claimed_at TIMESTAMP NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMP
@@ -767,6 +789,8 @@ CREATE INDEX idx_worker_assignments_worker ON worker_assignments(worker_id);
 CREATE INDEX idx_worker_assignments_execution ON worker_assignments(execution_id);
 CREATE INDEX idx_worker_assignments_state ON worker_assignments(state);
 ```
+
+> **Worker-management repair (RD-1):** `assignment_id`, `worker_id` and `execution_id` changed from `UUID` to `TEXT`; the former `execution_id UUID` could not reference `execution_runs.execution_id TEXT`.
 
 #### worker_deployments
 
@@ -921,6 +945,60 @@ CREATE INDEX idx_transitions_execution ON state_transitions(execution_id, transi
 The transition log is append-only (FINAL_ARCHITECTURE I-027). It may equally be implemented as
 rows in the execution ledger, provided the same columns are present.
 
+### Worker-Management Additive Tables (gate v10 C39)
+
+> **Worker-management repair (RD-1, RD-3, RD-6; gate v10 C39):** one new table in this phase.
+> Keys are `TEXT` (RD-1), times are `TIMESTAMPTZ` compared with database `NOW()` (RD-2), and the
+> table carries `tenant_id` with the standard RLS policy (RD-3, C34). Contract: DATA_CONTRACTS §51;
+> semantics: WORKER_LIFECYCLE §16.4.
+
+```sql
+CREATE TABLE operation_quotas (
+    quota_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    workspace_id TEXT REFERENCES workspaces(workspace_id),   -- NULL = tenant level
+    worker_id TEXT REFERENCES workers(worker_id),            -- NULL = tenant/workspace level
+    resource_type TEXT NOT NULL DEFAULT 'executions'
+        CHECK (resource_type IN ('executions')),              -- only value used in this phase
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    limit_value INTEGER NOT NULL,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    is_hard BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (used_count >= 0 AND limit_value >= 0),
+    CHECK (period_end > period_start),
+    CHECK (worker_id IS NULL OR workspace_id IS NOT NULL),   -- a worker quota sits inside a workspace scope
+    UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type, period_start)  -- PostgreSQL 15+
+);
+CREATE INDEX idx_quotas_lookup ON operation_quotas(tenant_id, resource_type, period_start, period_end);
+```
+
+**Consumption** (once per run, inside the durable-admission transaction, gate §7.2; levels in the
+fixed order tenant → workspace → worker; zero rows at any level rolls the transaction back):
+
+```sql
+UPDATE operation_quotas
+   SET used_count = used_count + 1
+ WHERE quota_id = :quota_id
+   AND tenant_id = :tenant_id
+   AND period_start <= now() AND period_end > now()
+   AND used_count < limit_value
+RETURNING quota_id;
+```
+
+Hard quota with zero rows → DENY `quota_exhausted`; soft quota → QUEUE. `used_count` never
+exceeds `limit_value` for a hard quota (invariant I17). A refund (run CANCELLED with no step
+COMPLETED) is `used_count = used_count - 1` in the transaction that consolidates the run, recorded
+as a ledger event.
+
+**Not created in this phase** (deferred, gate §14; each gets `tenant_id TEXT NOT NULL` + RLS when it
+lands, RD-3): `worker_spawn_audit`, `worker_groups`, `worker_group_members`,
+`worker_config_versions`, `worker_webhooks`, `worker_sessions`, `session_memory`,
+`worker_templates`, `plans`, `tenant_plans`, `skill_definitions`, `execution_batches`; and the
+columns `execution_runs.parent_execution_id` (RD-11), `execution_runs.batch_mode` /
+`total_batches` / `completed_batches` (RD-12), `execution_runs.dry_run`.
+
 ---
 
 ## 4. Migrations
@@ -954,6 +1032,9 @@ Where NNN is a zero-padded sequence number (001, 002, ...).
 | `015_worker_versions.sql` | Worker version lifecycle tables |
 | `016_worker_deployments.sql` | Worker runtime instance tracking |
 | `017_execution_ownership.sql` | Execution ownership and fencing |
+| `018_worker_management.sql` | Gate v10 C39: worker key types to `TEXT` (RD-1), management columns on `workers`, `tenants`, `workspaces`, `operation_quotas` with RLS |
+
+> **Worker-management repair (gate v10 C39):** `018` is additive except for the RD-1 type changes, which are safe only while the affected tables are empty or hold text-compatible values; preflight items 15 and P3 report the actual state. The migration tool (Alembic or other) is decided by preflight item 11.
 
 > **Note**: Migrations 005+ replace the older `005_executions.sql`, `006_checkpoints.sql`,
 > `007_idempotency.sql` pattern. The canonical model uses `execution_runs` and
@@ -1391,6 +1472,7 @@ ALTER TABLE retry_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE worker_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE worker_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operation_quotas ENABLE ROW LEVEL SECURITY;   -- gate v10 C39 (RD-3)
 ```
 
 ### Policy Templates
@@ -1400,6 +1482,12 @@ ALTER TABLE worker_assignments ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON users
     FOR ALL TO application_role
     USING (tenant_id = current_setting('app.current_tenant')::text);
+
+-- Worker-management repair (RD-3, gate v10 C39): same pattern for operation_quotas
+CREATE POLICY tenant_isolation ON operation_quotas
+    FOR ALL TO application_role
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
 
 -- Audit reader: specific immutable audit access only
 CREATE POLICY audit_read ON audit_log
@@ -1618,6 +1706,8 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 | `dead_letters` | `(resolved, next_retry_at)` | DLQ polling |
 | `checkpoints` | `(execution_id, created_at)` | Checkpoint recovery |
 | `retry_log` | `(provider, operation, timestamp)` | Retry analysis |
+| `operation_quotas` | `(tenant_id, resource_type, period_start, period_end)` | Quota lookup at durable admission (C39) |
+| `workers` | `(assigned_user_id)` partial, where not NULL | Assignment filter (C39) |
 
 ---
 
@@ -1633,6 +1723,8 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 | `execution_steps` | `kernel_op_id` | Traceability |
 | `execution_steps` | `resolved_binding_id` | Binding audit |
 | `budget_reservations` | `tenant_id` | Budget isolation |
+| `operation_quotas` | `tenant_id` | Tenant isolation (C39, RD-3) |
+| `workers` | `runtime_type` | Eligibility filter 17 (C39) |
 
 ### Cascading Rules
 
@@ -1649,6 +1741,13 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 |------------|------|
 | `budget_reservations.cost` (per step) | Σ cost of the tenant's live reservations in the current period MUST be <= `tenants.budget_pool` (gate C3, invariant I1) |
 | Enforcement | Atomic UPDATE with WHERE clause (see `reserve_budget` in §7) |
+
+### Operation Quota Constraint
+
+| Constraint | Rule |
+|------------|------|
+| `operation_quotas.used_count` | `0 <= used_count`, and `used_count <= limit_value` for every hard quota (gate v10 C39, invariant I17) |
+| Enforcement | Conditional UPDATE `... AND used_count < limit_value RETURNING` in the durable-admission transaction; no `ON DELETE CASCADE` from any parent |
 
 ---
 

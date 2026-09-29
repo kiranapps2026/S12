@@ -5,7 +5,7 @@
 `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md`, `DATA_CONTRACTS.md`, `IDENTITY_AND_TENANCY.md`, `PIPELINE_STAGES.md`,
 `S12_SESSION0_PREFLIGHT_PROMPT.md`, `DATABASE.md`
 **Date**: 2026-09-29
-**Status**: RULINGS CONFIRMED AND PROPAGATED (2026-09-29). The owner confirmed RD-1…RD-18 (Part E, with the round-2 corrections) and instructed propagation. Part C was applied to the eight target documents; **Part F records what was applied and what remains**. The spec itself (Part A → v1.2.0) and the Part D documents are not yet updated.
+**Status**: RULINGS CONFIRMED AND PROPAGATED (2026-09-29). The owner confirmed RD-1…RD-18 (Part E, with the round-2 corrections) and instructed propagation. Part C was applied to the eight target documents and to `DATABASE.md`; **Part F records what was applied and what remains**. The spec itself (Part A → v1.2.0) and the other Part D documents are not yet updated.
 
 ---
 
@@ -297,6 +297,15 @@ Every edit carries a `Worker-management repair (RD-n)` marker (or `(C39–C41)` 
 | `IDENTITY_AND_TENANCY.md` | — | §5 hierarchy level "Worker Management Settings" (restrict-only); settings JSONB contract (inert keys marked); admin roles `owner`/`admin`; autonomy note; §6 rules 5–6 (assignment, sub-agents); **§7 Worker Lifecycle fixed to DRAINED/TERMINATED**; §8.4 pause ≠ kill switch | ✅ UPDATED |
 | `PIPELINE_STAGES.md` | — | §14 "Worker Management in S12" pointer (stages S9 for batch/skills, never S7); §19 five negative-path rows; §21 `runtime_type` never removes a stage | ✅ UPDATED |
 
+### F.1a Applied — `DATABASE.md` (2026-09-29, second pass)
+
+| Area | Applied | Status |
+|---|---|---|
+| Key types (RD-1) | `workers.worker_id` and `workers.tenant_id` UUID → `TEXT`; `worker_leases.lease_id`, `worker_leases.worker_id`, `worker_assignments.assignment_id/worker_id/execution_id` UUID → `TEXT`; `task_id` UUID → `TEXT` in both tables. The pass found two mismatches beyond the review: `execution_ownership.lease_id TEXT` → `worker_leases.lease_id UUID`, and `worker_assignments.execution_id UUID` → `execution_runs.execution_id TEXT`. A mechanical check of every `REFERENCES` and `FOREIGN KEY` in the file now finds **0 type mismatches**. | ✅ UPDATED |
+| Management columns (C39) | `workers`: `settings`, `assigned_user_id` (FK `users`), `paused_until`, `scheduled_activation_at`, `runtime_type` with CHECK; `tenants` and `workspaces`: `paused_until`, `scheduled_activation_at` (typed `TIMESTAMPTZ` columns, not JSON keys) | ✅ UPDATED |
+| New table (C39) | `operation_quotas` with `tenant_id`, `UNIQUE NULLS NOT DISTINCT`, count/period/scope CHECKs, lookup index, consumption SQL, refund rule; list of deferred tables and columns **not** created (incl. `parent_execution_id`) | ✅ UPDATED |
+| RLS, indexes, integrity, migrations | RLS enable + `tenant_isolation` policy on `operation_quotas`; index table rows; NOT NULL rows; "Operation Quota Constraint"; migration `018_worker_management.sql` | ✅ UPDATED |
+
 Also applied (RD-16 reference sweep): `REPAIRS_APPLIED.md:138` "§13/§38" → "§13/§37b". The LAYA_DECISION_ADAPTER §38 references are now unambiguous (only one §38 remains: Runtime Contract) and were left unchanged.
 
 ### F.2 Round-2 corrections to this review (applied above)
@@ -314,7 +323,6 @@ Also applied (RD-16 reference sweep): `REPAIRS_APPLIED.md:138` "§13/§38" → "
 | Item | Why it remains |
 |---|---|
 | `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` → v1.2.0 (Part A corrections, E.2 tiers, milestone references RD-17) | Not one of the eight target documents; the masters now govern and list the spec as reference only |
-| `DATABASE.md` (authoritative DDL for C39: columns, `operation_quotas`, `worker_id` → `TEXT`) | Part D; gate C39 and WORKER_LIFECYCLE §16 state the contract, but DATABASE.md must match before M1 |
 | `STATE_TRANSITIONS.md`, `VOCABULARY_INDEX.md` (roles, Skill, WorkerGroup, runtime_type), `MUTATION_SAFETY.md`, `SECURITY.md`, `PROVIDER_ADAPTERS.md`, `EVENT_GATEWAY_AND_ROUTER.md`, `VALIDATION.md`, `BUILD_READINESS_MATRIX.md`, blocker register §18, `REPAIRS_APPLIED.md` entries for C39–C41 | Part D |
 | DATA_CONTRACTS duplicate §31 headings | Recorded only: renumbering would break existing citations |
 | Re-pin on the VPS | Only after S0–S11 certification (plan §1 item 3) |
