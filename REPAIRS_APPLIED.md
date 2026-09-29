@@ -197,3 +197,16 @@ per piece of state; (4) leaves a machine-readable reason for every decision.
 | MUTATION_SAFETY.md, SECURITY.md, STATE_TRANSITIONS.md, EVENT_GATEWAY_AND_ROUTER.md, RELIABILITY.md, RESOLVE_LAYER.md | Headers; worker ceiling inert; SECURITY §4/§11/§13 headings, I-022, admin bypass; I-9, I-10; event §14.7 | B3, B4, B6, B8, D1, D9 |
 | VALIDATION.md, VOCABULARY_INDEX.md, MEMORY_ARCHITECTURE.md, EXECUTION_PLAN.md, BUILD_READINESS_MATRIX.md, README.md, S12_SESSION0_PREFLIGHT_PROMPT.md | Test index; duplicates and terms; "Historical Memory"; I-029; ABSENT rows and renumbering; document lists; item 17 and P1/P2 | C2, C4, D2, D3, D5, D8, D11 |
 | s12_s15_golden/ (guard) | Scans every file; 22 sabotage cases; **fixed self-flagging** (the draft failed on its own sabotage data) | C7 |
+
+---
+
+## HOUSEKEEPING (2026-09-29)
+
+| Document | Repair | Item |
+|---|---|---|
+| EVENT_GATEWAY_AND_ROUTER.md | Status DESIGN_LOCKED; new §3.1 idempotency key derivation; EventEnvelope comment and invariant 4; DDL comment; SEC-NONCE note; DATA_CONTRACTS citations in the header | EVT-LOCK, EVT-KEY |
+| DATABASE.md, SECURITY.md | `idempotency_key` format updated to match §3.1 | EVT-KEY |
+| DATA_CONTRACTS.md | Second §31 renumbered §31a (WorkerIdentity); first §31 retitled; TOC and §50 updated | WM-O1 |
+| BUILD_READINESS_MATRIX.md | Row 29 (EVENT_GATEWAY) | EVT-LOCK |
+| STATE_TRANSITIONS.md | Header citations of DATA_CONTRACTS corrected (§9, §16, §46, §47) | found during WM-O1 |
+| SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Snapshot banners on §14–§17; WM-O1, WM-O2 closed; §19.6 | REG-SNAP |

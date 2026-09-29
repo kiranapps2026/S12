@@ -37,6 +37,7 @@
 | 10 | `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | COMPLETE | 2026-09-29 | Worker identity/version lifecycle, independent verification, admission control, state locality (+ §16 worker management, eligibility filters, operation quota) |
 | 25 | `S12_S15_EXECUTION_GATE.md` v10 | COMPLETE | 2026-09-29 | Binding S12–S15 rulings C1–C41 (C39 worker management; C40/C41 batch and replanning out of phase) |
 | 26 | `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` v1.2.1 | REFERENCE | 2026-09-29 | Worker-management design and roadmap; gate C39–C41 govern |
+| 29 | `EVENT_GATEWAY_AND_ROUTER.md` | COMPLETE | 2026-09-29 | Event ingress contract, now DESIGN_LOCKED; encrypted webhook secrets (SEC-HMAC), tenant-scoped idempotency key (SEC-NONCE, §3.1). Gateway implementation is a later phase |
 
 ## Tier 2 — Required Before M0 Complete
 

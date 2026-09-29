@@ -38,7 +38,8 @@
 28. [Outbox-Inbox Event Delivery Contract](#28-outbox-inbox-event-delivery-contract)
 29. [Event Ordering and Causality](#29-event-ordering-and-causality)
 30. [Configuration Versioning and Rollout](#30-configuration-versioning-and-rollout)
-31. [WorkerIdentity — Durable Worker Identity](#31-workeridentity--durable-worker-identity)
+31. [Outbox-Inbox Event Delivery Contract — Records](#31-outbox-inbox-event-delivery-contract--records-outboxrecord-inboxrecord)
+31a. [WorkerIdentity — Durable Worker Identity](#31a-workeridentity--durable-worker-identity)
 32. [WorkerVersion — Worker Code Version](#32-workerversion--worker-code-version)
 33. [WorkerDeployment — Runtime Instance](#33-workerdeployment--runtime-instance)
 34. [Verifier — Independent Post-Execution Verifier](#34-verifier--independent-post-execution-verifier)
@@ -62,7 +63,7 @@
 52. [Worker-Management Reason Codes](#52-worker-management-reason-codes)
 53. [SkillDefinition and SkillStep (DEFERRED)](#53-skilldefinition-and-skillstep-deferred)
 
-> **Worker-management repair (RD-16 family):** §38–§49 exist in the body but were never added to this table of contents; new sections start at §50 so no existing number is reused; the §38–§49 entries were added in audit round 2 (D7) (the file also has two §31 headings — a pre-existing defect recorded, not renumbered, because other documents cite these numbers).
+> **Worker-management repair (RD-16 family):** §38–§49 exist in the body but were never added to this table of contents; new sections start at §50 so no existing number is reused; the §38–§49 entries were added in audit round 2 (D7) (the duplicate §31 was resolved as §31 / §31a — WM-O1).
 
 ---
 
@@ -1950,7 +1951,9 @@ Configuration Version N is active
 
 ---
 
-## 31. Outbox-Inbox Event Delivery Contract
+## 31. Outbox-Inbox Event Delivery Contract — Records (OutboxRecord, InboxRecord)
+
+> **Repair (WM-O1, 2026-09-29):** this section shares its number with WorkerIdentity (now §31a) and its former title with §28. It keeps §31 because EVENT_GATEWAY_AND_ROUTER and ADAPTABILITY_PRINCIPLES cite `OutboxRecord` / `InboxRecord` as DATA_CONTRACTS §31; §28 defines `OutboxEvent`.
 
 ### 31.1 OutboxRecord
 
@@ -2004,7 +2007,9 @@ class InboxRecord:
 
 ---
 
-## 31. WorkerIdentity — Durable Worker Identity
+## 31a. WorkerIdentity — Durable Worker Identity
+
+> **Repair (WM-O1, 2026-09-29):** renumbered from a second "§31"; the table of contents and §50 cite it as §31a.
 
 **Owner**: [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §3
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
@@ -2710,7 +2715,7 @@ with an old token cannot commit any state change for the execution.
 **Owner**: [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §16; gate v10 C39
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
 
-> **Worker-management repair (RD-1, RD-4, RD-10):** a read model of the mutable management columns. `WorkerIdentity` (§31) is frozen and is not modified.
+> **Worker-management repair (RD-1, RD-4, RD-10):** a read model of the mutable management columns. `WorkerIdentity` (§31a) is frozen and is not modified.
 
 ```python
 class RuntimeType(StrEnum):

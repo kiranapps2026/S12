@@ -595,6 +595,8 @@ These items have a design decision recorded. They are NOT evidence-closed (no im
 
 ## SECTION 14: W0-W6 READINESS STATUS
 
+> **Snapshot of 2026-09-26 — predates gate v9 (2026-09-28) and v10 (2026-09-29); counts not recomputed.** Current S12 readiness is decided by the S12_S15_IMPLEMENTATION_PLAN §1 preconditions (S0–S11 certified incl. rulings R-Z and R-P, gate v10 installed and pinned) and gate preflight items 1–17, not by this table. Items listed below that later rulings **decided** (design closed, implementation and evidence still required — Section 18.1): W2: MC-015 (for S12–S15 tables, C34), MC-021 and MC-022 (C33). W3: MC-005 (C13, C18), MC-037 (C6, C24), MC-061 (C20). W5/W6: MC-008 and MC-038 (C32), MC-009 (C35), MC-010 (C5), MC-011 (C25), MC-017 (single node, C37), MC-048 (C32), MC-052 and MC-062 (C37). The gate verdicts (FAIL) remain until implementation evidence exists.
+
 ### W0 — Architectural Decisions
 
 | | |
@@ -659,6 +661,8 @@ These items have a design decision recorded. They are NOT evidence-closed (no im
 ---
 
 ## SECTION 15: CERTIFICATION GATE STATUS
+
+> **Snapshot of 2026-09-26 — predates gate v9 and v10.** Since then: P0-CRASH / ADR-7 recovery semantics are decided (C35); RLS gaps for S12–S15 tables are closed by C34; queue model is decided (in-process dispatch, C1); worker delegation persistence (ADR-6) is still open; tenant fairness and backpressure remain undefined (P1-C, deferred to the fleet phase); P0-B (step data flow) stays open with an interim rule (C36). The checklist and verdict below are **not** re-evaluated; re-run it at the S12–S15 certification (gate §20).
 
 VALIDATION.md Architecture Acceptance Gate criteria:
 
@@ -730,6 +734,8 @@ VALIDATION.md Architecture Acceptance Gate criteria:
 
 ## SECTION 16: FILES TO MODIFY
 
+> **Snapshot of 2026-09-26.** Rows since addressed by rulings (documents repaired, markers in place): DATABASE crash recovery (C35) and cascading rules (P1-H, C34); DATABASE checkpoint model for this phase (C10: PostgreSQL rows only; ADR-11 remains open beyond S12–S15); PIPELINE_STAGES re-entry (C23, C35); PROVIDER_ADAPTERS per-kernel probe interface (C32; per-kernel methods remain with real adapters); RELIABILITY breaker interface (C37; fleet persistence ADR-5 deferred). Still open: P0-B data flow (C36 interim), ADR-2 audit_reader scope, P1-E authorization algebra, P1-G kill-switch hierarchy, MC-058 credential tenancy, SQLite remnants. `CROSS_DOCUMENT_RECONCILIATION.md` is not in this directory (README "What's NOT Here").
+
 | File | Phases | Changes |
 |------|--------|---------|
 | DATABASE.md | 1, 2, 4 | Fix crash recovery (P0-CRASH); audit_reader RLS (ADR-2); cascading rules (P1-H); checkpoint model (ADR-11); remove SQLite remnants |
@@ -750,6 +756,8 @@ VALIDATION.md Architecture Acceptance Gate criteria:
 ---
 
 ## SECTION 17: APPROVAL REQUIRED
+
+> **Status 2026-09-29:** item 2 (ADR-7) is DECIDED by gate C35; item 3 (ADR-5) is DECIDED as an interface (C37), with fleet persistence deferred; item 4 (ADR-11) is ruled for the S12–S15 phase (C10: PostgreSQL rows only) and stays DECISION_REQUIRED beyond it. Items 1 (ADR-2) and 5 (implementation tracker) are still open. Newer decisions required: ADR-13, ADR-14 (Section 20), Laya LB1–LB11 (Section 18.2).
 
 Before proceeding, the following decisions require human approval:
 
@@ -877,9 +885,17 @@ Sub-agent spawning and `worker_spawn_audit`; batch processing (C40); replanning 
 
 | ID | Item | Status |
 |---|---|---|
-| WM-O1 | DATA_CONTRACTS has two §31 headings; not renumbered because other documents cite §31–§37 | RECORDED |
-| WM-O2 | FINAL_ARCHITECTURE TOC listed "§42 Schema and API Compatibility During Rolling Upgrades", which has no section | RECORDED (covered by §48) |
+| WM-O1 | DATA_CONTRACTS had two §31 headings | **CLOSED 2026-09-29:** the Outbox/Inbox records section keeps §31 (it is the one cited) with a distinct title; WorkerIdentity is §31a (TOC and §50 updated) |
+| WM-O2 | FINAL_ARCHITECTURE TOC listed "§42 Schema and API Compatibility During Rolling Upgrades", which has no section | **CLOSED 2026-09-29:** the phantom entry was dropped when the TOC was rebuilt (FINAL 4.5.0, RD-16); rolling-upgrade compatibility is covered by §48 |
 | WM-O3 | Skill Factory "Skill" vs data-defined skill composition: compile path when the Skill Factory lands | OPEN (post-S15) |
+
+### 19.6 Housekeeping (2026-09-29)
+
+| ID | Item | Status |
+|---|---|---|
+| EVT-KEY | Event idempotency key was undefined for events without `source_event_id`, and `{source}:…` collided across providers of the same channel | **DECIDED and PROPAGATED** — `{source}:{source_system}:{discriminator}` with a per-source discriminator rule (EVENT_GATEWAY §3.1; DATABASE and EVENT_GATEWAY DDL comments; SECURITY §11). IMPLEMENTATION_REQUIRED (gateway phase) |
+| EVT-LOCK | EVENT_GATEWAY_AND_ROUTER.md said "DESIGN_PROPOSED, NOT YET LOCKED" although FINAL §6a and DATA_CONTRACTS §46–§47 treat it as the locked contract | **CLOSED** — status DESIGN_LOCKED, IMPLEMENTATION_NOT_READY; BUILD_READINESS row 29 |
+| REG-SNAP | Sections 14–17 predate gate v9/v10 | **CLOSED** — each carries a dated snapshot banner naming what later rulings decided; counts intentionally not recomputed |
 
 ### 19.5 Audit round 2 (2026-09-29)
 

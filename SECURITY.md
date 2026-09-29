@@ -812,7 +812,7 @@ def validate_webhook_signature(payload: bytes, signature: str, secret: bytearray
 | Mechanism | Implementation |
 |-----------|----------------|
 | Timestamp window | Reject events with timestamp > 5 minutes from server time |
-| Nonce (duplicate) | `event_log.idempotency_key` (`{source}:{source_event_id}`), `UNIQUE (tenant_id, idempotency_key)`; the insert uses `ON CONFLICT DO NOTHING`, so a repeat delivery is `deduplicated` atomically |
+| Nonce (duplicate) | `event_log.idempotency_key` (`{source}:{source_system}:{discriminator}`, EVENT_GATEWAY §3.1), `UNIQUE (tenant_id, idempotency_key)`; the insert uses `ON CONFLICT DO NOTHING`, so a repeat delivery is `deduplicated` atomically |
 | Sequence tracking | Not used: most webhook providers send no per-source sequence number |
 
 > **Repair (SEC-NONCE, decided 2026-09-29):** the former rows cited `event_subscriptions.nonce` and `event_subscriptions.last_sequence`, which do not exist; nonces belong to events, not subscriptions. The existing idempotency key is the nonce, now enforced by a tenant-scoped unique index.

@@ -863,7 +863,7 @@ CREATE TABLE event_log (
     payload_size_bytes INTEGER,          -- For billing
     schema_version TEXT NOT NULL,        -- Payload schema version
     correlation_id TEXT NOT NULL,        -- trace_id
-    idempotency_key TEXT NOT NULL,       -- "{source}:{source_event_id}"
+    idempotency_key TEXT NOT NULL,       -- "{source}:{source_system}:{discriminator}" (EVENT_GATEWAY §3.1)
     auth_method TEXT NOT NULL,           -- "hmac_sha256", "api_key", etc.
     auth_principal TEXT NOT NULL,        -- connection_id or user_id
     processing_status TEXT NOT NULL DEFAULT 'received',  -- State machine values
