@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # === Secrets ===
     deepseek_api_key: str = ""
 
+    # === HTTP ===
+    cors_origins: str = ""  # comma-separated allowed origins; empty = no CORS
+
     # === Feature Flags ===
     feature_kill_switch: bool = True
     feature_mutation_safety: bool = True

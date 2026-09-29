@@ -62,9 +62,9 @@ def run_kernel() -> None:
     logger.info("Pipeline: %s", " → ".join(PIPELINE_SEQUENCE))
 
     import uvicorn
-    from app import create_app
+    from app import create_production_app
 
-    uvicorn.run(create_app(), host="0.0.0.0", port=8000)
+    uvicorn.run(create_production_app(), host="0.0.0.0", port=8000)
 
 
 async def run_migrations() -> None:
