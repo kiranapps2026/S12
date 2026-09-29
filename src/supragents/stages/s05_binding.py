@@ -1,6 +1,8 @@
 """S5 Provider Resolution: select and freeze one binding; compute risk and mutation once.
 
 Selection is deterministic: priority, then created_at, then binding_id (DATA_CONTRACTS §6).
+S5 also records the policy versions in force on the ExecutionContext (ruling R-M);
+the manifest's policy_version comes from there.
 """
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ from supragents.contracts.registry import BindingRow, CapabilityMetadata, Kernel
 from supragents.contracts.state import PipelineState
 from supragents.contracts.vocabulary import StageStatus, TruthState
 from supragents.pipeline.deps import PipelineDeps
+from supragents.ports.policy import PolicyVersions
 from supragents.policy.risk import effective_mutation, effective_risk
 
 STAGE = "S5"
@@ -26,7 +29,32 @@ async def run(state: PipelineState, deps: PipelineDeps) -> PipelineState:
     kernel_op = await deps.registry.kernel_operation(ranked[0].kernel_op_id)
     if kernel_op is None or kernel_op.truth_state is not TruthState.PRODUCTION_ENABLED:
         return state.halted(STAGE, StageStatus.CLARIFY, "kernel_operation_unavailable")
-    return state.with_output(STAGE, frozen_binding=_freeze(capability, ranked[0], kernel_op))
+    state = state.with_output(STAGE, frozen_binding=_freeze(capability, ranked[0], kernel_op))
+    return await _record_policy_versions(state, deps)
+
+
+async def _record_policy_versions(state: PipelineState, deps: PipelineDeps) -> PipelineState:
+    context = state.execution_context
+    try:
+        versions = await deps.policy_versions.current(context.tenant_id, context.workspace_id)
+    except Exception:
+        return state.halted(STAGE, StageStatus.ERROR, "policy_versions_unavailable")
+    if not _complete(versions):
+        return state.halted(STAGE, StageStatus.ERROR, "policy_versions_unavailable")
+    return state.with_context(
+        STAGE,
+        tenant_policy_version_id=versions.tenant_policy_version_id,
+        workspace_policy_version_id=versions.workspace_policy_version_id,
+        policy_version_id=versions.policy_version_id,
+    )
+
+
+def _complete(versions: PolicyVersions) -> bool:
+    return all(isinstance(value, str) and value for value in (
+        versions.tenant_policy_version_id,
+        versions.workspace_policy_version_id,
+        versions.policy_version_id,
+    ))
 
 
 def _freeze(

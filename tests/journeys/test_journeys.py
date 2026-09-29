@@ -45,6 +45,7 @@ class TestCompletedRuns:
         assert (manifest.tenant_id, manifest.workspace_id) == ("tenant-a", "workspace-1")
         assert manifest.binding_id == state.frozen_binding.binding_id
         assert manifest.capability_version == VERSIONS.capability_version
+        assert manifest.policy_version == context.policy_version_id == "pv-8"
 
     def test_write_chain_runs_as_workflow(self):
         h = Harness()

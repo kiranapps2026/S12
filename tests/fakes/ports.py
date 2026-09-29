@@ -8,7 +8,7 @@ from supragents.contracts.errors import DependencyUnavailable
 from supragents.contracts.vocabulary import CircuitState, Mutation, RecordStatus
 from supragents.ports.activation import ActivationState
 from supragents.ports.authorization import ConnectionState
-from supragents.ports.policy import KernelPolicy
+from supragents.ports.policy import KernelPolicy, PolicyVersions
 
 
 class FakeActivation:
@@ -105,3 +105,16 @@ class FakeMutationPolicy:
     async def permits(self, tenant_id: str, mutation: Mutation, risk: float) -> bool:
         self.calls.append((mutation, risk))
         return self.permit
+
+
+class FakePolicyVersions:
+    def __init__(self, error: bool = False, **overrides: str) -> None:
+        self.error = error
+        self.versions = PolicyVersions(**{"tenant_policy_version_id": "tpv-5",
+                                          "workspace_policy_version_id": "wpv-2",
+                                          "policy_version_id": "pv-8", **overrides})
+
+    async def current(self, tenant_id: str, workspace_id: str) -> PolicyVersions:
+        if self.error:
+            raise DependencyUnavailable("policy versions unreadable")
+        return self.versions

@@ -17,6 +17,7 @@ from tests.fakes.ports import (
     FakeCircuitBreaker,
     FakeMutationPolicy,
     FakePolicy,
+    FakePolicyVersions,
     ScriptedIntentModel,
     intent_json,
 )
@@ -44,6 +45,7 @@ class Harness:
     registry: FakeRegistry = field(default_factory=standard_registry)
     authorization: FakeAuthorization = field(default_factory=FakeAuthorization)
     policy: FakePolicy = field(default_factory=FakePolicy)
+    policy_versions: FakePolicyVersions = field(default_factory=FakePolicyVersions)
     circuit_breaker: FakeCircuitBreaker = field(default_factory=FakeCircuitBreaker)
     mutation_policy: FakeMutationPolicy = field(default_factory=FakeMutationPolicy)
     events: RecordingEvents = field(default_factory=RecordingEvents)
@@ -59,6 +61,7 @@ class Harness:
         return PipelineDeps(
             activation=self.activation, intent_model=self.intent_model, registry=self.registry,
             authorization=self.authorization, policy=self.policy,
+            policy_versions=self.policy_versions,
             circuit_breaker=self.circuit_breaker, mutation_policy=self.mutation_policy,
             confirmations=self.confirmations, clock=self.clock,
         )

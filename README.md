@@ -106,15 +106,20 @@ S10. Only a completed run carries an `ExecutionManifest` for S12.
 **Not included yet:** production adapters for the ports (PostgreSQL stores and registry,
 the LLM client, the ledger writer). The tests use fakes from `tests/fakes/`.
 
-**Specification conflicts resolved in code** (to be confirmed by the owner):
+**Specification conflicts — owner decisions (2026-09-29):**
 
-| Topic | Documents say | Code does |
-|---|---|---|
-| D confirmation | DATA_CONTRACTS §7: D only above cost 5; PIPELINE_STAGES §12: never run D/IRREVERSIBLE unconfirmed | Every D and IRREVERSIBLE plan is confirmed (the stricter rule) |
-| WORKFLOW route | PIPELINE_STAGES §9: chain, confidence ≥ 0.7, risk ≤ 0.5 | Simple or chain, confidence ≥ 0.7, risk below the deny threshold (runbook R-Q); risky plans are then confirmed, not refused |
-| Where confirmation is consumed | DATA_CONTRACTS §13: S11; PIPELINE_STAGES §12 and gate: S10 | S10 consumes; S11 requires a consumed (or not-required) confirmation |
-| Policy version ids on ExecutionContext | DATA_CONTRACTS §2 lists them | Omitted (nothing in S0–S11 sets them); the manifest carries all versions from the registry |
-| Pause check id | "R-P" in the S12 documents | "R-P" is already the runbook's vocabulary ruling; the code calls it the S0.1 activation check |
+| # | Topic | Documents say | Decision |
+|---|---|---|---|
+| 1 | D confirmation | DATA_CONTRACTS §7: D only above cost 5; PIPELINE_STAGES §12: never run D/IRREVERSIBLE unconfirmed | **Every D and IRREVERSIBLE plan is confirmed** (§12 wins). The owner updates runbook R-V and the pinned S6 golden test (`delete_cost_5_boundary`) |
+| 2 | WORKFLOW route | PIPELINE_STAGES §9: chain, confidence ≥ 0.7, risk ≤ 0.5 | **Keep**: simple or chain, confidence ≥ 0.7, risk below the deny threshold (runbook R-Q row 8); risky plans are confirmed, not refused |
+| 3 | Where confirmation is used up | DATA_CONTRACTS §13: S11; PIPELINE_STAGES §12 and gate: S10 | **Keep**: S10 consumes on the user's confirmed reply; S11 requires it consumed. Resolved conflict |
+| 4 | Policy version ids | DATA_CONTRACTS §2 lists them on ExecutionContext | **Restored**: `tenant_policy_version_id`, `workspace_policy_version_id`, `policy_version_id` on ExecutionContext; S5 sets them from an injected `PolicyVersionSource` (R-M whitelist) and fails closed if they are missing; the manifest's `policy_version` is `ExecutionContext.policy_version_id` |
+| 5 | Pause check id | "R-P" in the S12 documents | **Keep** "S0.1 activation check" in code; the S12 documents get a new ruling id (R-P stays the vocabulary ruling) |
+
+**Line of work:** this branch is a rebuild with its own module layout and tests; it is
+not certified and is not merged anywhere. Certification runs only against the owner's
+pinned certifier and golden tests in the local repository (`owner_verify.ps1`). Until the
+owner picks one line of work, do not merge this branch.
 
 ## What's NOT Here
 

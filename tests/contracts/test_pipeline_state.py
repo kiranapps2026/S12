@@ -52,7 +52,7 @@ def test_halt_is_recorded_once_and_never_normal():
         halted.halted("S2", StageStatus.ERROR, "y")
 
 
-@pytest.mark.parametrize("stage, field", [("S3", "task_id"), ("S2", "auth_passed"), ("S8", "tenant_id")])
+@pytest.mark.parametrize("stage, field", [("S3", "task_id"), ("S2", "auth_passed"), ("S8", "tenant_id"), ("S8", "policy_version_id")])
 def test_context_replacement_is_whitelisted(stage, field):
     state = Harness().state_before("S1")
     with pytest.raises(ContractViolation, match="may not replace"):

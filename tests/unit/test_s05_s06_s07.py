@@ -7,7 +7,7 @@ from supragents.contracts.outputs import TaskProfile
 from supragents.contracts.vocabulary import GraphType, Mutation, PathDecision, StageStatus, TruthState
 from supragents.stages.s07_path import route
 from tests.builders import Harness
-from tests.fakes.ports import FakePolicy, intent_json
+from tests.fakes.ports import FakePolicy, FakePolicyVersions, intent_json
 from tests.fakes.registry import binding, capability, kernel_op
 
 
@@ -55,6 +55,19 @@ def test_s5_unresolvable_binding_clarifies(bindings, op_truth, reason):
     state = _state("S5", intent_json("report.run"),
                    lambda r: _report_capability(r, *bindings, op_truth=op_truth))
     assert (state.halt.status, state.halt.reason) == (StageStatus.CLARIFY, reason)
+
+
+def test_s5_records_policy_versions_on_the_context():
+    context = _state("S5", intent_json("contact.list")).execution_context
+    assert (context.tenant_policy_version_id, context.workspace_policy_version_id,
+            context.policy_version_id) == ("tpv-5", "wpv-2", "pv-8")
+
+
+@pytest.mark.parametrize("source", [FakePolicyVersions(error=True), FakePolicyVersions(policy_version_id="")])
+def test_s5_missing_policy_versions_fail_closed(source):
+    state = _state("S5", intent_json("contact.list"), policy_versions=source)
+    assert (state.halt.status, state.halt.reason) == (StageStatus.ERROR, "policy_versions_unavailable")
+    assert state.execution_context.policy_version_id is None
 
 
 @pytest.mark.parametrize("answer, cost, confirm", [

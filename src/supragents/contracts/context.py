@@ -1,7 +1,8 @@
 """ExecutionContext — the frozen request identity (DATA_CONTRACTS §2).
 
-Created once by S0. Only S2 (``task_id``) and S8 (``auth_passed``, ``auth_result_id``)
-may produce a replacement instance, through ``PipelineState.with_context``.
+Created once by S0. Only S2 (``task_id``), S5 (the policy version ids) and S8
+(``auth_passed``, ``auth_result_id``) may produce a replacement instance, through
+``PipelineState.with_context`` (ruling R-M).
 """
 from __future__ import annotations
 
@@ -29,6 +30,9 @@ class ExecutionContext:
     task_id: str | None = None
     auth_passed: bool = False
     auth_result_id: str | None = None
+    tenant_policy_version_id: str | None = None
+    workspace_policy_version_id: str | None = None
+    policy_version_id: str | None = None
 
     @property
     def idempotency_key(self) -> str:
@@ -38,5 +42,6 @@ class ExecutionContext:
 
 CONTEXT_REPLACEMENT_WHITELIST = MappingProxyType({
     "S2": frozenset({"task_id"}),
+    "S5": frozenset({"tenant_policy_version_id", "workspace_policy_version_id", "policy_version_id"}),
     "S8": frozenset({"auth_passed", "auth_result_id"}),
 })

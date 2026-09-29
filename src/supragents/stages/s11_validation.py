@@ -89,7 +89,7 @@ async def _manifest(state: PipelineState, deps: PipelineDeps) -> ExecutionManife
         auth_result_id=context.auth_result_id,
         capability_version=versions.capability_version,
         binding_version=versions.binding_version,
-        policy_version=versions.policy_version,
+        policy_version=context.policy_version_id,
         risk_policy_version=versions.risk_policy_version,
         authorization_version=versions.authorization_version,
         worker_runtime_version=versions.worker_runtime_version,

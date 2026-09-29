@@ -55,11 +55,13 @@ class BindingRow:
 
 @dataclass(frozen=True)
 class RegistryVersions:
-    """Versions stamped into the ExecutionManifest (DATA_CONTRACTS §27)."""
+    """Registry versions stamped into the ExecutionManifest (DATA_CONTRACTS §27).
+
+    ``policy_version`` is not here: it comes from ExecutionContext.policy_version_id (S5).
+    """
 
     capability_version: str
     binding_version: str
-    policy_version: str
     risk_policy_version: str
     authorization_version: str
     worker_runtime_version: str

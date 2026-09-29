@@ -5,7 +5,7 @@ from supragents.contracts.registry import BindingRow, CapabilityMetadata, Kernel
 from supragents.contracts.vocabulary import Mutation, RetrySafety, TruthState
 
 VERSIONS = RegistryVersions(
-    capability_version="cap-7", binding_version="bind-3", policy_version="pol-2",
+    capability_version="cap-7", binding_version="bind-3",
     risk_policy_version="risk-1", authorization_version="auth-4",
     worker_runtime_version="rt-1", model_version="model-9",
 )
