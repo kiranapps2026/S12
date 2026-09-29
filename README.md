@@ -76,6 +76,46 @@ This directory contains **only the documents required to build the implementatio
 | `REFAUDIT.md` | State machine cross-reference bugs found and repaired |
 | `VOCABULARY_INDEX.md` | Canonical term definitions — prevents semantic drift |
 
+## Code — S0–S11 pre-execution pipeline
+
+Rebuilt from these specifications (2026-09-29). Scope: S0–S11 only; S12–S15 are not
+implemented. Python 3.11+, standard library only; tests need `pytest`.
+
+```
+src/supragents/
+  contracts/      frozen data: vocabulary, entry request, context, registry records,
+                  stage outputs, write-once PipelineState, plan hash
+  ports/          interfaces to the outside world (activation state, LLM, registry,
+                  authorization, policy, confirmation store, clock, event sink)
+  policy/         pure rules: sanitizer, effective risk, confirmation rules
+  stages/         one module per stage (s00_entry … s11_validation; s08_safety/)
+  pipeline/       deps bundle, stage sequence, the one PipelineRunner, RunResult
+  observability/  one structured log line per stage
+tests/
+  unit/ contracts/ journeys/ architecture/   fakes/ (test doubles live only here)
+```
+
+Run: `pip install pytest && python -m pytest`.
+
+**How a run works.** `PipelineRunner.run(entry)` executes S0→S11. After every stage it
+logs one line and writes one ledger event; any halt (DENY, CLARIFY, ERROR) stops the run,
+and an unexpected exception becomes an ERROR halt. When S10 needs the user's approval
+the run returns `AWAITING_CONFIRMATION`; `runner.resume(result, reply)` continues from
+S10. Only a completed run carries an `ExecutionManifest` for S12.
+
+**Not included yet:** production adapters for the ports (PostgreSQL stores and registry,
+the LLM client, the ledger writer). The tests use fakes from `tests/fakes/`.
+
+**Specification conflicts resolved in code** (to be confirmed by the owner):
+
+| Topic | Documents say | Code does |
+|---|---|---|
+| D confirmation | DATA_CONTRACTS §7: D only above cost 5; PIPELINE_STAGES §12: never run D/IRREVERSIBLE unconfirmed | Every D and IRREVERSIBLE plan is confirmed (the stricter rule) |
+| WORKFLOW route | PIPELINE_STAGES §9: chain, confidence ≥ 0.7, risk ≤ 0.5 | Simple or chain, confidence ≥ 0.7, risk below the deny threshold (runbook R-Q); risky plans are then confirmed, not refused |
+| Where confirmation is consumed | DATA_CONTRACTS §13: S11; PIPELINE_STAGES §12 and gate: S10 | S10 consumes; S11 requires a consumed (or not-required) confirmation |
+| Policy version ids on ExecutionContext | DATA_CONTRACTS §2 lists them | Omitted (nothing in S0–S11 sets them); the manifest carries all versions from the registry |
+| Pause check id | "R-P" in the S12 documents | "R-P" is already the runbook's vocabulary ruling; the code calls it the S0.1 activation check |
+
 ## What's NOT Here
 
 The parent `rebuild/` folder contains historical and analytical documents that informed these contracts but are not required for implementation:
