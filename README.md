@@ -100,6 +100,7 @@ Run: `pip install pytest && python -m pytest`, or the one-file check
 Run the service: `python -m supragents migrate`, `create-api-key`, `serve` (details and the
 offline installer in [WORK_PACKAGES.md](WORK_PACKAGES.md)); `.env` holds only secrets
 (see `.env.example`).
+**Full installation and operation guide:** [INSTALLATION.md](INSTALLATION.md).
 
 **How a run works.** `PipelineRunner.run(entry)` executes S0→S11. After every stage it
 logs one line and writes one ledger event; any halt (DENY, CLARIFY, ERROR) stops the run,

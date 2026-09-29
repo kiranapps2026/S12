@@ -27,8 +27,8 @@ def main() -> int:
     python = _create_venv()
     _run([str(python), "-m", "pip", "install", "--no-index", "--find-links", str(BUNDLE / "wheelhouse"),
           "supragents[test]"])
-    if args.migrate:
-        _run([str(python), "-m", "supragents", "migrate"])
+    if args.migrate:  # from source/, so that source/.env is read
+        _run([str(python), "-m", "supragents", "migrate"], cwd=BUNDLE / "source")
     if not args.skip_checks:
         _run([str(python), "verify_s0_s11.py"], cwd=BUNDLE / "source")
     activate = r".venv\Scripts\activate" if os.name == "nt" else "source .venv/bin/activate"
