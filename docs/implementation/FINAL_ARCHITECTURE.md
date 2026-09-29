@@ -1,7 +1,10 @@
 # SuprAgents — Final Architecture Document
 
-**Version**: 4.4.0 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+**Version**: 4.5.2 | **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
 **4.4.0 (2026-09-28)**: absorbs the decisions of the later documents (WORKER_LIFECYCLE_VERIFICATION_ADMISSION, SUPERSESSION_AWARE_BLOCKER_REGISTER, XS-1) and the S12–S15 gate v9 rulings, so no document contradicts this one (I-015). Each changed passage carries a `S12–S15 gate v9 repair` marker; the full list is gate C38.
+**4.5.2 (2026-09-29, ADR-14 DECIDED)**: the vector backend is pgvector in PostgreSQL (§20, §21, §29, §37); §36 replaces the scope-less synchronous `MemoryBackend` with the scoped async interface of ADR-14 (register MR-1, MR-2, MR-7). Memory remains a post-S15 phase.
+**4.5.1 (2026-09-29, audit round 2)**: §26 `workers` DDL uses `TEXT` keys and shows the management columns; §50 acceptance gate and harness cover I-001…I-029 and a note maps the four invariant numbering schemes; §51 row 16 follows the revised gate C39 (pause at S0.1 by S0–S11 ruling R-P; no per-step pause or quota check).
+**4.5.0 (2026-09-29)**: worker-management propagation from `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md`, per the owner-confirmed rulings RD-1…RD-18 in `WORKER_MGMT_SPEC_REVIEW.md` Part E and gate v10 C39–C41. Section numbering cleaned up (RD-16): the orphaned duplicate sections are renumbered §37b, §37c, §37d, §50 and §51; every number cited by another document (§38 Runtime Contract, §39, §40, §41 Event Correlation, §43, §45, §46) is unchanged. Each changed passage carries a `Worker-management repair (RD-n)` marker.
 **Date**: 2026-09-26 | **Source**: `rebuild/` design documents + 10-repo gap analysis + P0+P1 audit
 **Purpose**: Single, authoritative architecture document that absorbs best patterns from 10 studied repositories, resolves all known conflicts, and serves as the single source of truth for implementation.
 
@@ -15,6 +18,7 @@
 4. [Certification Lifecycle — Build to Production](#4-certification-lifecycle--build-to-production)
 5. [Evidence Maturity — E0 to E4](#5-evidence-maturity--e0-to-e4)
 6. [Overall Architecture — 7 Layers + Execution Kernel](#6-overall-architecture--7-layers--execution-kernel)
+6a. [Event Gateway & External Event Routing](#6a-event-gateway--external-event-routing)
 7. [Three-Plane Model](#7-three-plane-model)
 8. [Request Lifecycle — End-to-End Flow](#8-request-lifecycle--end-to-end-flow)
 9. [Dependency DAG](#9-dependency-dag)
@@ -41,16 +45,31 @@
 30. [Architectural Evolution Path](#30-architectural-evolution-path)
 31. [Implementation Roadmap](#31-implementation-roadmap)
 32. [Definition of Done](#32-definition-of-done)
-33. [Worker Capacity & Scale](#33-worker-capacity--scale)
+33. [Worker Capacity & Scale](#33-worker-capacity--scale--10000-worker-contract)
 34. [Terminology](#34-terminology)
 35. [No Silent Success](#35-no-silent-success)
 36. [Pluggable Memory Backends](#36-pluggable-memory-backends)
 37. [PostgreSQL Not Message Bus](#37-postgresql-not-message-bus)
-38. [Conflict Resolution Log](#38-conflict-resolution-log)
-39. [Patterns Adopted from Studied Repos](#39-patterns-adopted-from-studied-repos)
-40. [Architecture Invariants](#40-architecture-invariants)
-41. [Future Worker Platform Compatibility — Architecture Extension Points](#41-future-worker-platform-compatibility--architecture-extension-points)
-42. [Schema and API Compatibility During Rolling Upgrades](#42-schema-and-api-compatibility-during-rolling-upgrades)
+37a. [Adaptability Principles](#37a-adaptability-principles)
+37b. [Execution Manifest as Frozen Artifact](#37b-execution-manifest-as-frozen-artifact)
+37c. [Conflict Resolution Log](#37c-conflict-resolution-log)
+37d. [Patterns Adopted from Studied Repos](#37d-patterns-adopted-from-studied-repos)
+38. [Runtime Contract](#38-runtime-contract)
+39. [Immutable Intent Specification](#39-immutable-intent-specification)
+40. [Execution Ledger](#40-execution-ledger)
+41. [Event Correlation and Aggregation](#41-event-correlation-and-aggregation)
+42. [Sandboxed Processor Runtime](#42-sandboxed-processor-runtime)
+43. [Progressive Verification](#43-progressive-verification)
+44. [Explicit Acceptance Criteria](#44-explicit-acceptance-criteria)
+45. [Bounded Autonomous Loops](#45-bounded-autonomous-loops)
+46. [Runtime/Model Routing](#46-runtimemodel-routing)
+47. [Event Replay and Recovery](#47-event-replay-and-recovery)
+48. [Capability/Schema Evolution](#48-capabilityschema-evolution)
+49. [Formal Architecture Compliance Testing](#49-formal-architecture-compliance-testing)
+50. [Architecture Invariants](#50-architecture-invariants)
+51. [Future Worker Platform Compatibility — Architecture Extension Points](#51-future-worker-platform-compatibility--architecture-extension-points)
+
+> **Worker-management repair (RD-16):** this table of contents was rebuilt to match the body. The former entries "38. Conflict Resolution Log", "39. Patterns Adopted", "40. Architecture Invariants", "41. Future Worker Platform Compatibility" and "42. Schema and API Compatibility During Rolling Upgrades" did not match the body; the last one had no section at all (recorded as a documentation gap; rolling-upgrade compatibility is covered by §48).
 
 ## 1. System Identity
 
@@ -763,7 +782,7 @@ class ExecutionManifest:
 ```
 
 
-> **S12–S15 gate v9 repair (C38):** The field list above predates the canonical contract. The canonical ExecutionManifest is DATA_CONTRACTS `ExecutionManifest` (identical to §38 below) plus the certified `auth_result_id`. Runtime values (`reconciliation_state`, dead-letter records, costs) are not manifest fields: the manifest is immutable, and runtime state lives in the execution tables.
+> **S12–S15 gate v9 repair (C38):** The field list above predates the canonical contract. The canonical ExecutionManifest is DATA_CONTRACTS `ExecutionManifest` (identical to §37b below) plus the certified `auth_result_id`. Runtime values (`reconciliation_state`, dead-letter records, costs) are not manifest fields: the manifest is immutable, and runtime state lives in the execution tables.
 
 ### Canonical Ownership: Execution Truth
 
@@ -850,6 +869,8 @@ New protocols integrate as adapters, not as new execution engines. They follow t
 | **EVENT_DRIVEN** | Triggered by external event via Event Gateway | WorkflowPlanner | Reactive execution. Events enter through S0 with activation_mode = "event_driven". |
 
 **M0 Scope**: FAST, WORKFLOW, REFLEX, and EVENT_DRIVEN strategies are active. AGENTIC, BATCH, PLAN_EXECUTE, and HUMAN_ASSISTED are stubbed — they route to CLARIFY.
+
+> **Worker-management repair (RD-12):** large-payload batch processing is the BATCH strategy, not a separate mechanism. When activated (post-S15), S7 selects BATCH and S9 produces N ordinary PlanSteps, one per slice, each with its own `plan_step_id` — so each slice has its own idempotency key (I-021), its own step state machine, probe and recovery path, and §10 consolidation (PARTIAL already exists). No new state machine and no batch table with its own states are added. Until then BATCH stays stubbed (gate v10 C40).
 
 ### Planners
 
@@ -1112,7 +1133,7 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 | Database | PostgreSQL 16+ | ACID, RLS, JSONB, proven at scale |
 | Migrations | Alembic | Versioned schema changes |
 | ORM | SQLAlchemy 2.0 | Async support, type safety |
-| Vector Search | LanceDB | Embedded, fast, no separate service |
+| Vector Search | pgvector (PostgreSQL extension) | Tenant isolation by RLS, same transactions and backups as the rest of the data (ADR-14) |
 | Cache | Redis | Session cache, rate limiting |
 | Queue | In-process dispatch (single node); PostgreSQL is the claim authority; notification channel deferred to the fleet phase | PostgreSQL is not a message bus (§37); gate C1 |
 | Observability | OpenTelemetry + Jaeger | Distributed tracing |
@@ -1138,7 +1159,7 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 │  Domain knowledge, learned preferences, historical patterns  │
 │  Persists across worker restarts                              │
 │  Curated, summarized, confidence-scored                       │
-│  Storage: PostgreSQL (JSONB) + LanceDB (vector)              │
+│  Storage: PostgreSQL (JSONB) + pgvector (vector)             │
 ├─────────────────────────────────────────────────────────────┤
 │  LAYER 2 — Session Memory                                    │
 │  Conversation history, decisions made, results obtained      │
@@ -1171,6 +1192,22 @@ When adapter returns `status="UNKNOWN"` (timeout, network error):
 | **Auditable** | Every memory mutation is logged |
 | **Reversible** | Memories can be deleted, corrected, or superseded |
 | **Bias-aware** | Memory confidence decays over time; stale memories are deprioritized |
+
+### Memory Classification (orthogonal to layers L0–L3)
+
+> **Worker-management repair (RD-14 family; spec F21):** status DEFERRED (post-S15). Classification describes *what kind* of knowledge an entry is; the layer (L0–L3) describes *where and how long* it lives. The two axes are independent.
+
+| Class | What it holds | Typical layer | Example |
+|-------|---------------|---------------|---------|
+| Historical | What happened (renamed from the spec's "Episodic" to avoid collision with L0 "Episodic Buffer") | L1 → L3 | "On Sep 28, created contact John Doe" |
+| Semantic | What the worker knows | L3 | "John Doe is VP of Sales at Acme Corp" |
+| Procedural | How to perform something | L2 → L3 | "When qualifying leads, check company size first" |
+| Organizational | Informational copy of what the company permits | L3 (tenant-wide) | "This tenant allows CRM writes but not deletions" |
+| Execution | What happened during this execution | L1 | "Step 3 returned 247 contacts" |
+| Relationship | What is known about a customer or entity | L3 (per entity) | "John prefers email, responds in mornings" |
+| Policy | Informational copy of a rule | L3 (read-only) | "Finance transfers require two-person approval" |
+
+**Invariant — memory is never authorization.** No authorization, admission or policy decision reads memory. "Organizational" and "Policy" entries are informational copies for the LLM; the authoritative rules live in policy tables and are evaluated by the kernel (I-007). Every write goes through `MemoryWriteBarrier` (I-014).
 
 ### Memory Write Barriers (from Ruflo pattern)
 
@@ -1416,10 +1453,13 @@ Tenant
 
 ### Worker Identity Model
 
+> **Worker-management repair (RD-1; audit round 2 C1, B7):** key type ruling — `workers.worker_id` and every column that references it are `TEXT`, like every other key in DATABASE.md (`tenant_id`, `user_id`, `workspace_id`, `execution_id`); the owner ruling overrides the gate §7.3 default of changing the referencing column. Timestamps in new columns are `TIMESTAMPTZ` (RD-2). DATABASE.md is authoritative for this table; the DDL below mirrors it.
+
 ```sql
 CREATE TABLE workers (
-    worker_id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    worker_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    workspace_id TEXT REFERENCES workspaces(workspace_id),  -- gate v10 C39 filter 4b; NULL = legacy, ineligible
     worker_class VARCHAR(100) NOT NULL,
     runtime_version VARCHAR(50),
     capability_profile JSONB NOT NULL,
@@ -1430,6 +1470,12 @@ CREATE TABLE workers (
     heartbeat_at TIMESTAMP,
     last_assignment_at TIMESTAMP,
     drain_state VARCHAR(20),
+    -- worker-management columns (gate v10 C39; WORKER_LIFECYCLE §16.1)
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    assigned_user_id TEXT REFERENCES users(user_id),
+    paused_until TIMESTAMPTZ,
+    scheduled_activation_at TIMESTAMPTZ,
+    runtime_type TEXT NOT NULL DEFAULT 'llm',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -1487,7 +1533,12 @@ with tracer.start_as_current_span("pipeline.s0.entry") as span:
 | **Capability-driven design** | Decouples intent from implementation | Requires registry maintenance |
 | **Adapter isolation** | Prevents cascading failures | More boilerplate per provider |
 | **RLS at database level** | Tenant isolation enforced by DB, not application | Requires careful query design |
-| **LanceDB for vector search** | Embedded, no separate service | Newer technology, smaller ecosystem |
+| **pgvector for vector search** (ADR-14) | Tenant isolation by RLS (I-001), writes atomic with their events (I-020), one backup procedure, shared across nodes | Vector search load on the primary database; a very large tenant gets its own partition, and a future backend needs its own ADR |
+| **One execution path for every runtime type** (RD-8, RD-9) | Browser, RPA, vision, rules, data and human workers keep S8 authorization, S10 confirmation and the S11 manifest; `runtime_type` selects routing, binding and worker eligibility, never skipped stages | Simple recorded workflows still pass through every stage (FAST/REFLEX keep them cheap) |
+| **Progressive autonomy is restrict-only** (RD-14) | The existing `AutonomyLevel` stays the one autonomy enum; any per-capability refinement can only tighten it | Promotion is an admin decision, not automatic |
+| **Memory is not authorization** (§21) | Memory informs LLM behavior; the kernel decides what is allowed | Policy text must be maintained in policy tables, not memory |
+| **Replanning = child execution** (RD-11) | A new plan runs as a new execution through S0→S15 with its own manifest; the plan of a running execution never changes (I-006, I-017) | A replan costs a new S0–S11 pass |
+| **Worker checks are eligibility filters** (RD-4) | Admission runs before a worker is chosen, so worker pause, assignment and runtime match filter candidates at selection time | Two places to look: admission (tenant/workspace/system) and selection (worker) |
 
 ---
 
@@ -1526,6 +1577,22 @@ with tracer.start_as_current_span("pipeline.s0.entry") as span:
 - Cross-tenant federation
 - Advanced HITL (delegation, multi-step chains)
 - **Deliverable**: AI worker marketplace
+
+### Stability Tiers T1–T7
+
+> **Worker-management repair (RD-15):** from the spec's §7 ("Seven-Layer Architecture Invariant"), renamed so it does not collide with the layer model of §6. Tiers rank how stable each concern must be; they are not a second layer stack.
+
+| Tier | Concern | Stability |
+|------|---------|-----------|
+| T1 | Safety / identity / authorization (S0–S8, RBAC, grants, safety gate) | FROZEN after S0–S11 certification |
+| T2 | Durable execution + evidence (lease, fence, ledger, checkpoint) | STABLE after S12–S15 certification; additive only |
+| T3 | Provider / protocol / event ecosystem (adapters, Event Gateway) | Stable; new providers are additive |
+| T4 | Model / runtime / worker routing (selection, `runtime_type`, model routing) | Evolving; worker-management filters (gate v10 C39) |
+| T5 | Skills / capability composition | Evolving; compositions are planned at S9 |
+| T6 | Multi-agent coordination (delegation, spawning, execution tree) | Evolving; spawning deferred |
+| T7 | Marketplace / business outcomes (listing, templates, plans) | Evolving; the kernel never knows marketplace mechanics |
+
+Rules: no tier may bypass a lower tier (T5 executes only through T4→T3→T2; T6 spawns only through T1 authorization); each tier can only restrict what lower tiers allow.
 
 ---
 
@@ -1603,6 +1670,8 @@ class WorkerCapacity:
     drain_state: str  # NONE | DRAINING | DRAINED
 ```
 
+> **Worker-management repair (RD-4, RD-12):** a worker's load is its number of usable leases (`current_load`, gate C26). Batch slices are ordinary steps, so they are already counted by their leases; no separate `batch_count` is added. Child workers (post-S15) have their own capacity and are not added to the parent's load. Worker-management eligibility filters (gate v10 C39) run before capacity and locality scoring.
+
 **Tenant fairness**: Each tenant gets proportional share of worker pool. Noisy-neighbor tenants are rate-limited at tenant scope, not worker scope.
 
 **Validation test**: `test_10k_worker_contract()` — verifies 10,000 concurrent workers maintain SLOs.
@@ -1628,9 +1697,23 @@ Execution Strategy
 
 Agent (deprecated in architecture docs)
 = ambiguous; use Worker, Worker Runtime, or Execution Strategy instead
+
+Worker Group
+= tenant-scoped set of Workers managed together (bulk pause, schedule, assign); post-S15
+
+runtime_type
+= how a Worker executes: llm, rules, vision, browser, rpa, data, rag, code, human.
+  Selects routing, binding family and worker eligibility; never skips a stage.
+  Plan/event/hybrid is derived from active WorkerSubscription rows, not stored.
 ```
 
 Never say "Worker equals Agent." They are different concepts.
+
+> **Worker-management repair (RD-10, spec area 8):** a Worker Runtime is deployment-target agnostic (Docker, Kubernetes, serverless, edge, on-prem) behind the Runtime Contract (§38) and `WorkerRuntime` (§37a Principle 5). "Worker Deployment" in §51's lifecycle model (a customer's installed instance) is not `WorkerDeployment` in WORKER_LIFECYCLE §5 (a running runtime instance).
+
+### Documented Conflicts (catalogue)
+
+> **Worker-management repair (RD-16):** this catalogue had lost its heading. Its summary is §37c.
 
 ---
 
@@ -1693,23 +1776,35 @@ An adapter returning HTTP 200 is NOT sufficient for SUCCESS. The kernel must ver
 ---
 ## 36. Pluggable Memory Backends
 
-LanceDB is the default vector backend but is pluggable.
+Memory backends are pluggable behind one interface. The vector backend is **pgvector in PostgreSQL**; LanceDB was not chosen (ADR-14, DECIDED 2026-09-29). Target phase: memory / LLM layer, after S15 (gate v10 §14).
 
-**Backend interface**:
+**Backend interface** (async; a scope is mandatory on every call; contracts in DATA_CONTRACTS §54):
 ```python
 class MemoryBackend(Protocol):
-    def write(self, entry: MemoryEntry) -> bool: ...
-    def read(self, query: MemoryQuery) -> list[MemoryEntry]: ...
-    def search(self, vector: list[float], limit: int) -> list[MemoryEntry]: ...
-    def close(self) -> None: ...
+    async def write(self, tx: Transaction, scope: MemoryScope, entry: MemoryEntry) -> WriteResult: ...
+    async def read(self, scope: MemoryScope, query: MemoryQuery) -> list[MemoryEntry]: ...
+    async def search(self, scope: MemoryScope, vector: Sequence[float],
+                     limit: int, filters: MemoryFilter | None = None) -> list[MemoryHit]: ...
+    async def delete(self, tx: Transaction, scope: MemoryScope, entry_id: str) -> bool: ...
+    async def purge(self, scope: MemoryScope | TenantScope) -> int: ...
+    async def close(self) -> None: ...
 ```
+
+**Rules** (ADR-14 §3.1, §3.3):
+1. The scope comes from `ExecutionContext` / `PrincipalChain` only (user = original principal), never from LLM output or request parameters.
+2. The tenant boundary is enforced by RLS (I-001); the workspace, worker, user and session boundaries by the backend's mandatory predicates.
+3. `read` and `search` cover a fixed read set: `(worker, user)`, `(worker, no user)`, `(no worker, user)`, workspace-wide. Memory is private to its worker; shared memory is written to the workspace-wide scope.
+4. `MemoryFilter` only narrows (tags, time range, source, minimum confidence).
+5. `write` and `delete` take the caller's transaction, so the memory row and its event commit together (I-014, I-020).
+6. The backend never calls an embedding provider (§6 dependency direction; register MR-3).
+7. `purge` accepts a tenant-only scope, may be called only by an owner/admin member or the off-boarding job, and is audited.
 
 **Implementations**:
 | Backend | Use Case | Persistence |
 |---------|----------|-------------|
-| LanceDB | Vector search, embeddings | File-based |
-| PostgreSQL | Structured memory, checkpoints | Durable |
-| Redis | Ephemeral cache, session | Volatile |
+| PostgreSQL + pgvector | Vector search (`memory_vectors`: RLS, LIST partitions for large tenants, HNSW per partition), structured memory, checkpoints | Durable; DATABASE §5 backups |
+| Amazon S3 (payload store behind the PostgreSQL backend, not a `MemoryBackend`) | Payloads above `memory_payload_inline_max_bytes` (default 256 KiB) | Durable; per-tenant envelope encryption, crypto-shredding (ADR-14 Part 3) |
+| In-process LRU cache | Hot reads; every key holds the full `MemoryScope`, and `purge` invalidates it | Volatile (a shared Redis cache waits for the fleet phase) |
 
 **Validation test**: `test_memory_backend_swap()` — verifies backend can be swapped without changing kernel.
 
@@ -1723,7 +1818,7 @@ PostgreSQL is the durable source of truth for all execution state. It is NOT the
 | State storage | PostgreSQL | ACID, RLS, durability |
 | Message passing | In-process or dedicated queue | PostgreSQL is not a message bus |
 | Ephemeral state | Redis | Fast, TTL-based |
-| Vector search | LanceDB | Embedded, no separate service |
+| Vector search | pgvector (in PostgreSQL) | Durable, RLS; state, not messaging |
 
 **Rule**: PostgreSQL stores what must survive restarts. Nothing else does.
 
@@ -1861,7 +1956,9 @@ There is exactly ONE execution path through the kernel: S0 → S1 → ... → S1
 | External event | S0 (via Event Gateway) | S0→S15 | Yes (S8) |
 | Internal trigger | S0 | S0→S15 | Yes (S8) |
 
-**This is an architecture invariant (I-024).**
+**This is an architecture invariant (I-023, generalized by I-029).**
+
+> **Worker-management repair (RD-8):** the reference used to say I-024, which is Kernel Stability. Browser, RPA, vision, rules, data and human workers are **not** exceptions: they enter at S0 and pass S8, S10 and S11 like every other execution. `runtime_type` selects the strategy (S7), the binding (S5) and the eligible workers (S12); recorded workflows are skill compositions planned at S9. Speed-ups come from FAST/REFLEX strategies with no LLM call, never from skipping stages.
 
 ### Extension Point Catalog
 
@@ -1875,13 +1972,16 @@ There is exactly ONE execution path through the kernel: S0 → S1 → ... → S1
 | New memory backend | Layer 0 | New MemoryBackend implementation |
 | New interface (e.g., Slack bot) | Layer 5 | New Interface adapter → S0 |
 | New skill | Capability layer | New skill definition, no kernel changes |
+| New runtime type (e.g., browser) | Layer 1 (Adapter) + routing | New adapter + bindings (one per provider, frozen at S5) + `runtime_type` value; no pipeline change (RD-8, RD-9) |
 
 **Nothing in the KERNEL (S0–S15, state machines, budget, safety) ever changes for any of the above.**
 
 **Source**: [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) for complete design rationale. [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) for Event Gateway contracts.
 
 
-## 38.. Execution Manifest as Frozen Artifact
+## 37b. Execution Manifest as Frozen Artifact
+
+> **Worker-management repair (RD-16):** formerly headed "38..", duplicating §38. Cited as §37b by §13 and gate C38.
 
 The ExecutionManifest is a frozen artifact created at the end of S11 and consumed by S12.
 
@@ -1906,7 +2006,7 @@ class ExecutionManifest:
 **Validation test**: `test_execution_manifest_frozen()` — verifies manifest cannot be modified after S11.
 
 ---
-## 39. Conflict Resolution Log
+## 37c. Conflict Resolution Log
 
 All documented conflicts from the rebuild documents are catalogued in this section, with resolution references:
 
@@ -1926,7 +2026,7 @@ All documented conflicts from the rebuild documents are catalogued in this secti
 | 10 | Worker persistence | MISSING in GAP_ANALYSIS | Specified in Durable Kernel |
 
 ---
-## 40. Patterns Adopted from Studied Repos
+## 37d. Patterns Adopted from Studied Repos
 
 ### AgentsMesh Patterns
 
@@ -2619,8 +2719,9 @@ class ArchitectureComplianceSuite:
 
 ---
 
-## 41. Architecture Invariants
-## 41. Architecture Invariants
+## 50. Architecture Invariants
+
+> **Worker-management repair (RD-16):** formerly two identical "## 41." headings, colliding with §41 Event Correlation. The duplicate rows I-022…I-025 were removed and I-029 added. Cited as "invariants §50" by the implementation plan.
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
@@ -2661,10 +2762,18 @@ class ArchitectureComplianceSuite:
 | **I-026** | FROZEN INTENT SPECIFICATION | IntentSpecification is frozen at S3. It cannot be modified by any LLM output. Execution success is measured against acceptance_criteria, not just API success. |
 | **I-027** | EXECUTION LEDGER APPEND ONLY | Ledger events are never updated, deleted, or soft-deleted. Every execution event is permanently recorded. |
 | **I-028** | BOUNDED AUTONOMY | Every autonomous loop has explicit bounds (iterations, budget, duration, risk). No unrestricted execution loops exist. |
-| **I-022** | EVENT GATEWAY TENANT ISOLATION | `EventEnvelope.tenant_id` comes from the Event Gateway authentication context (HMAC credential lookup). It is NEVER extracted from the event payload. |
-| **I-023** | EVENT DRIVEN = SAME PIPELINE | Event-driven executions follow the identical S0→S15 pipeline as human-driven. No parallel path, no bypass mode, no special case exists. |
-| **I-024** | KERNEL STABILITY BOUNDARY | No change to S0–S15, state machines, budget, or safety is ever required to add a new adapter, protocol, or runtime. |
-| **I-025** | EXTERNAL EVENT SANITIZATION | Event payloads are UNTRUSTED input. They must pass through DataSanitizer before inclusion in any prompt or system processing. |
+| **I-029** | ONE EXECUTION PATH | Every execution, whatever its trigger or `runtime_type`, follows S0→S15 and passes S8. No bypass path exists (§37a Principle 8; ruling RD-8 in `WORKER_MGMT_SPEC_REVIEW.md` Part E). |
+
+### Invariant Numbering Schemes
+
+> **Repair (audit round 2 D10):** four numbering schemes coexist. This table (I-001…I-029) is the architecture-level one and is authoritative.
+
+| Scheme | Where | Scope |
+|---|---|---|
+| I-001 … I-029 | This section | Architecture invariants (authoritative) |
+| I-001 … I-014 | IDENTITY_AND_TENANCY.md "Architecture Invariants" | A copy of I-001…I-014 above |
+| I-1 … I-10 | STATE_TRANSITIONS.md §12 | Cross-state-machine invariants |
+| I1 … I18 | S12_S15_EXECUTION_GATE.md §17 | The S12–S15 invariant checker (`assert_system_invariants`) |
 
 ### Guardrail Precedence Order
 
@@ -2697,6 +2806,9 @@ Every invariant must have:
 
 ---
 
+## 51. Future Worker Platform Compatibility — Architecture Extension Points
+
+> **Worker-management repair (RD-16):** this heading was missing; the content below had no section of its own.
 
 ### Foundational Principle
 
@@ -2727,6 +2839,12 @@ The architecture has clean extension points for worker platform concepts **witho
 | 13 | **Worker Autonomy Levels** | Autonomy level is a runtime configuration. Kernel authorization and risk rules are unaffected. |
 | 14 | **Marketplace Package + Certification** | Certification uses the existing E0-E4 evidence framework. Kernel does not need to know about marketplace mechanics. |
 | 15 | **Subscription / Entitlement Model** | Kernel only needs to know "is this deployment entitled to execute this capability?" Entitlement check is added to the authorization chain. |
+| 16 | **Worker Management Settings** (spec F1–F6, F12, F16) | Pause, scheduled activation, assignment, workspace boundary, restrictions and operation quotas. Tenant/workspace pause is checked at S0.1 (S0–S11 ruling R-P) and again at S12 entry, never per step; worker checks are eligibility filters at worker selection; quota is consumed once per run at durable admission, tenant and workspace levels only (gate v10 C39). Settings changes affect new leases only (I-017). |
+| 17 | **Batch Processing** (spec F9) | BATCH strategy producing ordinary PlanSteps at S9 (§15, gate v10 C40). Post-S15. |
+| 18 | **Sub-Agent Delegation** (spec F7, F28) | Child workers get ⊆ parent capabilities and grants; PrincipalChain records the parent; replans and delegations are child executions (RD-11, RD-13). Post-S15. |
+| 19 | **Runtime-Type Routing** (spec F19, F32–F36) | Adapters and bindings per runtime; same pipeline (I-029). Post-S15. |
+
+Spec features map onto existing rows as follows: F10/F16 → #3; F33 skills → #5–#7; F22 PolicyEngine → #8; F20 autonomy → #13; F27 marketplace → #14; F26 plans/entitlements → #15.
 
 ### Architecture Acceptance Gate
 
@@ -2735,7 +2853,7 @@ Before any component moves to E2 (Contract Validated), it must pass all 7 accept
 | Criterion | Requirement | Test |
 |-----------|-------------|------|
 | **A. Contract Complete** | All data contracts (inputs, outputs, errors) are specified | Contract test suite passes |
-| **B. Invariant Preserved** | No implementation violates any I-001 through I-021 | `test_architecture_invariants()` |
+| **B. Invariant Preserved** | No implementation violates any I-001 through I-029 | `test_architecture_invariants()` |
 | **C. State Machine Valid** | All state transitions are enumerated and valid | State transition test suite |
 | **D. Failure Paths Covered** | Every failure mode has a defined handler | Negative-path matrix test |
 | **E. Negative Path Tested** | Every failure path has a passing test | `test_negative_path_matrix()` |
@@ -2753,7 +2871,7 @@ class ArchitectureTestHarness:
     """Validates architecture invariants before implementation proceeds."""
 
     def test_all_invariants_hold(self) -> None:
-        """I-001 through I-021 must all pass."""
+        """I-001 through I-029 must all pass."""
         for invariant in ARCHITECTURE_INVARIANTS:
             assert invariant.validate(), f"{invariant.id} violated"
 
@@ -2805,6 +2923,15 @@ This gives the marketplace structure:
                       │
                 Worker Definition
                       │
+               Worker Deployment
+                      │
+                Worker Runtime
+                      │
+               Worker Execution
+```
+
+> **Worker-management repair (RD-16):** the diagram's code fence was never closed, which swallowed the appendices when rendered.
+
 ## Appendix A: Document Relationships
 
 | Document | Depends On | Enables |

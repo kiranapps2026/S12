@@ -1,7 +1,8 @@
 # S12–S15 EXECUTION GATE — PHASE-LOCKED INSTRUCTION
 
 Status: APPROVED FOR EXECUTION (owner confirmed Section 6, D1–D6, as written)
-Revision: v9 — v8 plus: documentation repairs C1–C23 pre-applied by the owner (the agent
+Revision: v10 — v9 plus worker-management rulings C39 (admission and eligibility, operation quota), C40 (batch: out of phase), C41 (replanning: out of phase), preflight items 15–16, suite 20, invariants I17–I18, and the owner-confirmed rulings RD-1…RD-18 of `WORKER_MGMT_SPEC_REVIEW.md` Part E. Passages changed in v10 carry a `Worker-management repair (RD-n)` or `(C39–C41)` marker. v10 audit round 2 (2026-09-29): C39 revised (A1–A6, B1–B9 of the audit; pause moved to S0.1 by S0–S11 ruling R-P, S12 entry keeps a safety net; no per-step quota or pause check; eligibility filters extended), preflight item 17. v10 addendum (2026-09-29), amended the same day: vector memory / RAG was blocked until blocker register Section 20 MR-1 was decided; MR-1 and ADR-14 DECIDED by the owner on 2026-09-29 (`ADR-14_VECTOR_MEMORY_BACKEND.md`: pgvector only, `MemoryScope` contract), so the block is lifted under the deletion contract (`s12_s15_golden/README.md`): the §1 entry, the suite 2 check and the guard `tests/golden/s12/test_arch_no_vector_code.py` are removed. Vector memory stays **out of this phase** (§14, target phase after S15). The owner re-pins the gate and the golden set.
+Previous revision: v9 — v8 plus: documentation repairs C1–C23 pre-applied by the owner (the agent
 never edits specification documents); the term "Runner" replaced by "Worker Runtime"; new
 rulings C24–C38 (canonical transition tables, fence-token sequence, lease status column,
 cross-state invariant amendments, enum storage, DeadLetter contract, admission vs
@@ -29,9 +30,9 @@ Out of scope: multi-node fleet, Redis, real providers, frontend, SDK
 4. The S0–S11 certification rulings (R1–R8 of the previous gate, and the S0–S11
    runbook rulings including R-Z) remain in force.
 5. **Specification documents are owner-controlled and pinned.** Every documentation
-   repair required by this gate (C1–C38) has already been applied by the owner to the
+   repair required by this gate (C1–C41) has already been applied by the owner to the
    documents in `docs/implementation/` and entered in
-   `SUPERSESSION_AWARE_BLOCKER_REGISTER.md` §18 and `REPAIRS_APPLIED.md`. Each repaired
+   `SUPERSESSION_AWARE_BLOCKER_REGISTER.md` §18 (v10: §19) and `REPAIRS_APPLIED.md` (v10 section). Each repaired
    passage carries a marker of the form `> **S12–S15 gate v9 repair (Cn)**`.
    You never edit a specification document. When this document says "record", append
    an entry to `docs/gates/S12_RECORDS.md` (agent-owned) with: ID, documents involved,
@@ -53,8 +54,13 @@ Out of scope: multi-node fleet, Redis, real providers, frontend, SDK
 
 ### You MAY
 
-- Rely on the documentation repairs C1–C38, which the owner has already applied.
+- Rely on the documentation repairs C1–C41, which the owner has already applied.
   Do not edit specification documents (Section 0 item 5).
+- Implement the worker-management scope of C39: the additive columns and
+  `operation_quotas` (Section 7.3), the S12-entry pause safety net (Section 7.1 item 7),
+  quota consumption at durable admission (Section 7.2) and the worker-eligibility
+  filters (Section 8 step 2). The primary pause check at S0.1 is S0–S11 ruling R-P, not
+  S12–S15 work.
 - Create additive database migrations for tables, columns and indexes needed by
   S12–S15 (Section 7.3).
 - Implement S12, S13, S14, S15 and the components they call: admission, worker
@@ -87,6 +93,10 @@ Out of scope: multi-node fleet, Redis, real providers, frontend, SDK
   v8 reference to D3, which is join modes).
 - Implement worker version or deployment lifecycle beyond reading the version fields
   S12 needs.
+- Implement sub-agent spawning, batch processing (C40), replanning (C41), worker
+  groups, config versioning, webhooks, session memory, vector memory (§14), or any execution path that
+  bypasses S0–S11 (FINAL_ARCHITECTURE I-029). `runtime_type` never selects an
+  adapter in S12 (C39).
 - Delete or weaken existing tests to restore green.
 
 ---
@@ -135,10 +145,25 @@ Before any change, produce a short preflight report containing:
 14. The `StateTransitionValidator` (DATA_CONTRACTS §26) as implemented, if any, and
     which state machines it covers.
 
-If item 1, 2 or 10 fails, STOP. Items 3–9 and 11–14 are information for the rulings
+15. **Worker-management columns (C39).** For `workers`, `tenants`, `workspaces` and
+    `execution_runs`: which of the Section 7.3 C39 columns already exist, with their
+    types; and the declared type of every key referenced by a C39 foreign key
+    (`workers.worker_id`, `tenants.tenant_id`, `users.user_id`,
+    `workspaces.workspace_id`). Report every mismatch with the owner ruling RD-1
+    (`TEXT` keys).
+16. **Worker-management tables (C39).** Whether `operation_quotas`,
+    `worker_spawn_audit`, `worker_groups`, `worker_group_members`,
+    `execution_batches` or `worker_config_versions` exist, with `file:line`, or "not
+    present in code". Only `operation_quotas` is created in this phase.
+
+17. **S0.1 pause check (S0–S11 ruling R-P, v10 round 2).** `file:line` of the check in
+    the S0 handler and of its six required tests (`tests/stages/test_s0_entry.py`). If
+    R-P is not implemented, STOP: C39 relies on it as the primary pause gate.
+
+If item 1, 2, 10 or 17 fails, STOP. Items 3–9 and 11–16 are information for the rulings
 below; answer them, then continue.
 
-**Evidence rule:** answer items 3–9 from the source code and database only, citing
+**Evidence rule:** answer items 3–9 and 15–16 from the source code and database only, citing
 `file:line` for each answer. Do not answer implementation questions from the
 architecture documents. If the code does not contain the answer, write "not present
 in code". An answer with neither a `file:line` citation nor "not present in code"
@@ -1221,12 +1246,118 @@ repaired master text is authoritative; the list states what changed and why.
 | §10 worker state machine (PENDING/ACTIVE/PAUSED/RESUMING/TERMINATED) and §26 default `'PENDING'` | Older worker states | STATE_TRANSITIONS §4 / WORKER_LIFECYCLE §1 (REGISTERED, ACTIVE, DRAINING, DRAINED, TERMINATED), default `'REGISTERED'` (C33) |
 | §10 "Lease expiry triggers graceful worker draining" | Worker state changes on lease expiry | In this phase lease expiry ends that execution's ownership only (Section 13); worker drain belongs to the fleet phase |
 | §12 Scheduler "polls execution_queue"; §20 "Queue: PostgreSQL + pg_cron" | Polling queue | In-process dispatch; PostgreSQL is the claim authority (C1, §37) |
-| §13 ExecutionManifest (19 fields incl. `reconciliation_state`, `dead_letter_records`); §13/§38 "written at S11 completion" | Two different manifest definitions; mutable fields in an immutable artifact; persisted at S11 | The DATA_CONTRACTS / §38 definition (plus the certified `auth_result_id`) is canonical; runtime state lives in execution tables; persisted at S12 entry in the admission transaction, identical to the S11 manifest (S11 is certified and has no run row to reference, C20) |
+| §13 ExecutionManifest (19 fields incl. `reconciliation_state`, `dead_letter_records`); §13/§37b (formerly the duplicate "§38..") "written at S11 completion" | Two different manifest definitions; mutable fields in an immutable artifact; persisted at S11 | The DATA_CONTRACTS / §37b definition (plus the certified `auth_result_id`) is canonical; runtime state lives in execution tables; persisted at S12 entry in the admission transaction, identical to the S11 manifest (S11 is certified and has no run row to reference, C20) |
 | §15 Consolidation "All skipped → ok" | Unreachable row | Under C22 a step is SKIPPED only after a predecessor failed, so the Section 10 table applies |
 | §17 guard layers (Circuit, Timeout, Retry, Budget, Safety, Dead Letter) | Conceptual layering differing from RELIABILITY §1 | Runtime components by name per RELIABILITY §1/§8 (C4); master "Safety guard" = idempotency lookup + mutation-aware retry ceiling (Section 8 step 8); master "Dead Letter Store" = S14 |
 | §19 Probe pattern "confirmed failure → apply retry policy" | Retry after a probe-confirmed failure | Only a probe-confirmed NOT_EXECUTED leads to retry; EXECUTED_FAILURE ends the step FAILED (a probe cannot report the error class, and retrying after uncertainty is limited to the one case proven side-effect free) |
 | §24 ConfirmationToken (`token_id`, status `confirmed`) | Older confirmation contract | DATA_CONTRACTS `Confirmation` (certified in S0–S11), canonical status `consumed` (C20) |
 | §15 heading "The Runner"; §34 terminology | "Runner" | "Worker Runtime" (§34's own term); "runner" stays a term to avoid |
+
+### C39 — Worker management: pause, eligibility and operation quota (v10, revised in audit round 2)
+
+Source: `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` §3, corrected by
+`WORKER_MGMT_SPEC_REVIEW.md` (rulings RD-1…RD-8) and its audit round 2 (A1–A6, B1–B9).
+
+Conflict: the spec placed worker-level gates G12–G17 in admission, which runs before a
+worker is selected (WORKER_LIFECYCLE §10, Section 8 steps 1→2); it consumed quota "on
+completion", so concurrent runs overshoot; its DDL used `UUID` foreign keys to `TEXT` keys
+and omitted `tenant_id`. The first v10 text then had its own defects (audit round 2): a
+per-step quota precheck counted the run's own consumption and would cancel admitted runs
+(A1); a per-step pause check would cancel running work (A2); worker-level quotas cannot be
+charged at entry, before a worker exists (A3); a soft-quota QUEUE at entry had nothing to
+queue (A4); "every admission decision is a ledger event" contradicted "entry denials write
+nothing" (A5); and a pause checked only at S12 let a paused tenant run S1–S11, including
+the LLM call and an S10 confirmation (B6).
+
+Ruling:
+- **Key types (RD-1, RD-2).** Every foreign key takes the type of the referenced key;
+  owner ruling: `workers.worker_id` and all referencing columns are `TEXT`, overriding
+  the Section 7.3 default direction. New time columns are `TIMESTAMPTZ`, compared
+  with database `NOW()`.
+- **Tenant (RD-3).** Every new table carries `tenant_id TEXT NOT NULL` and the RLS
+  pattern (C34).
+- **Pause and scheduled activation (RD-5, B6).** Tenant and workspace `paused_until` /
+  `scheduled_activation_at` are checked at **S0.1** (S0–S11 ruling R-P: the primary gate,
+  before any S1–S11 work) and re-checked at **S12 entry** (Section 7.1 item 7: a safety
+  net for runs that passed S0.1 before the pause was set). They are **never** checked
+  per step: a pause never cancels a running step or a held lease; the kill switch (C23)
+  is the hard stop. No admin bypass applies to a tenant or workspace pause.
+- **Per-step admission is unchanged** (gates 1–11 in their v9 order). Pause, activation
+  and quota are entry checks, not per-step gates (A1, A2).
+- **Worker-eligibility filters (RD-4, RD-7; B1–B5, B7, B8)**, in Section 8 step 2 before
+  locality scoring; pure predicates on live state and database `NOW()`:
+  - **4b workspace match:** `workers.workspace_id` equals the run's workspace; a NULL
+    `workspace_id` (a legacy row) is ineligible. Reason `workspace_mismatch`. No bypass.
+  - **12b worker paused:** `workers.paused_until > NOW()`. Worker groups are post-S15 and
+    are not evaluated in this phase. Reason `worker_paused`.
+  - **13b worker not yet active:** `workers.scheduled_activation_at > NOW()`. Reason
+    `worker_not_yet_active`.
+  - **14 assignment:** applies only when the run's original principal
+    (`PrincipalChain.original_principal_id`) is a human user **and** the activation mode
+    is not EVENT_DRIVEN; then `assigned_user_id` must be NULL or equal to that principal.
+    Event-driven and system runs skip it; worker-delegated runs keep the human's
+    assignment. Reason `not_assigned`.
+  - **17 capability match:** (a) the step's capability is in `capability_profile`;
+    (b) it is not in `settings.restricted_capabilities` (missing or empty = unrestricted);
+    (c) if the binding's `required_runtime_types` is non-empty, `runtime_type` is in it
+    (empty = any; S12 reads the value from the binding row it already reads at entry,
+    C32). Reason `capability_mismatch`. (d) If `settings.execution_policy.max_mutation`
+    is set, the step's frozen `effective_mutation` does not exceed it
+    (`R` < `W` < `D` < `IRREVERSIBLE`). Reason `mutation_ceiling`.
+  - **Admin bypass** for 12b, 13b and 14 only: the run's original principal holds
+    membership role `owner` or `admin` in the run's workspace, read live at selection.
+    Each bypass is a ledger event.
+  - No candidate left → `no_worker` (REJECT per Section 8 step 2), with every filter
+    reason in the ledger event. `runtime_type` never selects an adapter: the adapter
+    comes from the binding frozen at S5 (RD-9).
+- **Quota (RD-6; A3, A4, B9).** Tenant- and workspace-level quotas only in this phase:
+  `operation_quotas.worker_id` must be NULL, because the worker is chosen per step, after
+  entry. Consumed once per run in the Section 7.2 transaction, after the duplicate check,
+  in the order tenant → workspace, with `… AND used_count < limit_value RETURNING …`;
+  zero rows at any level rolls the transaction back. Hard → DENY `quota_exhausted`.
+  Soft → retry the Section 7.2 transaction up to `quota_retry_max` with backoff (settings
+  object, Section 21 S1), then DENY `quota_exhausted` with `retry_after_ms` and upgrade
+  text in `detail`. Nothing is written on a DENY. **No per-step quota check exists.**
+  Refund: in the consolidation transaction when the run ends CANCELLED with no step
+  COMPLETED, recorded as a ledger event. `CHECK (used_count <= limit_value)` makes I17
+  hold by construction; lowering a limit below current usage is rejected by the
+  database (set the lower limit on the next period's row).
+- **Entry denials and the ledger (A5).** Denials at S0.1 and at S12 entry write nothing,
+  so they are recorded as a structured log line (Section 21 S5) and a metric, not as a
+  ledger event. C30's "every admission decision is written as a ledger event" applies to
+  per-step admission.
+- **Reason codes.** Entry DENY: `tenant_paused`, `workspace_paused`, `not_yet_active`,
+  `quota_exhausted`. Filter reasons (ledger only; the step's `terminal_reason` stays
+  `no_worker`): `workspace_mismatch`, `worker_paused`, `worker_not_yet_active`,
+  `not_assigned`, `capability_mismatch`, `mutation_ceiling`. No new `StepTerminalReason`
+  value is needed, so C22 and C28 are unchanged.
+- **Out of phase:** worker-level quotas; worker groups; per-worker
+  `execution_policy.max_retries`, `timeout_seconds` and `retry_backoff` (reserved, inert).
+- **Invariants.** I17 and I18 (Section 17).
+
+### C40 — Batch processing: out of this phase (v10)
+
+Conflict: the spec's batch design re-executes RUNNING batches on restart (Section 13),
+reuses one idempotency key for every batch (C9), runs batches in parallel (Section 8,
+Section 14) and needs step-to-step data flow (C36).
+
+Ruling: batch is **not implemented** in S12–S15; record it in the deferred register.
+Model for its phase (RD-12): the BATCH strategy selected at S7 produces N ordinary
+PlanSteps at S9, each with its own `plan_step_id`, idempotency key, state machine,
+probe and recovery path, consolidated by Section 10. No batch table with its own
+states is added.
+
+### C41 — Replanning: out of this phase (v10)
+
+Conflict: S12 replacing its plan mid-run breaks I-006 and I-017, the plan-digest check
+(Section 7.3, I9), the ban on re-resolution and S8 in S12 (Section 1), and Section 9
+(INCONCLUSIVE → DEAD_LETTER, not replan).
+
+Ruling: replanning is **not implemented** in S12–S15. Model for its phase (RD-11): a
+replan starts a **new child execution** through S0→S15 with its own manifest,
+admission and budget; the parent consolidates normally. The column
+`execution_runs.parent_execution_id` is **not** added in this phase: nothing here would
+read it, and it lands with its first consumer.
 
 
 ---
@@ -1327,6 +1458,10 @@ S12 receives the certified PipelineState. In order:
    equal `manifest.binding_version`, otherwise deny with `binding_version_mismatch`
    (C32).
 6. Build verifiers (D1).
+7. **(v10, C39) Pause safety net.** Tenant or workspace `paused_until > NOW()` → deny
+   `tenant_paused` / `workspace_paused`; `scheduled_activation_at > NOW()` → deny
+   `not_yet_active`. The primary check is S0.1 (S0–S11 ruling R-P); this re-check
+   catches runs that passed S0.1 before a pause was set. Logged, not a ledger event (C39).
 
 Any failure returns `StageStatus.DENY` with the specific reason, and writes nothing.
 
@@ -1335,6 +1470,10 @@ Any failure returns `StageStatus.DENY` with the specific reason, and writes noth
 1. Duplicate check: if an `execution_runs` row with the same `(tenant_id, request_id)`
    exists, return that execution's current status or result. Create nothing new.
 2. Insert, in one transaction:
+   - **(v10, C39)** operation-quota consumption for every applicable level, in the
+     order tenant → workspace (worker-level quotas are out of phase); zero rows at any
+     level rolls the transaction back: hard → DENY `quota_exhausted`; soft → bounded
+     retry of this transaction, then DENY with `retry_after_ms`;
    - `execution_runs` (status PENDING)
    - `execution_manifests`
    - `execution_plans` (Section 7.3)
@@ -1378,6 +1517,25 @@ Add, via migration:
   - the transition-log table `state_transitions` (DATABASE §3, or equivalent ledger rows) carrying `from`, `to`, `reason`,
     `runtime_instance_id`, `fence_token` (C24);
   - every CHECK constraint generated from its enum (C28).
+- v10 additions (C39), all additive and nullable or defaulted:
+  - `workers.settings JSONB NOT NULL DEFAULT '{}'`, `workers.assigned_user_id TEXT NULL`
+    (FK `users`), `workers.paused_until TIMESTAMPTZ NULL`,
+    `workers.scheduled_activation_at TIMESTAMPTZ NULL`,
+    `workers.runtime_type TEXT NOT NULL DEFAULT 'llm'` with its CHECK (C28);
+  - `workers.workspace_id TEXT NULL` (FK `workspaces`; required for new registrations;
+    NULL only on legacy rows, which filter 4b makes ineligible) and its index;
+  - `bindings.required_runtime_types JSONB NOT NULL DEFAULT '[]'` (values validated
+    against `RuntimeType` at binding registration; empty = any runtime);
+  - `tenants.paused_until`, `tenants.scheduled_activation_at`,
+    `workspaces.paused_until`, `workspaces.scheduled_activation_at` (all
+    `TIMESTAMPTZ NULL`; skipped if ruling R-P already added them);
+  - `operation_quotas` with `tenant_id TEXT NOT NULL`, RLS,
+    `UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type,
+    period_start)`, `CHECK (used_count >= 0 AND limit_value >= 0)`,
+    `CHECK (used_count <= limit_value)` and `CHECK (worker_id IS NULL)` (worker-level
+    quotas out of phase) (WORKER_LIFECYCLE §16.4).
+  - Not added: spawning columns, `execution_runs.parent_execution_id`, batch columns,
+    and the other deferred tables (C40, C41, Section 14).
 
 DATABASE.md mixes SQLite-style and PostgreSQL types (for example, `TEXT` tenant_id
 referencing `UUID` columns). For tables touched in this phase:
@@ -1404,12 +1562,15 @@ step:
      applies to the runtime effective timeout only and never modifies the Plan.
    - QUEUE or DELAY: wait `retry_after_ms`, then re-admit, up to a configured maximum.
      After the maximum, treat it as REJECT with reason `admission_exhausted`.
+   - (v10) Pause, activation and quota are entry checks, never per-step gates (C39).
    - REJECT: mapped by `gate_failed` per C30 (kill switch → C23; tenant inactive →
      C23; budget → C15). For any other gate, this step and all remaining PENDING steps
      become CANCELLED with `admission_rejected`, and the run is consolidated
      (Section 10).
-2. **Worker selection.** Use state-locality scoring per WORKER_LIFECYCLE §13. If no
-   eligible ACTIVE worker exists, handle it as REJECT with reason `no_worker`.
+2. **Worker selection.** Apply the C39 eligibility filters (workspace match, worker
+   paused, not yet active, assignment, capability/runtime/mutation match), then state-locality scoring per
+   WORKER_LIFECYCLE §13. If no eligible ACTIVE worker exists, handle it as REJECT with
+   reason `no_worker`; the ledger event lists every filter reason.
 3. **Lease.** Acquire a lease on the selected worker (C5). On failure, re-run
    selection and acquisition, up to a configured maximum. Then treat it as REJECT
    with reason `lease_unavailable`.
@@ -1636,6 +1797,17 @@ count as not completed. Specifically:
 - Automatic rollback triggers
 - `any` and `threshold` join modes
 - Parallel step execution
+- Worker management beyond C39 (v10): worker-level quotas; per-worker `execution_policy`
+  retry and timeout keys; sub-agent spawning and `worker_spawn_audit`;
+  batch processing (C40); replanning and `parent_execution_id` (C41); worker groups;
+  config versioning; state-change webhooks; L2 session memory; memory
+  classification; progressive autonomy; PolicyEngine; browser/RPA adapters and
+  skills; templates, plans, entitlements and marketplace listing
+- Vector memory / RAG (blocker register Section 20; ADR-14 and MR-1 DECIDED
+  2026-09-29: pgvector only, `MemoryScope` contract). Target phase: memory / LLM layer,
+  after S15. Nothing of it is implemented, migrated or tested in this phase; MR-3
+  (embedding contract), MR-4 (pipeline rulings) and MR-9 (`MemoryWriteBarrier`) are
+  still open
 - Real provider adapters
 - LayaDecisionAdapter (design note `LAYA_DECISION_ADAPTER.md`, status DEFERRED;
   target phase: LLM layer). File its blocker entries LB1–LB11 in the register with
@@ -1863,6 +2035,21 @@ repeated key does not execute twice.
       `data_flow_unsupported` and writes nothing.
     - Reliability (C37): every half-open branch; bulkhead slot free during backoff;
       settings validation rejects inverted timeouts.
+20. **Worker management (C39, v10, revised in audit round 2).** The S12-entry safety
+    net denies a paused or not-yet-active tenant/workspace and writes zero rows (the S0.1
+    primary check is tested in S0–S11 under ruling R-P); a paused, not-yet-active,
+    wrongly assigned, other-workspace, restricted, runtime-mismatched or over-ceiling
+    worker is never leased (I18); the admin bypass uses the original principal's live
+    membership in the run's workspace and applies only to 12b, 13b and 14; assignment is
+    skipped for event-driven and system runs and kept for worker-delegated runs; a
+    binding with empty `required_runtime_types` accepts any runtime; 20 concurrent
+    entries against `limit_value = 5` admit exactly 5 (5 runs, I17); **no step of an
+    admitted run is ever rejected by quota** (A1); a soft quota retries, then denies with
+    `retry_after_ms`, writing nothing; a duplicate `request_id` consumes no quota;
+    lowering `limit_value` below `used_count` is rejected by the database; no S12 code
+    reads `runtime_type` to choose an adapter (architecture test). A pause set mid-run
+    cancels nothing (suite 16a) and the quota refund rule is tested with consolidation
+    (suite 10).
 
 ---
 
@@ -1886,9 +2073,11 @@ concurrency and crash test.
 | I11 | Every dead letter has non-empty evidence |
 | I12 | Budget per step, by step state (C17, D4, C21). A "live" reservation is one in {reserved, locked, committed}. **Non-terminal step:** at most one live reservation. **COMPLETED:** exactly one live reservation, and it is COMMITTED. **FAILED, CANCELLED, SKIPPED:** zero live reservations. **DEAD_LETTER** with its dead letter `pending` or `retrying`: exactly one live reservation if the step ever reached LOCKED, and it is LOCKED; zero otherwise. **DEAD_LETTER** with its dead letter `resolved` or `abandoned`: zero live reservations, or exactly one COMMITTED, matching the recorded resolution outcome (C21). |
 | I13 | Every CANCELLED or SKIPPED step has a `terminal_reason` from the closed enum (C22); no `terminal_reason` changed after it was written; no run with a CANCELLED step consolidated to COMPLETED |
+| I14 | No adapter call occurs after a `LiveAuthorizationCheck` returned REVOKED for that run; every run with a REVOKED result ends CANCELLED or DEAD_LETTER; every uncertain step in such a run was resolved before the run became terminal (C23) |
 | I15 | Every row written by S12–S15 has a non-null `tenant_id` equal to its run's tenant (C34) |
 | I16 | Every `ProviderCalled` ledger event for an attempt is preceded by a committed dispatch marker for that attempt (C35) |
-| I14 | No adapter call occurs after a `LiveAuthorizationCheck` returned REVOKED for that run; every run with a REVOKED result ends CANCELLED or DEAD_LETTER; every uncertain step in such a run was resolved before the run became terminal (C23) |
+| I17 | (v10, C39) Consumption never exceeds the limit: `used_count ≤ limit_value` on every `operation_quotas` row (enforced by a CHECK constraint), and no step of an admitted run is rejected by quota |
+| I18 | (v10, C39) No lease was acquired on a worker that, at acquisition time (database `NOW()`), was in another workspace (or had none), was paused or not yet active or assigned to a different original principal (without the admin bypass), had the step's capability outside its profile or in its restricted list, did not match the binding's `required_runtime_types`, or had a `max_mutation` below the step's effective mutation |
 
 The transition log for I5 and I6 is written by the single transition function of
 each state machine, into `audit_log` or the existing ledger mechanism.
@@ -1959,7 +2148,7 @@ Report:
 S12–S15 CERTIFICATION
 
 Preflight:                 PASS/FAIL
-Doc repairs C1–C23:        PASS (list any not applied + why)
+Doc repairs C1–C41:        PASS (list any not applied + why)
 Owner decisions D1–D6:     as confirmed: <list>
 
 State machines:            PASS/FAIL   (transitions tested: N)
@@ -1982,7 +2171,8 @@ Cancellation:              PASS/FAIL
 Two Worker Runtimes:               PASS/FAIL   (double executions: 0, takeovers: N)
 Tenant isolation:          PASS/FAIL
 Journeys S0→S15:           N/8 PASS
-Invariants I1–I16:         PASS/FAIL   (checked in N tests)
+Invariants I1–I18:         PASS/FAIL   (checked in N tests)
+Worker management (C39):   PASS/FAIL   (quota overshoots: 0, leases on ineligible workers: 0)
 Scale-readiness S1–S9:     PASS/FAIL   (list any not met)
 Performance baseline:      p50/p95 S12 overhead per step = X/Y ms (recorded, no threshold)
 
@@ -2260,7 +2450,7 @@ transaction (`none → pending_probe → reconciling → confirmed_x`).
 ## APPENDIX B — MILESTONES
 
 The work is divided into small milestones, each with its own golden tests and exit
-criteria, defined in `S12_S15_IMPLEMENTATION_PLAN.md` (v2). The milestone order refines
+criteria, defined in `S12_S15_IMPLEMENTATION_PLAN.md` (v3; v10 adds milestone M8a for C39). The milestone order refines
 the commit order of Section 18; the Section 18 session boundary (stop after commit H)
 is milestone M14. Work on one milestone at a time, and never start a milestone before
 the previous one's exit criteria hold.

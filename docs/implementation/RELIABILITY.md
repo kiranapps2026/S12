@@ -1,6 +1,6 @@
 # Reliability
 
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §10 Execution Safety, §12 Reliability, §13 Worker Lifecycle. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §22 RetryDecision, §22 RetryPolicy, §20 BudgetStates, §19 StepState. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S12 (5-layer guard), S13 (reconciliation), S14 (dead letter). [MUTATION_SAFETY.md](MUTATION_SAFETY.md) — retry ceilings, inverse verification. [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md) — UNKNOWN propagation, error classification. [DATABASE.md](DATABASE.md) — lease, checkpoint, budget tables. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §10-11 (admission control), §13 (state locality).
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §17 Reliability Layer, §12 Durable Execution Kernel, §22 Scheduler. *(section numbers corrected in audit round 2, D1)*  [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §22 RetryDecision, §22 RetryPolicy, §20 BudgetStates, §19 StepState. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S12 (5-layer guard), S13 (reconciliation), S14 (dead letter). [MUTATION_SAFETY.md](MUTATION_SAFETY.md) — retry ceilings, inverse verification. [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md) — UNKNOWN propagation, error classification. [DATABASE.md](DATABASE.md) — lease, checkpoint, budget tables. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §10-11 (admission control), §13 (state locality).
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY — inherits FINAL_ARCHITECTURE.md status
 **Purpose**: The 5-layer reliability guard that wraps every execution. Ensures that external API failures don't cascade, budgets are enforced, retries are safe, and the system degrades gracefully.
 
@@ -1762,6 +1762,18 @@ class TenantRateLimiter:
         usage.append(now)
         return True
 ```
+
+---
+
+## 15. Memory Erasure and Payload Jobs (ADR-14; memory phase, after S15)
+
+| Job | Rule |
+|---|---|
+| Object deletion | Triggered by the outbox event of `delete` / `purge`; deletes the S3 object **and all its versions**; idempotent, retried with backoff; alerts if an object outlives its row beyond the retry window |
+| Orphan sweeper | Deletes S3 objects with no referencing row that are older than 24 hours (a crash between upload and commit) |
+| Crypto-shredding | Tenant erasure destroys the tenant DEK (`memory_tenant_keys.wrapped_dek` → NULL) in the purge transaction |
+| Restore replay | After any database restore, every erasure in the erasure register recorded after the backup's point in time is replayed **before** the database serves traffic |
+| Retention | Backups and archived WAL containing memory data, and noncurrent S3 versions, are gone within the 90-day erasure deadline (ADR-14 Q7; DATABASE §5) |
 
 ---
 

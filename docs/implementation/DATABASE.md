@@ -2,6 +2,8 @@
 
 **Purpose**: Complete database schema, migrations, connection management, backup/restore procedures, and data seeding. This is the data layer that supports all other components.
 
+**Worker-management update (2026-09-29)**: gate v10 C39 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E). Worker keys unified to `TEXT` (RD-1); management columns on `workers`, `tenants`, `workspaces`; new table `operation_quotas`; RLS, indexes, integrity rules and migration `018` updated. Changed passages carry a `Worker-management repair (RD-n)` marker.
+
 ---
 
 ## Table of Contents
@@ -244,6 +246,7 @@ CREATE TABLE bindings (
     adapter_class TEXT NOT NULL,          -- Adapter class name
     endpoint TEXT,                        -- API endpoint
     is_active BOOLEAN DEFAULT 1,
+    required_runtime_types JSONB NOT NULL DEFAULT '[]'::jsonb,  -- gate v10 C39 filter 17c; empty = any runtime
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (capability_id) REFERENCES capabilities(capability_id),
@@ -254,6 +257,8 @@ CREATE INDEX idx_bindings_capability ON bindings(capability_id);
 CREATE INDEX idx_bindings_kernel ON bindings(kernel_op_id);
 CREATE INDEX idx_bindings_provider ON bindings(provider);
 ```
+
+> **Worker-management repair (audit round 2 B1; gate v10 C39):** `required_runtime_types` lists the `RuntimeType` values (DATA_CONTRACTS §50) whose workers may run this binding; empty means any. Values are validated at binding registration; a binding that no current worker can serve is a readiness warning, not an error. It is **not** part of `FrozenBindingIdentity`: S12 reads it from the binding row it already reads once at entry (gate C32), so no S0–S11 contract changes.
 
 #### actions
 
@@ -389,10 +394,14 @@ CREATE TABLE tenants (
     settings TEXT,                        -- JSON settings
     budget_pool INTEGER DEFAULT 10000,    -- Tenant's shared budget pool (minor units)
     budget_period TEXT DEFAULT 'monthly', -- daily, weekly, monthly
+    paused_until TIMESTAMPTZ,             -- no new runs while > NOW(): S0.1 (ruling R-P) + S12 entry (C39)
+    scheduled_activation_at TIMESTAMPTZ,  -- no new runs until <= NOW(): S0.1 + S12 entry
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 ```
+
+> **Worker-management repair (RD-2, RD-5; audit round 2 B6; gate v10 C39):** `paused_until` and `scheduled_activation_at` are typed columns, not keys inside the TEXT `settings` JSON. They are checked at S0.1 (S0–S11 ruling R-P, before any S1–S11 work) and re-checked at S12 entry, for new runs only, against database `NOW()`; a pause never cancels running work (the kill switch does). If ruling R-P lands before migration 018, R-P adds these four columns and 018 skips them. Existing `REAL` timestamps are unchanged.
 
 #### connections
 
@@ -425,12 +434,16 @@ CREATE TABLE workspaces (
     description TEXT,
     settings TEXT,                           -- JSON settings
     is_active BOOLEAN DEFAULT 1,
+    paused_until TIMESTAMPTZ,                -- see tenants: S0.1 + S12 entry
+    scheduled_activation_at TIMESTAMPTZ,     -- see tenants: S0.1 + S12 entry
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
 );
 CREATE INDEX idx_workspaces_tenant ON workspaces(tenant_id);
 ```
+
+> **Worker-management repair (RD-2, RD-5; gate v10 C39):** same semantics as the tenant columns; the effective value is `GREATEST(tenant, workspace)` (WORKER_LIFECYCLE §16.5).
 
 #### execution_runs
 
@@ -686,8 +699,8 @@ CREATE INDEX idx_retry_timestamp ON retry_log(timestamp);
 
 ```sql
 CREATE TABLE workers (
-    worker_id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id),
+    worker_id TEXT PRIMARY KEY,                        -- RD-1: TEXT (was UUID)
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),  -- RD-1: TEXT (was UUID, mismatched tenants.tenant_id)
     worker_class VARCHAR(100) NOT NULL,
     runtime_version VARCHAR(50),
     capability_profile JSONB NOT NULL,
@@ -698,12 +711,24 @@ CREATE TABLE workers (
     heartbeat_at TIMESTAMP,
     last_assignment_at TIMESTAMP,
     drain_state VARCHAR(20),
+    -- Worker-management columns (gate v10 C39; mutable, read only by S12 admission/selection)
+    workspace_id TEXT REFERENCES workspaces(workspace_id),  -- filter 4b; required for new registrations; NULL = legacy row, ineligible
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,       -- contract: IDENTITY_AND_TENANCY §5
+    assigned_user_id TEXT REFERENCES users(user_id),   -- filter 14; NULL = any user
+    paused_until TIMESTAMPTZ,                          -- filter 12b
+    scheduled_activation_at TIMESTAMPTZ,               -- filter 13b
+    runtime_type TEXT NOT NULL DEFAULT 'llm'
+        CHECK (runtime_type IN ('llm','rules','vision','browser','rpa','data','rag','code','human')),  -- filter 17
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_workers_tenant ON workers(tenant_id);
 CREATE INDEX idx_workers_state ON workers(state);
+CREATE INDEX idx_workers_assigned_user ON workers(assigned_user_id) WHERE assigned_user_id IS NOT NULL;
+CREATE INDEX idx_workers_workspace ON workers(workspace_id);
 ```
+
+> **Worker-management repair (RD-1, RD-2, RD-4, RD-10; gate v10 C39):** owner ruling: `worker_id` and every column that references it are `TEXT`, like every other key in this schema. This overrides the gate §7.3 default (change the referencing column). `tenant_id` also changes to `TEXT`: the former `UUID` could not reference `tenants.tenant_id TEXT`. The management columns are additive; `runtime_type` is the only worker-type enum (plan/event/hybrid is derived from `event_subscriptions`), and its CHECK is generated from `RuntimeType` (DATA_CONTRACTS §50, C28). Pause and activation are not states: a paused worker stays `ACTIVE` and is filtered out of worker selection for **new** leases only. `workspace_id` (audit round 2 B7; WORKER_LIFECYCLE §3 and DATA_CONTRACTS `WorkerIdentity` already had it) restores the workspace boundary: a worker is eligible only for runs in its own workspace (filter 4b); it is nullable only so that legacy rows, if preflight finds any, stay ineligible until backfilled. This restores the `idx_workers_workspace` index that C33 removed for lack of the column. Deferred and **not** added in this phase: `max_sub_agents`, `parent_worker_id`, `depth_level` (spawning).
 
 > **S12–S15 gate v9 repair (C33):** `idx_workers_workspace` was removed: this definition has no `workspace_id` column (WORKER_LIFECYCLE §3 has one; add the index only together with the column).
 
@@ -735,10 +760,10 @@ CREATE INDEX idx_worker_versions_worker_state ON worker_versions(worker_id, stat
 
 ```sql
 CREATE TABLE worker_leases (
-    lease_id UUID PRIMARY KEY,
-    worker_id UUID NOT NULL REFERENCES workers(worker_id),
+    lease_id TEXT PRIMARY KEY,                       -- RD-1: TEXT (referenced by execution_ownership.lease_id TEXT)
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id),  -- RD-1: TEXT
     fence_token BIGINT NOT NULL,
-    task_id UUID,
+    task_id TEXT,                                    -- RD-1: TEXT, matches execution_runs.task_id
     expires_at TIMESTAMP NOT NULL,
     acquired_at TIMESTAMP NOT NULL DEFAULT NOW(),
     released_at TIMESTAMP
@@ -750,15 +775,17 @@ CREATE INDEX idx_worker_leases_fence ON worker_leases(fence_token);
 
 > **S12–S15 gate v9 repair (C25, C26, C34):** Tokens come from the sequence `CREATE SEQUENCE fence_token_seq;` (strictly increasing for every lease acquisition and renewal). Additive columns: `status TEXT NOT NULL DEFAULT 'active'` CHECK in (pending, active, expired, released); `execution_id TEXT NULL` (diagnostics); `tenant_id TEXT NOT NULL`. Index `ON worker_leases(worker_id) WHERE status = 'active'`. A lease is usable only while `status = 'active' AND expires_at > now()`. This is the lease of record; `execution_leases` (§10) is not used.
 
+> **Worker-management repair (RD-1):** `lease_id` and `worker_id` changed from `UUID` to `TEXT`. `worker_id` must match `workers.worker_id`; `lease_id` must match `execution_ownership.lease_id TEXT`, which referenced it with a mismatched type.
+
 
 #### worker_assignments
 
 ```sql
 CREATE TABLE worker_assignments (
-    assignment_id UUID PRIMARY KEY,
-    worker_id UUID NOT NULL REFERENCES workers(worker_id),
-    execution_id UUID NOT NULL REFERENCES execution_runs(execution_id),
-    task_id UUID,
+    assignment_id TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id),              -- RD-1: TEXT
+    execution_id TEXT NOT NULL REFERENCES execution_runs(execution_id), -- RD-1: TEXT (execution_runs.execution_id is TEXT)
+    task_id TEXT,                                    -- RD-1: TEXT, matches execution_runs.task_id
     state VARCHAR(20) NOT NULL,
     claimed_at TIMESTAMP NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMP
@@ -767,6 +794,8 @@ CREATE INDEX idx_worker_assignments_worker ON worker_assignments(worker_id);
 CREATE INDEX idx_worker_assignments_execution ON worker_assignments(execution_id);
 CREATE INDEX idx_worker_assignments_state ON worker_assignments(state);
 ```
+
+> **Worker-management repair (RD-1):** `assignment_id`, `worker_id` and `execution_id` changed from `UUID` to `TEXT`; the former `execution_id UUID` could not reference `execution_runs.execution_id TEXT`.
 
 #### worker_deployments
 
@@ -816,21 +845,48 @@ CREATE INDEX idx_exec_owner_lease ON execution_ownership(lease_id);
 
 ### Event Gateway Tables
 
-The `event_log`, `event_subscriptions`, and `webhook_credentials` tables are defined in [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) §10.
+The `event_log`, `event_subscriptions`, and `webhook_credentials` tables are also described in [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) §10. **This file is authoritative (gate §3); §10 mirrors it.**
+
+> **Repair (SEC-HMAC, SEC-NONCE, 2026-09-29):** the copies here had drifted from §10. `webhook_credentials` stored only `secret_hash`, which cannot verify an HMAC signature; `event_log` lacked the `idempotency_key` that replay protection depends on. Both are replaced by the full, corrected definitions below.
 
 ```sql
--- event_log: All incoming and outgoing events
+-- event_log: All incoming and outgoing events (full definition; EVENT_GATEWAY §10.1 mirrors it)
 CREATE TABLE event_log (
-    event_id TEXT PRIMARY KEY,
-    event_type TEXT NOT NULL,
-    source TEXT NOT NULL,
-    direction TEXT NOT NULL,  -- "inbound" | "outbound"
-    envelope JSONB NOT NULL,
-    correlation_id TEXT,
-    tenant_id TEXT NOT NULL,
-    processing_status TEXT NOT NULL DEFAULT 'RECEIVED',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    event_id TEXT PRIMARY KEY,           -- UUID v4
+    tenant_id TEXT NOT NULL,             -- From auth context
+    workspace_id TEXT NOT NULL,          -- From auth context
+    event_type TEXT NOT NULL,            -- EventType or tenant-defined
+    source TEXT NOT NULL,                -- EventSource value
+    source_system TEXT NOT NULL,         -- "ghl", "stripe", "cron", etc.
+    source_event_id TEXT,                -- Source's own event ID (for dedup)
+    payload_ref TEXT NOT NULL,           -- "pg:event_log.{event_id}"
+    payload_size_bytes INTEGER,          -- For billing
+    schema_version TEXT NOT NULL,        -- Payload schema version
+    correlation_id TEXT NOT NULL,        -- trace_id
+    idempotency_key TEXT NOT NULL,       -- "{source}:{source_system}:{discriminator}" (EVENT_GATEWAY §3.1)
+    auth_method TEXT NOT NULL,           -- "hmac_sha256", "api_key", etc.
+    auth_principal TEXT NOT NULL,        -- connection_id or user_id
+    processing_status TEXT NOT NULL DEFAULT 'received',  -- State machine values
+    processing_execution_id TEXT,        -- execution_id if activated
+    error TEXT,                          -- Error message if failed
+    occurred_at REAL NOT NULL,           -- Source timestamp
+    received_at REAL NOT NULL,           -- Server-authoritative timestamp
+    created_at REAL NOT NULL,            -- Record creation timestamp
+
+    -- Foreign keys
+    CONSTRAINT fk_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id),
+    CONSTRAINT fk_workspace FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id),
+
+    -- Constraints
+    CONSTRAINT chk_processing_status CHECK (
+        processing_status IN (
+            'received', 'validated', 'deduplicated', 'routed',
+            'processed', 'dropped', 'failed', 'closed'
+        )
+    ),
+    CONSTRAINT chk_source CHECK (source IN ('webhook', 'schedule', 'mcp', 'api', 'internal'))
 );
+CREATE UNIQUE INDEX uq_event_log_tenant_idempotency ON event_log(tenant_id, idempotency_key);  -- replay protection (SEC-NONCE)
 
 -- event_subscriptions: Worker declarations of event interest
 CREATE TABLE event_subscriptions (
@@ -851,19 +907,53 @@ CREATE TABLE event_subscriptions (
     created_by TEXT NOT NULL
 );
 
--- webhook_credentials: HMAC keys for webhook authentication
+-- webhook_credentials: encrypted HMAC signing secrets (SEC-HMAC; EVENT_GATEWAY §10.3 mirrors it)
 CREATE TABLE webhook_credentials (
     credential_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
-    source_system TEXT NOT NULL,
-    secret_hash TEXT NOT NULL,  -- SHA-256 of HMAC secret (never store plaintext)
-    algorithm TEXT NOT NULL DEFAULT 'sha256',
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    last_used_at TIMESTAMPTZ,
+    source_system TEXT NOT NULL,            -- 'ghl', 'stripe', 'custom', 'mcp'
+    secret_ciphertext BYTEA NOT NULL,       -- AES-256-GCM(HMAC secret) under the per-record DEK
+    secret_nonce BYTEA NOT NULL,            -- 96-bit GCM nonce, fresh for every encryption
+    wrapped_dek BYTEA NOT NULL,             -- per-record DEK wrapped by the KEK (the KEK never enters the database)
+    kek_version INTEGER NOT NULL,           -- KEK version that wrapped the DEK; re-wrap on KEK rotation
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'retiring', 'retired')),
+    retiring_until TIMESTAMPTZ,             -- end of the rotation grace period
+    algorithm TEXT NOT NULL DEFAULT 'hmac-sha256' CHECK (algorithm IN ('hmac-sha256')),
+    last_verified_at TIMESTAMPTZ,
     expires_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (source_system IN ('ghl', 'stripe', 'custom', 'mcp')),
+    CHECK (status <> 'retiring' OR retiring_until IS NOT NULL)
 );
+-- one active and at most one retiring secret per (tenant, source): rotation never breaks in-flight webhooks
+CREATE UNIQUE INDEX uq_webhook_credentials_active   ON webhook_credentials(tenant_id, source_system) WHERE status = 'active';
+CREATE UNIQUE INDEX uq_webhook_credentials_retiring ON webhook_credentials(tenant_id, source_system) WHERE status = 'retiring';
+CREATE INDEX idx_webhook_credentials_tenant ON webhook_credentials(tenant_id);
+
+-- RLS: tenant isolation for application_role (management API)
+ALTER TABLE webhook_credentials ENABLE ROW LEVEL SECURITY;
+CREATE POLICY webhook_credentials_tenant_isolation ON webhook_credentials
+    FOR ALL TO application_role
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
+-- Signature verification runs before any tenant context exists (the credential identifies the tenant, I-022):
+-- a documented system_worker_role operation, SELECT only (DATABASE §9 Canonical Roles).
+GRANT SELECT ON webhook_credentials TO system_worker_role;
+CREATE POLICY webhook_credentials_gateway_lookup ON webhook_credentials
+    FOR SELECT TO system_worker_role
+    USING (status IN ('active', 'retiring'));
 ```
+
+**Secret handling rules (SEC-HMAC, decided 2026-09-29):**
+
+1. **Encrypted, never hashed.** HMAC verification needs the secret itself (`HMAC(secret, timestamp.body)`); a hash of the secret cannot verify a signature. Secrets use envelope encryption: AES-256-GCM under a per-record data key (DEK); the DEK is stored only wrapped by one system-wide key-encryption key (KEK) that lives in the platform secret manager and never enters the database. `kek_version` records which KEK wrapped the DEK.
+2. **Decryption only through `CredentialProvider`** (gate §21 S6), inside the gateway's signature check. The plaintext secret is held in a `bytearray` for the shortest possible time and overwritten after use (best effort: Python cannot guarantee that no copy remains); it is never logged, returned by any API, written to the ledger, a checkpoint or a trace (I-018).
+3. **Verification order:** the `active` secret, then a `retiring` secret while `retiring_until > NOW()` (database time). A match with the retiring secret is logged and counted, so the source's rotation can be tracked. `last_verified_at` is updated on success.
+4. **Rotation:** in one transaction, move any existing `retiring` row to `retired`, move the current `active` row to `retiring` with `retiring_until = NOW() + grace` (default 24 hours, settings object), and insert the new secret as `active`; a cleanup job moves expired `retiring` rows to `retired` and deletes `retired` rows after the retention period. The two partial unique indexes allow exactly one active and at most one retiring secret per (tenant, source).
+5. **KEK rotation** re-wraps each DEK (`wrapped_dek`, `kek_version`) without touching `secret_ciphertext`.
+6. **Access:** `application_role` sees only its tenant's rows (RLS); the pre-tenant lookup for signature verification is a documented `system_worker_role` operation with SELECT on active and retiring rows only.
 
 ### S12–S15 Additive Tables (gate v9)
 
@@ -921,6 +1011,64 @@ CREATE INDEX idx_transitions_execution ON state_transitions(execution_id, transi
 The transition log is append-only (FINAL_ARCHITECTURE I-027). It may equally be implemented as
 rows in the execution ledger, provided the same columns are present.
 
+### Worker-Management Additive Tables (gate v10 C39)
+
+> **Worker-management repair (RD-1, RD-3, RD-6; gate v10 C39):** one new table in this phase.
+> Keys are `TEXT` (RD-1), times are `TIMESTAMPTZ` compared with database `NOW()` (RD-2), and the
+> table carries `tenant_id` with the standard RLS policy (RD-3, C34). Contract: DATA_CONTRACTS §51;
+> semantics: WORKER_LIFECYCLE §16.4.
+
+```sql
+CREATE TABLE operation_quotas (
+    quota_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    workspace_id TEXT REFERENCES workspaces(workspace_id),   -- NULL = tenant level
+    worker_id TEXT REFERENCES workers(worker_id),            -- NULL = tenant/workspace level
+    resource_type TEXT NOT NULL DEFAULT 'executions'
+        CHECK (resource_type IN ('executions')),              -- only value used in this phase
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    limit_value INTEGER NOT NULL,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    is_hard BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (used_count >= 0 AND limit_value >= 0),
+    CHECK (used_count <= limit_value),                        -- I17 by construction; blocks lowering a limit below usage (audit B9)
+    CHECK (period_end > period_start),
+    CHECK (worker_id IS NULL),                                -- worker-level quotas out of phase: worker unknown at entry (audit A3)
+    UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type, period_start)  -- PostgreSQL 15+
+);
+CREATE INDEX idx_quotas_lookup ON operation_quotas(tenant_id, resource_type, period_start, period_end);
+```
+
+**Consumption** (once per run, inside the durable-admission transaction, gate §7.2; levels in the
+fixed order tenant → workspace; zero rows at any level rolls the transaction back; there is no
+per-step quota check, audit A1):
+
+```sql
+UPDATE operation_quotas
+   SET used_count = used_count + 1
+ WHERE quota_id = :quota_id
+   AND tenant_id = :tenant_id
+   AND period_start <= now() AND period_end > now()
+   AND used_count < limit_value
+RETURNING quota_id;
+```
+
+Hard quota with zero rows → DENY `quota_exhausted`; soft quota → bounded retry of the transaction,
+then DENY `quota_exhausted` with `retry_after_ms` (audit A4). `used_count` never exceeds
+`limit_value` on any row: the CHECK enforces it (invariant I17), and an `UPDATE` lowering
+`limit_value` below `used_count` fails — put a lower limit on the next period's row. A refund (run CANCELLED with no step
+COMPLETED) is `used_count = used_count - 1` in the transaction that consolidates the run, recorded
+as a ledger event.
+
+**Not created in this phase** (deferred, gate §14; each gets `tenant_id TEXT NOT NULL` + RLS when it
+lands, RD-3): `worker_spawn_audit`, `worker_groups`, `worker_group_members`,
+`worker_config_versions`, `worker_webhooks`, `worker_sessions`, `session_memory`,
+`worker_templates`, `plans`, `tenant_plans`, `skill_definitions`, `execution_batches`; and the
+columns `execution_runs.parent_execution_id` (RD-11), `execution_runs.batch_mode` /
+`total_batches` / `completed_batches` (RD-12), `execution_runs.dry_run`.
+
 ---
 
 ## 4. Migrations
@@ -954,6 +1102,9 @@ Where NNN is a zero-padded sequence number (001, 002, ...).
 | `015_worker_versions.sql` | Worker version lifecycle tables |
 | `016_worker_deployments.sql` | Worker runtime instance tracking |
 | `017_execution_ownership.sql` | Execution ownership and fencing |
+| `018_worker_management.sql` | Gate v10 C39: worker key types to `TEXT` (RD-1), management columns on `workers` (incl. `workspace_id`), `tenants`, `workspaces` (skipped if ruling R-P added them), `bindings.required_runtime_types`, `operation_quotas` with RLS |
+
+> **Worker-management repair (gate v10 C39):** `018` is additive except for the RD-1 type changes, which are safe only while the affected tables are empty or hold text-compatible values; preflight items 15 and P3 report the actual state. The migration tool (Alembic or other) is decided by preflight item 11.
 
 > **Note**: Migrations 005+ replace the older `005_executions.sql`, `006_checkpoints.sql`,
 > `007_idempotency.sql` pattern. The canonical model uses `execution_runs` and
@@ -1008,7 +1159,69 @@ class MigrationRunner:
 
 ---
 
+### Memory tables (ADR-14; memory phase, after S15 — **not created in S12–S15**)
+
+Defined now so the memory phase starts from the decided layout (ADR-14 §3.1–§3.3, Part 3). No S12–S15 migration creates them (gate v10 §14).
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;                    -- memory-phase migration only
+
+CREATE TABLE memory_vectors (
+    entry_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    worker_id TEXT REFERENCES workers(worker_id),        -- NULL = entry has no worker
+    user_id TEXT REFERENCES users(user_id),              -- original principal; NULL = not user-specific
+    layer TEXT NOT NULL CHECK (layer IN ('L2', 'L3')),
+    session_id TEXT,                                     -- required for L2, forbidden for L3
+    embedding_model TEXT NOT NULL,
+    embedding_dim INTEGER NOT NULL,
+    embedding vector NOT NULL,                           -- untyped column; typed per index below
+    content_hash TEXT NOT NULL,
+    payload JSONB,                                       -- inline up to memory_payload_inline_max_bytes
+    payload_ref TEXT,                                    -- S3 key when larger (ADR-14 Part 3)
+    source TEXT NOT NULL,
+    confidence REAL,
+    tags TEXT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, entry_id),                   -- includes the partition key
+    CHECK ((layer = 'L2') = (session_id IS NOT NULL)),
+    CHECK (vector_dims(embedding) = embedding_dim),
+    CHECK (payload IS NULL OR payload_ref IS NULL)
+) PARTITION BY LIST (tenant_id);
+CREATE TABLE memory_vectors_default PARTITION OF memory_vectors DEFAULT;
+-- A tenant above the row-count threshold (settings object) gets its own partition:
+--   CREATE TABLE memory_vectors_<tenant> PARTITION OF memory_vectors FOR VALUES IN ('<tenant_id>');
+ALTER TABLE memory_vectors ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON memory_vectors
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
+CREATE INDEX idx_memory_scope ON memory_vectors (tenant_id, workspace_id, worker_id, user_id, layer, session_id);
+-- ANN index per partition and embedding model (the cast fixes the dimension), for example:
+--   CREATE INDEX ON memory_vectors_default
+--       USING hnsw ((embedding::vector(1536)) vector_cosine_ops) WHERE embedding_model = '<model>';
+
+CREATE TABLE memory_tenant_keys (
+    tenant_id TEXT PRIMARY KEY REFERENCES tenants(tenant_id),
+    wrapped_dek BYTEA,                                   -- NULL once destroyed (crypto-shredding)
+    kek_version TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    destroyed_at TIMESTAMPTZ,
+    CHECK ((wrapped_dek IS NULL) = (destroyed_at IS NOT NULL))
+);
+ALTER TABLE memory_tenant_keys ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON memory_tenant_keys
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
+```
+
+Rules: workspace, worker, user and session boundaries are enforced by the backend's predicates, not by RLS (ADR-14 §3.3 D2). The **erasure register** is deliberately **not** a table here: it is kept outside the database backups (ADR-14 §4a.4) so that a restore can replay it.
+
+---
+
 ## 5. Backup & Restore
+
+> **Retention bound (ADR-14 Q7, owner 2026-09-29):** every backup and archived WAL segment that can contain memory data is deleted within **90 days** (the erasure deadline). The logical dumps below keep 30 days; `pg_basebackup` backups and the WAL archive need the same ≤ 90-day bound. After any restore, the memory erasure register is replayed before the database serves traffic (ADR-14 §4a.4; RELIABILITY §15).
 
 ### PostgreSQL Native Backup
 
@@ -1391,6 +1604,7 @@ ALTER TABLE retry_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE worker_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE worker_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operation_quotas ENABLE ROW LEVEL SECURITY;   -- gate v10 C39 (RD-3)
 ```
 
 ### Policy Templates
@@ -1400,6 +1614,12 @@ ALTER TABLE worker_assignments ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON users
     FOR ALL TO application_role
     USING (tenant_id = current_setting('app.current_tenant')::text);
+
+-- Worker-management repair (RD-3, gate v10 C39): same pattern for operation_quotas
+CREATE POLICY tenant_isolation ON operation_quotas
+    FOR ALL TO application_role
+    USING (tenant_id = current_setting('app.current_tenant')::text)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::text);
 
 -- Audit reader: specific immutable audit access only
 CREATE POLICY audit_read ON audit_log
@@ -1423,7 +1643,7 @@ GRANT SELECT ON audit_log TO audit_reader;
 
 **Rules**:
 1. `application_role` can NEVER bypass tenant isolation
-2. `system_worker_role` can ONLY perform documented internal operations (worker heartbeats, lease management, scheduler ticks)
+2. `system_worker_role` can ONLY perform documented internal operations (worker heartbeats, lease management, scheduler ticks, and — SEC-HMAC — SELECT of active/retiring `webhook_credentials` rows for webhook signature verification before a tenant context exists)
 3. `audit_reader` can ONLY SELECT from `audit_log` — no other grants
 4. The `admin_override` and `admin_role` patterns are REMOVED
 5. The cross-tenant read policy is REMOVED
@@ -1618,6 +1838,8 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 | `dead_letters` | `(resolved, next_retry_at)` | DLQ polling |
 | `checkpoints` | `(execution_id, created_at)` | Checkpoint recovery |
 | `retry_log` | `(provider, operation, timestamp)` | Retry analysis |
+| `operation_quotas` | `(tenant_id, resource_type, period_start, period_end)` | Quota lookup at durable admission (C39) |
+| `workers` | `(assigned_user_id)` partial, where not NULL | Assignment filter (C39) |
 
 ---
 
@@ -1633,6 +1855,8 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 | `execution_steps` | `kernel_op_id` | Traceability |
 | `execution_steps` | `resolved_binding_id` | Binding audit |
 | `budget_reservations` | `tenant_id` | Budget isolation |
+| `operation_quotas` | `tenant_id` | Tenant isolation (C39, RD-3) |
+| `workers` | `runtime_type` | Eligibility filter 17 (C39) |
 
 ### Cascading Rules
 
@@ -1649,6 +1873,14 @@ COMMIT PREPARED TRANSACTION 'tx_name';
 |------------|------|
 | `budget_reservations.cost` (per step) | Σ cost of the tenant's live reservations in the current period MUST be <= `tenants.budget_pool` (gate C3, invariant I1) |
 | Enforcement | Atomic UPDATE with WHERE clause (see `reserve_budget` in §7) |
+
+### Operation Quota Constraint
+
+| Constraint | Rule |
+|------------|------|
+| `operation_quotas.used_count` | `0 <= used_count <= limit_value` on every row (gate v10 C39, invariant I17) |
+| Enforcement | `CHECK (used_count <= limit_value)`; conditional UPDATE `... AND used_count < limit_value RETURNING` in the durable-admission transaction; an admin UPDATE lowering `limit_value` below `used_count` fails; no `ON DELETE CASCADE` from any parent |
+| `operation_quotas.worker_id` | Must be NULL in this phase (`CHECK (worker_id IS NULL)`) |
 
 ---
 

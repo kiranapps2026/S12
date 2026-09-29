@@ -2,7 +2,10 @@
 
 **Purpose**: Pre-implementation closure checklist. Every item must be complete before writing implementation code.
 
-**Version**: 1.0.0 | **Last Updated**: 2026-09-25
+**Version**: 1.1.1 | **Last Updated**: 2026-09-29
+
+**1.1.1 (2026-09-29, audit round 2 D3)**: duplicate row numbers 9 and 10 in Tier 2 renumbered 27 and 28; absent documents (13, 15, 16) marked ABSENT instead of COMPLETE.
+**1.1.0 (2026-09-29)**: worker-management propagation (gate v10 C39–C41, rulings RD-1…RD-18 in `WORKER_MGMT_SPEC_REVIEW.md` Part E). Tier 1 rows note the worker-management content; new rows 25–26.
 
 ---
 
@@ -30,26 +33,29 @@
 | 6 | `EXECUTION_PLAN.md` | COMPLETE | 2026-09-25 | Execution correctness plan, W0-W6 |
 | 7 | `RELIABILITY.md` | COMPLETE | 2026-09-26 | 5-layer reliability guard (+ billing ownership, HealthMonitor) |
 | 8 | `SECURITY.md` | COMPLETE | 2026-09-26 | Security model, prompt injection defense (+ injection patterns, severity-action mapping) |
-| 9 | `DATABASE.md` | COMPLETE | 2026-09-26 | Database schema, migrations (+ memberships, worker_versions, worker_deployments, execution_ownership, provider_tokens, retry_log, outbox) |
-| 10 | `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | COMPLETE | 2026-09-26 | Worker identity/version lifecycle, independent verification, admission control, state locality |
+| 9 | `DATABASE.md` | COMPLETE | 2026-09-29 | Database schema, migrations (+ memberships, worker_versions, worker_deployments, execution_ownership, provider_tokens, retry_log, outbox; + worker `TEXT` keys, management columns, `operation_quotas`, migration 018) |
+| 10 | `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | COMPLETE | 2026-09-29 | Worker identity/version lifecycle, independent verification, admission control, state locality (+ §16 worker management, eligibility filters, operation quota) |
+| 25 | `S12_S15_EXECUTION_GATE.md` v10 | COMPLETE | 2026-09-29 | Binding S12–S15 rulings C1–C41 (C39 worker management; C40/C41 batch and replanning out of phase) |
+| 26 | `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` v1.2.1 | REFERENCE | 2026-09-29 | Worker-management design and roadmap; gate C39–C41 govern |
+| 29 | `EVENT_GATEWAY_AND_ROUTER.md` | COMPLETE | 2026-09-29 | Event ingress contract, now DESIGN_LOCKED; encrypted webhook secrets (SEC-HMAC), tenant-scoped idempotency key (SEC-NONCE, §3.1). Gateway implementation is a later phase |
 
 ## Tier 2 — Required Before M0 Complete
 
 | # | Document | Status | Last Verified | Notes |
 |---|----------|--------|---------------|-------|
-| 9 | `PROVIDER_ADAPTERS.md` | COMPLETE | 2026-09-25 | Provider adapter specifications |
-| 10 | `IDENTITY_AND_TENANCY.md` | COMPLETE | 2026-09-25 | Multi-tenant identity, RLS, isolation |
+| 27 | `PROVIDER_ADAPTERS.md` | COMPLETE | 2026-09-25 | Provider adapter specifications |
+| 28 | `IDENTITY_AND_TENANCY.md` | COMPLETE | 2026-09-25 | Multi-tenant identity, RLS, isolation |
 | 11 | `RESOLVE_LAYER.md` | COMPLETE | 2026-09-25 | Capability → Kernel → Binding → Adapter |
 | 12 | `MUTATION_SAFETY.md` | COMPLETE | 2026-09-25 | Mutation taxonomy, retry, confirmation |
-| 13 | `SKILL_FACTORY_ARCHITECTURE.md` | COMPLETE | 2026-09-25 | Skill compilation, discovery, execution |
-| 14 | `MEMORY_ARCHITECTURE.md` | COMPLETE | 2026-09-25 | Worker memory, context lifecycle, cross-session state |
+| 13 | `SKILL_FACTORY_ARCHITECTURE.md` | ABSENT | 2026-09-29 | Not in this directory (README "What's NOT Here": deferred); gate preflight item 8 checks it. Not needed for S12–S15 |
+| 14 | `MEMORY_ARCHITECTURE.md` | REPAIRS PENDING | 2026-09-29 | Worker memory, context lifecycle, cross-session state. Present since 2026-09-29; findings MR-5…MR-10 (register Section 20); vector store and scope contract decided by ADR-14 (2026-09-29); the document's code is rewritten in the memory phase. Deferred to the memory phase, not needed for S12–S15 |
 
 ## Tier 3 — Required Before M1 Complete
 
 | # | Document | Status | Last Verified | Notes |
 |---|----------|--------|---------------|-------|
-| 15 | `HUMAN_IN_THE_LOOP.md` | COMPLETE | 2026-09-25 | Confirmation, approval, escalation, re-entry |
-| 16 | `TRACING_AND_CONCURRENCY.md` | COMPLETE | 2026-09-25 | Tracing, concurrency control, leases |
+| 15 | `HUMAN_IN_THE_LOOP.md` | ABSENT | 2026-09-29 | Not in this directory (absorbed into MUTATION_SAFETY.md and PIPELINE_STAGES.md); gate preflight item 8 checks it |
+| 16 | `TRACING_AND_CONCURRENCY.md` | ABSENT | 2026-09-29 | Not in this directory (content absorbed into other documents); gate preflight item 8 checks it |
 | 17 | `CONCURRENCY_MODEL.md` | MISSING | — | Step-level parallelism, shared-state rules |
 | 18 | `OBSERVABILITY_AND_DEBUGGING.md` | MISSING | — | Metrics, dashboards, alerting, runbooks |
 | 19 | `VALIDATION.md` | COMPLETE | 2026-09-25 | Testing strategy, contract tests |

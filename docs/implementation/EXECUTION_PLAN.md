@@ -201,7 +201,7 @@
 - `shared/exceptions.py` (error taxonomy)
 - `tools/check_imports.py` (enforce layer rules)
 - `tools/scan_secrets.py`
-- `tests/architecture/` (I-001 through I-028 compliance tests)
+- `tests/architecture/` (I-001 through I-029 compliance tests; FINAL_ARCHITECTURE §50)
 
 **Wave Gate**:
 ```

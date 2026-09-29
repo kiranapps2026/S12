@@ -38,13 +38,33 @@
 28. [Outbox-Inbox Event Delivery Contract](#28-outbox-inbox-event-delivery-contract)
 29. [Event Ordering and Causality](#29-event-ordering-and-causality)
 30. [Configuration Versioning and Rollout](#30-configuration-versioning-and-rollout)
-31. [WorkerIdentity — Durable Worker Identity](#31-workeridentity--durable-worker-identity)
+31. [Outbox-Inbox Event Delivery Contract — Records](#31-outbox-inbox-event-delivery-contract--records-outboxrecord-inboxrecord)
+31a. [WorkerIdentity — Durable Worker Identity](#31a-workeridentity--durable-worker-identity)
 32. [WorkerVersion — Worker Code Version](#32-workerversion--worker-code-version)
 33. [WorkerDeployment — Runtime Instance](#33-workerdeployment--runtime-instance)
 34. [Verifier — Independent Post-Execution Verifier](#34-verifier--independent-post-execution-verifier)
 35. [VerificationResult — Independent Verification Outcome](#35-verificationresult--independent-verification-outcome)
 36. [AdmissionDecision — Admission Control Outcome](#36-admissiondecision--admission-control-outcome)
 37. [ExecutionOwnership — Execution Ownership Tracking](#37-executionownership--execution-ownership-tracking)
+38. [IntentSpecification](#38-intentspecification)
+39. [ExecutionLedgerEvent](#39-executionledgerevent)
+40. [AcceptanceCriteria](#40-acceptancecriteria)
+41. [AutonomyBounds](#41-autonomybounds)
+42. [RuntimeRoutingDecision](#42-runtimeroutingdecision)
+43. [ReplayContext](#43-replaycontext)
+44. [CorrelationRule](#44-correlationrule)
+45. [ProcessorDefinition](#45-processordefinition)
+46. [EventEnvelope](#46-eventenvelope)
+47. [WorkerSubscription](#47-workersubscription)
+48. [ConfigurationVersion](#48-configurationversion)
+49. [LayerResult — Single Verification Layer Outcome](#49-layerresult--single-verification-layer-outcome)
+50. [WorkerManagementProfile — Worker Management Settings](#50-workermanagementprofile--worker-management-settings)
+51. [OperationQuota — Count-Based Quota](#51-operationquota--count-based-quota)
+52. [Worker-Management Reason Codes](#52-worker-management-reason-codes)
+53. [SkillDefinition and SkillStep (DEFERRED)](#53-skilldefinition-and-skillstep-deferred)
+54. [Memory Contracts — MemoryScope and MemoryBackend (DEFERRED, ADR-14)](#54-memory-contracts--memoryscope-and-memorybackend-deferred-adr-14)
+
+> **Worker-management repair (RD-16 family):** §38–§49 exist in the body but were never added to this table of contents; new sections start at §50 so no existing number is reused; the §38–§49 entries were added in audit round 2 (D7) (the duplicate §31 was resolved as §31 / §31a — WM-O1).
 
 ---
 
@@ -1932,7 +1952,9 @@ Configuration Version N is active
 
 ---
 
-## 31. Outbox-Inbox Event Delivery Contract
+## 31. Outbox-Inbox Event Delivery Contract — Records (OutboxRecord, InboxRecord)
+
+> **Repair (WM-O1, 2026-09-29):** this section shares its number with WorkerIdentity (now §31a) and its former title with §28. It keeps §31 because EVENT_GATEWAY_AND_ROUTER and ADAPTABILITY_PRINCIPLES cite `OutboxRecord` / `InboxRecord` as DATA_CONTRACTS §31; §28 defines `OutboxEvent`.
 
 ### 31.1 OutboxRecord
 
@@ -1986,7 +2008,9 @@ class InboxRecord:
 
 ---
 
-## 31. WorkerIdentity — Durable Worker Identity
+## 31a. WorkerIdentity — Durable Worker Identity
+
+> **Repair (WM-O1, 2026-09-29):** renumbered from a second "§31"; the table of contents and §50 cite it as §31a.
 
 **Owner**: [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §3
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
@@ -2007,7 +2031,7 @@ class WorkerIdentity:
     state: WorkerIdentityState        # Current lifecycle state
     capacity: int                     # Max concurrent executions
     current_load: int                 # Current in-flight executions
-    lease_epoch: int                  # Current fencing token
+    lease_epoch: int                  # Newest fence token issued to this worker (gate C25; the fence is checked per execution)
     heartbeat_at: float | None        # Last heartbeat timestamp
     last_assignment_at: float | None  # Last execution assignment
     created_at: float                 # Registration timestamp
@@ -2017,7 +2041,7 @@ class WorkerIdentity:
 ### Invariants
 
 1. `current_load <= capacity` at all times
-2. `lease_epoch` changes on every lease renewal — stale workers cannot commit
+2. `lease_epoch` changes on every lease acquisition and renewal and records the newest fence token issued to this worker. The write fence is checked **per execution** against `execution_ownership.fencing_token` (gate C25), so a stale owner cannot commit for that execution while other executions on the worker are unaffected. *(Worker-management repair, audit round 2 C3: the former text implied a per-worker check.)*
 3. `state` transitions must pass `WorkerIdentityStateValidator` (defined in WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md §1)
 4. `capability_profile` is set at registration and never changes
 
@@ -2205,6 +2229,9 @@ This means admission can be retried without cleanup.
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+# Worker-management repair (RD-14): AutonomyLevel is the only autonomy enum.
+# The spec's per-grant values (observed/assisted/limited/expanded/high_trust) are not
+# added; any per-capability refinement is restrict-only, under a different name, post-S15.
 class AutonomyLevel(StrEnum):
     FULLY_AUTONOMOUS = "fully_autonomous"
     SUPERVISED = "supervised"
@@ -2677,6 +2704,192 @@ class ExecutionOwnership:
 
 ### Ownership Transfer Rule
 
-Fencing tokens are strictly monotonically increasing. A stale worker
-with an old token cannot commit any state change. The `worker_leases.fence_token`
-table is the authoritative source for the current token.
+Fencing tokens are strictly monotonically increasing. A stale owner
+with an old token cannot commit any state change for the execution.
+
+> **Worker-management repair (review E5; gate C25):** the former text named `worker_leases.fence_token` as the authority. Tokens come from the database sequence `fence_token_seq`; `worker_leases.fence_token` records the token issued with each lease; the write fence is checked per execution against `execution_ownership.fencing_token` (WORKER_LIFECYCLE §14, §15 Rule 7).
+
+---
+
+## 50. WorkerManagementProfile — Worker Management Settings
+
+**Owner**: [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §16; gate v10 C39
+**Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+
+> **Worker-management repair (RD-1, RD-4, RD-10):** a read model of the mutable management columns. `WorkerIdentity` (§31a) is frozen and is not modified.
+
+```python
+class RuntimeType(StrEnum):
+    LLM = "llm"
+    RULES = "rules"
+    VISION = "vision"
+    BROWSER = "browser"
+    RPA = "rpa"
+    DATA = "data"
+    RAG = "rag"
+    CODE = "code"
+    HUMAN = "human"
+
+@dataclass(frozen=True)
+class WorkerManagementProfile:
+    worker_id: str                         # TEXT key (RD-1)
+    tenant_id: str
+    workspace_id: str | None               # Filter 4b; None only on legacy rows, which are ineligible
+    runtime_type: RuntimeType              # Selects routing, binding family, eligibility; never skips a stage
+    assigned_user_id: str | None           # Compared with PrincipalChain.original_principal_id
+    paused_until: datetime | None          # TIMESTAMPTZ, compared with database NOW()
+    scheduled_activation_at: datetime | None
+    settings: Mapping[str, Any]            # Read-only view; schema in IDENTITY_AND_TENANCY §5
+```
+
+**Rules**:
+1. Read only by S12 admission and worker selection; never by S0–S11; never part of the ExecutionManifest.
+2. Changes apply to leases acquired afterwards (I-017).
+3. `RuntimeType` is the only worker-type enum. Plan/event/hybrid is derived from active `WorkerSubscription` (§47) rows, not stored. `worker_class` is unchanged.
+4. `settings` may only restrict. Live in this phase: `restricted_capabilities` (filter 17b) and `execution_policy.max_mutation` (filter 17d, one of `R`, `W`, `D`, `IRREVERSIBLE`). Reserved and inert until post-S15: `execution_policy.max_retries`, `timeout_seconds`, `retry_backoff` (IDENTITY_AND_TENANCY §5; gate v10 C39).
+5. Bindings declare `required_runtime_types` (DATABASE `bindings`; empty = any runtime); it is not part of `FrozenBindingIdentity`.
+
+---
+
+## 51. OperationQuota — Count-Based Quota
+
+**Owner**: [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §16.4; gate v10 C39
+**Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY
+
+```python
+@dataclass(frozen=True)
+class OperationQuota:
+    quota_id: str
+    tenant_id: str                 # NOT NULL, RLS
+    workspace_id: str | None       # None = tenant level
+    worker_id: str | None          # Must be None in this phase (worker-level quotas out of phase)
+    resource_type: str             # "executions" in this phase
+    period_start: datetime         # TIMESTAMPTZ
+    period_end: datetime
+    limit_value: int               # >= 0
+    used_count: int                # 0 <= used_count <= limit_value on every row (CHECK; I17)
+    is_hard: bool
+```
+
+**Rules**:
+1. Consumed once per run, in the durable-admission transaction (gate §7.2), updating every applicable level in the order tenant → workspace; zero rows at any level rolls back.
+2. Hard → DENY `quota_exhausted`; soft → bounded retry of the transaction, then DENY `quota_exhausted` with `retry_after_ms` and upgrade guidance. Nothing is written on a DENY.
+3. Refund only when the run ends CANCELLED with no step COMPLETED, in the consolidation transaction, as a ledger event.
+4. **There is no per-step quota check** (audit round 2 A1: it would count the run's own consumption and cancel admitted runs).
+5. Lowering `limit_value` below `used_count` is rejected by the database; a lower limit goes on the next period's row.
+
+---
+
+## 52. Worker-Management Reason Codes
+
+**Owner**: gate v10 C39
+
+| Code | Carried by | Meaning |
+|---|---|---|
+| `tenant_paused`, `workspace_paused` | S0.1 DENY (ruling R-P); S12 entry DENY (safety net) | `paused_until > NOW()` at tenant/workspace level |
+| `not_yet_active` | S0.1 DENY; S12 entry DENY | `scheduled_activation_at > NOW()` at tenant/workspace level |
+| `quota_exhausted` | S12 entry DENY | Quota exhausted (hard at once; soft after bounded retry, with `retry_after_ms`) |
+| `workspace_mismatch`, `worker_paused`, `worker_not_yet_active`, `not_assigned`, `capability_mismatch`, `mutation_ceiling` | `no_worker` ledger event | Eligibility filter that removed a candidate (4b, 12b, 13b, 14, 17a–c, 17d) |
+
+No `StepTerminalReason` value is added: entry denials create no steps, and filter exhaustion ends the step with the existing `no_worker`. None of these is an `AdmissionDecision` reason: pause and quota are entry checks, not per-step gates. Entry denials are logged, not ledger events (gate C39).
+
+---
+
+## 53. SkillDefinition and SkillStep (DEFERRED)
+
+**Owner**: FINAL_ARCHITECTURE.md §51 extension points #5–#7
+**Status**: DEFERRED (post-S15) — nothing is implemented, migrated or tested in S12–S15
+
+```python
+@dataclass(frozen=True)
+class SkillStep:
+    step_id: str
+    capability_id: str              # Resolved through the registry at S3/S5
+    input_mapping: Mapping[str, str]
+    output_mapping: Mapping[str, str]
+    depends_on: tuple[str, ...]
+    condition: str | None
+
+@dataclass(frozen=True)
+class SkillDefinition:
+    skill_id: str
+    tenant_id: str
+    name: str
+    runtime_type: RuntimeType       # replaces the spec's worker_type (RD-10)
+    composition: tuple[SkillStep, ...]
+    input_schema: Mapping[str, Any]
+    output_schema: Mapping[str, Any]
+    capabilities_required: tuple[str, ...]
+    is_active: bool
+```
+
+**Rules**:
+1. A composition is planned at **S9** (not S7) into ordinary PlanSteps; it never bypasses S8, S10 or S11 (FINAL_ARCHITECTURE I-029).
+2. Recorded browser/RPA workflows are skill compositions of browser capabilities; there is no separate browser execution context or path (RD-8).
+3. The VOCABULARY_INDEX "Skill" definition must be reconciled with data-only compositions before this lands.
+
+Contracts deliberately **not** added: `BatchSplit` (would change the certified `NormalizedInput`; batch is BATCH-strategy PlanSteps, gate C40), `BatchConsolidation` (consolidation is gate §10), `BrowserExecutionContext` (one execution path, RD-8).
+
+---
+
+## 54. Memory Contracts — MemoryScope and MemoryBackend (DEFERRED, ADR-14)
+
+> **ADR-14 (DECIDED 2026-09-29; register MR-1, MR-7):** contracts for the memory phase (after S15). Nothing here is implemented in S12–S15 (gate v10 §14). The interface is FINAL_ARCHITECTURE §36; the rules are ADR-14 §3.1 and §3.3.
+
+```python
+@dataclass(frozen=True)
+class MemoryScope:
+    tenant_id: str                 # from ExecutionContext; never from LLM output or request parameters
+    workspace_id: str              # always required
+    worker_id: str | None          # None = entry has no worker
+    user_id: str | None            # PrincipalChain.original_principal_id; None for event-started runs
+    layer: Literal["L2", "L3"]
+    session_id: str | None = None  # required when layer == "L2", forbidden for L3
+
+@dataclass(frozen=True)
+class TenantScope:                 # accepted only by MemoryBackend.purge()
+    tenant_id: str
+
+@dataclass(frozen=True)
+class MemoryEntry:
+    entry_id: str
+    embedding: Sequence[float]     # computed by the caller (register MR-3); never by the backend
+    embedding_model: str
+    embedding_dim: int
+    content_hash: str              # sha256 of the plaintext payload
+    payload: dict | None           # inline, up to memory_payload_inline_max_bytes
+    payload_ref: str | None        # S3 key, built by the backend from the scope only
+    source: str
+    confidence: float | None
+    tags: tuple[str, ...]
+    created_at: datetime           # database time (I-019)
+
+@dataclass(frozen=True)
+class MemoryFilter:                # narrows the read set; has no scope field
+    tags: tuple[str, ...] = ()
+    created_after: datetime | None = None
+    created_before: datetime | None = None
+    source: str | None = None
+    min_confidence: float | None = None
+
+@dataclass(frozen=True)
+class MemoryQuery:
+    entry_ids: tuple[str, ...] = ()
+    filter: MemoryFilter | None = None
+    limit: int = 100
+
+@dataclass(frozen=True)
+class MemoryHit:
+    entry: MemoryEntry
+    distance: float                # same embedding_model as the query vector, or rejected
+
+@dataclass(frozen=True)
+class WriteResult:
+    entry_id: str
+    created: bool                  # False = same content_hash already present in scope (idempotent)
+```
+
+Rules:
+1. `read` and `search` cover only the fixed read set derived from the scope: `(worker, user)`, `(worker, no user)`, `(no worker, user)`, workspace-wide. `write` and `delete` target exactly the given scope.
+2. A vector whose `embedding_model` or `embedding_dim` differs from the stored entries is rejected, never compared.
+3. `purge` is limited to an owner/admin member of the scope's workspace (or the tenant's owner/admin for `TenantScope`) and the system off-boarding job; every purge is audited and recorded in the erasure register (SECURITY §12b).
