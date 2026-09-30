@@ -1071,7 +1071,7 @@ columns `execution_runs.parent_execution_id` (RD-11), `execution_runs.batch_mode
 
 ---
 
-### Implementation deviations of the S0–S11 repair (owner rulings R-AT, R-AU, R-AW, R-AZ, 2026-09-30)
+### Implementation deviations of the S0–S11 repair (owner rulings R-AT, R-AU, R-AW, R-AZ, 2026-09-30; 011–013 added 2026-09-30)
 
 The repair implements this schema as numbered SQL files (`adapters/postgres/migrations/001`…`010`, applied once each
 by `main.py --migrate`; Alembic is not used). The following differences from the definitions above are **accepted**
@@ -1085,6 +1085,9 @@ tenant-scoped have forced row-level security on `app.current_tenant`.
 | 008 | `kernel_ops` gains `observation_method TEXT`, `observation_expects_absent BOOLEAN NOT NULL DEFAULT FALSE`, `observation_identifier_field TEXT`: the observation-method registry S12 entry needs to build verifiers (gate D1). A W/D/IRREVERSIBLE operation without `observation_method` cannot be run. |
 | 009 | `execution_runs`, `execution_steps`, `execution_manifests`, `execution_plans`, `execution_ownership`, `state_transitions`, `operation_quotas`: times are `TIMESTAMPTZ` (not `REAL`); `execution_plans.frozen_bindings JSONB` (array of distinct bindings) and `step_binding_index JSONB` replace `frozen_binding_identity` (gate G4); `execution_manifests` also stores `auth_result_id`; no foreign keys to `workers`, `worker_leases` or `worker_versions` (not created yet) and none from `budget_reservations`; `operation_quotas` has no `worker_id` column (its own CHECK forced it NULL); `state_transitions` is the minimal transition log of gate C24 (`entity_type`, `entity_id`, `from_state`, `to_state`, `reason`, `runtime_instance_id`, `fence_token`); `execution_manifests` and `execution_plans` reject UPDATE by trigger. |
 | 010 | `execution_runs.connection_id TEXT` (the live authorization check needs the run's connection) and `terminal_reason TEXT` (why a run was cancelled); `execution_steps.terminal_reason` (closed set, CHECK, immutable once written) and `dispatched_attempt`; `CHECK (status NOT IN ('cancelled','skipped') OR terminal_reason IS NOT NULL)`. |
+| 011 | `event_schemas` (per-tenant registered payload schemas: `(tenant_id, source_system, event_type, schema_version)` primary key, `schema JSONB`, `is_active`; forced RLS). `event_log.schema_version TEXT NOT NULL DEFAULT '1'`. `event_schedules` (schedule event source: fixed identity columns like `api_keys`, `event_type`, `payload JSONB`, `kind` in `interval`/`daily`/`weekly` with per-kind CHECKs, `interval_seconds >= 60`, `is_active`, `last_planned`; **no row-level security**, so every access filters by tenant explicitly and only the scheduler reads across tenants). |
+| 012 | Administration API. `api_keys` gains `label`, `created_by`, `revoked_at`; `webhook_credentials` and `event_schedules` gain `label`, `created_by`; `event_schemas` gains `created_by`. `admin_audit` (append-only record of administrative changes: `audit_id`, `tenant_id`, actor user and membership, `action`, `target_type`, `target_id`, `details JSONB` holding ids, versions and labels only, never a secret, `occurred_at`); UPDATE and DELETE are rejected by trigger `reject_change()`; forced RLS. |
+| 013 | Access management. `users` gains `display_name`, `is_service BOOLEAN NOT NULL DEFAULT FALSE` (a service identity; webhook/MCP endpoints and schedules may only act as one) and `created_by`; `workspaces` gains `created_by`; `memberships`, `connections` and `capability_grants` gain `created_by` and `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`. |
 
 ## 4. Migrations
 
