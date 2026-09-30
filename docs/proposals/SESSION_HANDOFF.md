@@ -5,6 +5,9 @@ Branch `s0-s11-repair` (PR #2 into `s0-s11-baseline`, never merge unless the own
 Integrity files (certifier, golden tests, pins, `owner_verify.ps1`, spec documents) are changed only on the owner's explicit instruction.
 Never ask for or repeat passwords/keys; the DeepSeek key is a test key the owner will revoke later.
 
+## Working folders
+The owner's MASTER folder is `C:\Users\Administrator\Documents\1SuperAgents` (a clone of branch `s0-s11-repair`; `tools/adopt_master_folder.ps1` sets it up and compares the certifier hashes). `S12-repair` was a temporary second clone. Other branches (`s0-s11-baseline`, `claude/*`, `add-claudesuperapp-src`) are history: do not merge them into `s0-s11-repair`.
+
 ## Finished
 - S0–S11 repair, M2a multi-capability chains, live proof (`test_live_chain.py`, `test_live_full_stack.py`, 6/6 each).
 - S12 prototype (entry checks, verifiers, durable admission, step loop, fencing): built, NOT certified, not called by the API.
