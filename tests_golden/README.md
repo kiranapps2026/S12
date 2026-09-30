@@ -26,6 +26,30 @@ as the non-superuser role `golden_app`, so row-level security is really enforced
 was added while drafting M05: as a superuser, the frozen confirmation store consumed another tenant's confirmation
 (DEF-003), so a result must never depend on which role the URL names.
 
+## Batch B3 status (drafted on the owner's instruction "draft B3"; review: `docs/gates/S12_B3_REVIEW.md`)
+
+| File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |
+|---|---|---|---|---|---|
+| `s12/M10_guard.py` | M10 | 55 | 54 fail, 1 standing rule passes | 55 / 55 | 8 / 8 |
+| `s12/M11_idempotency_retry.py` | M11 | 43 | 42 fail, 1 passes | 43 / 43 | 8 / 8 |
+| `s12/M12_loop.py` | M12 | 24 | 20 fail, 4 pass (prototype topological order, standing rule) | 24 / 24 | 6 / 6 |
+| `s12/M13_probe.py` | M13 | 10 | 10 fail | 10 / 10 | 4 / 4 |
+| `s12/M14_revocation_cancel.py` | M14 ★ | 26 | 26 fail | 26 / 26 | 6 / 6 |
+
+All 677 cases of M01–M14 pass together on the reference. Interfaces fixed by B3 (details in each docstring):
+- M10 `contracts.adapter_interface` (`CallMeta`, `ProbeOutcome`, `Observation`, `ErrorClass`, `BaseAdapter`,
+  `CredentialProvider`, `BudgetStateError`, `GuardedCall`), `engine.stages.s12_execute.reliability`
+  (`ReliabilityGuard`, `BudgetTracker`, `TimeoutManager`), `adapters.runtime.reliability`,
+  `adapters.runtime.mock_adapter.MockAdapter`, `PostgresBudgetReserver.reservation`.
+- M11 `contracts.idempotency`, `adapters.postgres.idempotency.PostgresIdempotencyLedger`,
+  `adapters.postgres.step_attempts.PostgresStepAttempts`, `engine.stages.s12_execute.retry_policy`,
+  `engine.stages.s12_execute.attempts.run_attempts`.
+- M12 migration `execution_events` (CONF-026), `PostgresExecutionEvents`, `PostgresExecutionStore`,
+  `PostgresKernelPolicy`, `engine.stages.s12_execute.loop` (`LoopDeps`, `LoopSettings`, `run_execution`,
+  `topological_order`), `engine.stages.s12_execute.dispatch.InProcessDispatcher`.
+- M13 `adapters.postgres.reconciliation.PostgresEpisodes`, `engine.stages.s13_reconciliation.probe`.
+- M14 `PostgresLiveAuthorization(scopes, *, database, credentials)`, `adapters.postgres.cancellation`.
+
 ## Batch B2 status (drafted in the implementation session on the owner's instruction "draft B2 here")
 
 | File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |

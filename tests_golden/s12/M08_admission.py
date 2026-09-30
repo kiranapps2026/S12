@@ -22,7 +22,8 @@ Interface this file fixes:
       most ``max_attempts`` evaluations, then REJECT with reason ``admission_exhausted``; every decision is recorded with
       ``await ledger.record("admission_decision", {"status", "gate_failed", "reason"})``;
       ``reject_outcome(decision) -> (terminal_reason, path)``: gate "1" → ("kill_switch_engaged", "revocation"),
-      gate "3" → ("authorization_revoked", "revocation"), gate "10" → ("budget_exhausted", "budget"), anything else →
+      gate "3" → ("authorization_revoked", "revocation"), gate "10" → ("budget_exhausted", "budget"), reason
+      ``admission_exhausted`` → ("admission_exhausted", "consolidate") (§8 step 1, C22; DEF-005), anything else →
       ("admission_rejected", "consolidate"); a non-REJECT decision raises ValueError.
   * ``engine.stages.s12_execute.selection``:
       ``select_worker(candidates, *, current_owner) -> worker_id | None`` — candidates are
@@ -188,7 +189,7 @@ def test_persistent_backpressure_ends_as_admission_exhausted():
 
     decision = asyncio.run(admit_step(source, ledger=Ledger(), max_attempts=2, sleep=sleep))
     assert (decision.status, decision.reason) == ("REJECT", "admission_exhausted")
-    assert reject_outcome(decision) == ("admission_rejected", "consolidate")
+    assert reject_outcome(decision) == ("admission_exhausted", "consolidate")
 
 
 @pytest.mark.parametrize("gate,expected", [
@@ -201,10 +202,12 @@ def test_reject_is_mapped_by_gate(gate, expected):
     assert reject_outcome(evaluate(_ok(**{field: value}))) == expected
 
 
-def test_exhausted_admission_is_admission_rejected_and_non_rejects_have_no_outcome():
+def test_exhausted_admission_keeps_its_own_reason_and_non_rejects_have_no_outcome():
+    """§8 step 1: after the bounded QUEUE/DELAY, a REJECT with reason admission_exhausted (a C22 terminal reason of its
+    own); the run is consolidated like any other non-revocation REJECT (DEF-005)."""
     from contracts.step_admission import AdmissionDecision
     from engine.stages.s12_execute.admission_control import reject_outcome
-    assert reject_outcome(AdmissionDecision("REJECT", reason="admission_exhausted")) == ("admission_rejected",
+    assert reject_outcome(AdmissionDecision("REJECT", reason="admission_exhausted")) == ("admission_exhausted",
                                                                                           "consolidate")
     for status in ("ACCEPT", "QUEUE", "DELAY", "DEGRADE"):
         with pytest.raises(ValueError):

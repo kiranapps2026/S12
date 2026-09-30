@@ -19,19 +19,30 @@ ENTRY = {"message": "x", "conversation_id": "conv-1", "connection_id": "conn-1"}
 CHAIN = [("contact.create", {"name": "Ana"}), ("email.send", {"to": "a@x.com"})]
 
 
-@lru_cache(maxsize=4)
-def _certified(chain: bool):
+@lru_cache(maxsize=8)
+def _certified(chain):
+    """``chain``: False (the one-step scenario), True (``CHAIN``) or a JSON list of [intent, params] pairs (added
+    with B3: a linear chain of any of the ``tests.fixtures.multi.DEFAULT_CAPS`` intents)."""
+    import json
     from engine.control_plane.pipeline_state_runner import build_pipeline
     from tests.fixtures.multi import ChainModel, chain_deps
     from tests.fixtures.pipeline import make_entry, make_pipeline_deps
     from tests.fixtures.scenarios import make_scenario
-    deps = chain_deps(ChainModel(CHAIN)) if chain else make_pipeline_deps(make_scenario())
+    if chain is False:
+        deps = make_pipeline_deps(make_scenario())
+    else:
+        steps = CHAIN if chain is True else [tuple(pair) for pair in json.loads(chain)]
+        deps = chain_deps(ChainModel(steps))
     result = asyncio.run(build_pipeline(deps).run(make_entry(ENTRY)))
     assert result.status.value == "NORMAL" and result.final_stage == "S11", result.reason
     return result.final_state
 
 
-def certified_state(*, tenant_id: str | None = None, chain: bool = False, **context):
+def certified_state(*, tenant_id: str | None = None, chain=False, **context):
+    """``chain``: False, True, or a sequence of (intent, params) pairs for a linear chain."""
+    if chain is not False and chain is not True:
+        import json
+        chain = json.dumps([[intent, params] for intent, params in chain], sort_keys=True)
     state = _certified(chain)
     changes = dict(context)
     if tenant_id is not None:

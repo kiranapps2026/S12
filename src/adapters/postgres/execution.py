@@ -50,7 +50,7 @@ class PostgresExecutionRepository:
     def __init__(self, database: Database, runtime_instance_id: str, fencing_token: int = 0) -> None:
         self._db, self._runtime, self._token = database, runtime_instance_id, fencing_token
 
-    def _holder(self, tenant_id: str, execution_id: str) -> FenceHolder:
+    def holder(self, tenant_id: str, execution_id: str) -> FenceHolder:
         return FenceHolder(tenant_id=tenant_id, execution_id=execution_id, runtime_instance_id=self._runtime,
                            fence_token=self._token)
 
@@ -98,7 +98,7 @@ class PostgresExecutionRepository:
                 " WHERE tenant_id = $1 AND step_id = $2", tenant_id, step_id, to, terminal_reason, error, attempt,
                 None if data is None else json.dumps(data), undo_token, duration_ms)
             await self._log(c, tenant_id, execution_id, "step", step_id, current, to, reason)
-        await fenced_write(self._db, self._holder(tenant_id, execution_id), write)
+        await fenced_write(self._db, self.holder(tenant_id, execution_id), write)
 
     async def mark_dispatched(self, tenant_id: str, execution_id: str, step_id: str, attempt: int) -> None:
         """The dispatch marker (C35): written BEFORE the adapter call, so a crash can tell whether the
@@ -106,7 +106,7 @@ class PostgresExecutionRepository:
         async def write(c) -> None:
             await c.execute("UPDATE execution_steps SET dispatched_attempt = $3, attempt = $3"
                             " WHERE tenant_id = $1 AND step_id = $2", tenant_id, step_id, attempt)
-        await fenced_write(self._db, self._holder(tenant_id, execution_id), write)
+        await fenced_write(self._db, self.holder(tenant_id, execution_id), write)
 
     async def transition_run(self, tenant_id: str, execution_id: str, to: str, *, reason: str,
                              terminal_reason: str | None = None, budget_spent: int | None = None,
@@ -120,7 +120,7 @@ class PostgresExecutionRepository:
                 " duration_ms = COALESCE($6, duration_ms), completed_at = now() WHERE tenant_id = $1 AND execution_id = $2",
                 tenant_id, execution_id, to, terminal_reason, budget_spent, duration_ms)
             await self._log(c, tenant_id, execution_id, "run", execution_id, current, to, reason)
-        await fenced_write(self._db, self._holder(tenant_id, execution_id), write)
+        await fenced_write(self._db, self.holder(tenant_id, execution_id), write)
 
     async def _log(self, c, tenant_id, execution_id, machine, entity_id, old, new, reason) -> None:
         await log_transition(c, tenant_id=tenant_id, machine=machine, entity_id=entity_id, from_state=old,

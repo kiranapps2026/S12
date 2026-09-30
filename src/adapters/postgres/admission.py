@@ -20,13 +20,16 @@ from contracts.pipeline_state import PipelineState
 from contracts.verifier import Verifier
 from engine.stages.plan_steps import plan_step_bindings
 from engine.stages.s12_execute import transitions
+from engine.stages.s12_execute.settings import (
+    QUOTA_BACKOFF_S,
+    QUOTA_RETRY_AFTER_MS,
+    QUOTA_RETRY_MAX,
+    ExecutionSettings,
+)
 
 QUOTA_EXHAUSTED = "quota_exhausted"
 CREATED = "created"                 # Appendix A: creation reason of a run and of a step
 ADMITTED_REASON = "admitted"        # Appendix A.1: pending -> running at admission
-SOFT_QUOTA_ATTEMPTS = 3
-SOFT_QUOTA_BACKOFF_SECONDS = 0.05
-SOFT_QUOTA_RETRY_AFTER_MS = 1000
 
 
 class _Exhausted(Exception):
@@ -63,13 +66,20 @@ def _step_bindings(state: PipelineState):
 
 
 class PostgresExecutionAdmission:
-    def __init__(self, database: Database) -> None:
+    """The soft-quota retry bound, backoff and ``retry_after_ms`` come from the settings object (C39, §21 S1); without
+    one, the phase defaults apply."""
+
+    def __init__(self, database: Database, *, settings: ExecutionSettings | None = None) -> None:
         self._db = database
+        use = settings is not None
+        self._retry_max = settings.quota_retry_max if use else QUOTA_RETRY_MAX
+        self._backoff_s = settings.quota_backoff_s if use else QUOTA_BACKOFF_S
+        self._retry_after_ms = settings.quota_retry_after_ms if use else QUOTA_RETRY_AFTER_MS
 
     async def admit(self, state: PipelineState, verifiers: tuple[Verifier, ...],
                     runtime_instance_id: str) -> AdmissionOutcome:
         ctx = state.execution_context
-        for attempt in range(1, SOFT_QUOTA_ATTEMPTS + 1):
+        for attempt in range(1, self._retry_max + 1):
             try:
                 return await self._attempt(state, verifiers, runtime_instance_id)
             except _Duplicate:
@@ -77,10 +87,9 @@ class PostgresExecutionAdmission:
             except _Exhausted as exhausted:
                 if exhausted.hard:
                     return AdmissionOutcome(DENIED, reason=QUOTA_EXHAUSTED)
-                if attempt == SOFT_QUOTA_ATTEMPTS:
-                    return AdmissionOutcome(DENIED, reason=QUOTA_EXHAUSTED,
-                                            retry_after_ms=SOFT_QUOTA_RETRY_AFTER_MS)
-                await asyncio.sleep(SOFT_QUOTA_BACKOFF_SECONDS * attempt)
+                if attempt == self._retry_max:
+                    return AdmissionOutcome(DENIED, reason=QUOTA_EXHAUSTED, retry_after_ms=self._retry_after_ms)
+                await asyncio.sleep(self._backoff_s * attempt)
         raise AssertionError("unreachable")
 
     async def _existing(self, tenant_id: str, request_id: str) -> AdmissionOutcome:

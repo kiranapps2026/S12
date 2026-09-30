@@ -32,11 +32,17 @@ class FenceHolder:
     fence_token: int
 
 
+async def check_fence(connection: asyncpg.Connection, holder: FenceHolder) -> None:
+    """Inside a tenant transaction: lock the ownership row FOR SHARE and raise ``FencedOut`` unless it still names
+    the holder. ``fenced_write`` runs it first; an operation joining a caller's transaction runs it again there."""
+    held = await connection.fetchval(_FENCE, holder.tenant_id, holder.execution_id,
+                                     holder.runtime_instance_id, holder.fence_token)
+    if held is None:
+        raise FencedOut(holder.execution_id)
+
+
 async def fenced_write(database: Database, holder: FenceHolder,
                        write: Callable[[asyncpg.Connection], Awaitable[T]]) -> T:
     async with database.tenant_transaction(holder.tenant_id) as connection:
-        held = await connection.fetchval(_FENCE, holder.tenant_id, holder.execution_id,
-                                         holder.runtime_instance_id, holder.fence_token)
-        if held is None:
-            raise FencedOut(holder.execution_id)
+        await check_fence(connection, holder)
         return await write(connection)

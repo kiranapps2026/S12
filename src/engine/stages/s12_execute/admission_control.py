@@ -13,6 +13,7 @@ settings object and moves these delays there with it (gate §21 S1).
 from __future__ import annotations
 
 import asyncio
+import types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, fields
 
@@ -67,14 +68,14 @@ _GATES = (
     ("10", "budget_available", False, "budget_exhausted", _A.REJECT),
     ("11", "system_overloaded", True, "system_overloaded", _A.DELAY),
 )
-_RETRY_AFTER_MS = {_A.QUEUE: QUEUE_RETRY_AFTER_MS, _A.DELAY: DELAY_RETRY_AFTER_MS}
+_RETRY_AFTER_MS = types.MappingProxyType({_A.QUEUE: QUEUE_RETRY_AFTER_MS, _A.DELAY: DELAY_RETRY_AFTER_MS})
 
 _R = StepTerminalReason
-_REJECT_OUTCOMES = {
+_REJECT_OUTCOMES = types.MappingProxyType({
     "1": (_R.KILL_SWITCH_ENGAGED, REVOCATION),
     "3": (_R.AUTHORIZATION_REVOKED, REVOCATION),
     "10": (_R.BUDGET_EXHAUSTED, BUDGET),
-}
+})
 _OTHER_REJECT = (_R.ADMISSION_REJECTED, CONSOLIDATE)
 
 
@@ -110,11 +111,12 @@ async def admit_step(snapshot_source: Callable[[], Awaitable[AdmissionSnapshot]]
 
 
 def reject_outcome(decision: AdmissionDecision) -> tuple[str, str]:
-    """(step terminal reason, path) for a REJECT (C30); ``admission_exhausted`` is never a gate's own outcome."""
+    """(step terminal reason, path) for a REJECT (C30). An exhausted QUEUE/DELAY keeps its own terminal reason
+    ``admission_exhausted`` (§8 step 1, C22; DEF-005) and, like any non-revocation REJECT, the run is consolidated."""
     if decision.status != _A.REJECT:
         raise ValueError(f"only a REJECT has an outcome, got {decision.status}")
     if decision.reason == _R.ADMISSION_EXHAUSTED:
-        return _OTHER_REJECT
+        return (_R.ADMISSION_EXHAUSTED, CONSOLIDATE)
     return _REJECT_OUTCOMES.get(decision.gate_failed, _OTHER_REJECT)
 
 
