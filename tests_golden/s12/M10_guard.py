@@ -63,7 +63,9 @@ Interface this file fixes:
     timeout_failed (executes, fails, then times out), verify_mismatch, slow, connect_refused, raise_exception;
     ``probe``: ledger (from the side-effect ledger), inconclusive, default (the BaseAdapter default); ``observe``:
     ledger, default. ``side_effects(idempotency_key)`` counts real executions; a key already executed successfully is
-    not executed again. Each call/probe/observe asks ``credentials.credential(tenant_id, connection_id)``.
+    not executed again; ``calls`` and ``probes`` list the ``CallMeta`` of every call and probe; with ``n > 0``,
+    ``timeout_not_executed`` times out without executing n times and then succeeds (added with M13). Each
+    call/probe/observe asks ``credentials.credential(tenant_id, connection_id)``.
 """
 from __future__ import annotations
 

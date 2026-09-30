@@ -19,6 +19,8 @@ It grows milestone by milestone. Active now:
   * I10 (M6): every step's ``resolved_binding_id``, ``effective_risk`` and ``effective_mutation`` equal that step's binding
     in the persisted ``frozen_bindings`` (through ``step_binding_index``).
   * I16 (M12): every ``ProviderCalled`` ledger event follows the ``step_attempt`` event of the same attempt.
+  * I6 (M13): a step with an episode passed through ``pending_probe``; every ``timeout`` is followed by
+    ``pending_probe``. C13 (M13): when a run moved to ``reconciling``, every other step was terminal.
 """
 from __future__ import annotations
 
@@ -171,6 +173,41 @@ async def dispatch_problems(schema) -> list[str]:
                 " AND a.seq < c.seq)")]
 
 
+TERMINAL_STEP = ("completed", "failed", "cancelled", "skipped", "dead_letter", "partial")
+
+
+async def uncertainty_problems(schema) -> list[str]:
+    problems = []
+    rows = await schema.fetch("SELECT transition_id, entity_type, entity_id, execution_id, to_state FROM"
+                              " state_transitions ORDER BY transition_id")
+    history: dict = {}
+    for r in rows:
+        if r["entity_type"] == "step":
+            history.setdefault(r["entity_id"], []).append(r["to_state"])
+    for step_id, states in history.items():
+        for i, state in enumerate(states):
+            if state == "timeout" and i + 1 < len(states) and states[i + 1] != "pending_probe":
+                problems.append(f"I6 step {step_id}: timeout not followed by pending_probe")
+    tables = {r["t"] for r in await schema.fetch(
+        "SELECT table_name AS t FROM information_schema.tables WHERE table_schema = $1", schema.name)}
+    if "step_reconciliations" in tables:
+        for r in await schema.fetch("SELECT DISTINCT step_id FROM step_reconciliations"):
+            if "pending_probe" not in history.get(r["step_id"], []):
+                problems.append(f"I6 step {r['step_id']}: an episode without pending_probe")
+    step_state: dict = {}
+    step_run = {r["step_id"]: r["execution_id"] for r in await schema.fetch(
+        "SELECT step_id, execution_id FROM execution_steps")}
+    for r in rows:
+        if r["entity_type"] == "step":
+            step_state[r["entity_id"]] = r["to_state"]
+        elif r["entity_type"] == "run" and r["to_state"] == "reconciling":
+            open_steps = [s for s, st in step_state.items() if step_run.get(s) == r["entity_id"]
+                          and st not in TERMINAL_STEP and st != "pending_probe"]
+            if open_steps:
+                problems.append(f"C13 run {r['entity_id']}: reconciling while {open_steps} not terminal")
+    return problems
+
+
 async def assert_system_invariants(schema) -> None:
     columns = {r["column_name"] for r in await schema.fetch(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'state_transitions'",
@@ -179,5 +216,6 @@ async def assert_system_invariants(schema) -> None:
     rows = await schema.fetch(f"SELECT {machine} AS machine, entity_id, from_state, to_state, reason"
                               " FROM state_transitions ORDER BY transition_id")
     problems = ([f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
-                + await lease_problems(schema) + await budget_problems(schema) + await dispatch_problems(schema))
+                + await lease_problems(schema) + await budget_problems(schema) + await dispatch_problems(schema)
+                + await uncertainty_problems(schema))
     assert not problems, "invariants violated:\n" + "\n".join(problems)
