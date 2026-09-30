@@ -63,7 +63,7 @@ Everything about plans that combine capabilities, in one place.
 | # | Item | Blocks the tag? |
 |---|---|---|
 | **D1 — M2a finish** | | |
-| D1a | Live proof: a real model answering with `steps`; prompt tuning; ordering errors ("email before create") | **yes** — live test written (`test_live_chain.py`), needs the owner's key to run |
+| D1a | Live proof: a real model answering with `steps`; prompt tuning; ordering errors ("email before create") | **done 2026-09-30**: `test_live_chain.py` 6/6 on the owner's machine (real `deepseek-flash`, 21 s). Chains used `steps` in the asked order (both orders), a delete chain paused for confirmation, an unoffered operation came back `unknown` (CLARIFY `intent_unclear`), 6 items + 1 hit `too_many_steps`, confidence 0.5 hit the 0.85 floor. Not yet observed: real ordering mistakes on ambiguous phrasing, the model keeping an unrequested step out |
 | D1b | Ratified M2 rulings; R-AF inverse verified with registry data | inverse path proven end to end on seed data; rulings still yours (A4) |
 | D1c | S12 per-step contract accepted: G1–G8; S12 entry, admission and loop already work per step (prototype) | **yes** (decision, A5) |
 | D1d | Observation metadata for real operations | mechanism, template and readiness query in `D1_CHAIN_CATALOG.md`; **the owner's real catalog still has to be filled** |

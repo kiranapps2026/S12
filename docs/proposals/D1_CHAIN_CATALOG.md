@@ -44,11 +44,14 @@ with its parameters and `undoable`, and verifies the delete by absence; a failed
 `partial` run with the create's budget committed and the delete's released; the kill switch between admission
 and execution cancels the chain; without observation data the chain is refused at S12 entry.
 
-**Not proved: D1a, the real model.** `tests_postgres/test_live_chain.py` (run with `-s`, needs the DeepSeek key)
-asks the real model for a create-then-list chain, for the reverse order, for a chain with a delete, for an
-operation the registry does not offer, for more than five operations and for an unsure request. It is verified
-here only against a scripted stand-in. Its failure messages print the raw model answer, so the prompt in
-`adapters/llm/deepseek_request.py` can be tuned from evidence.
+**D1a, the real model: proved on 2026-09-30** (owner's machine, real `deepseek-flash`, `test_live_chain.py`, 6/6 in
+21 s, about 400-800 tokens per call). The model used the `steps` form for chains, in the requested order for both
+"create then list" and "first list, afterwards create"; a chain with a delete ended at S10 asking for confirmation;
+"create a contact and wire 500 dollars" came back `{"intent":"unknown"}` for the second step with confidence 0.6
+(S2 CLARIFY `intent_unclear`, nothing planned); "create six contacts and list them" used `items` and was stopped
+at S2 as `too_many_steps`; an unsure request came back at confidence 0.5 and was stopped at S7 (`low_confidence`).
+Still unobserved: ambiguous phrasing where the order is not stated, requests where the model might add a step
+nobody asked for, and behaviour across many runs (one run of each case is not a rate).
 
 **Ordering mistakes** ("email before create") cannot be detected by the system in M2a: no schema says that one
 operation needs another's result. The guards are the confirmation text (which lists the chain in order) and,
