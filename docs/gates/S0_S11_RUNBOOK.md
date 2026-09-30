@@ -3,7 +3,9 @@
 Repository: `C:\Users\Administrator\Documents\1SuperAgents`
 This file replaces `S0_S11_COMPLETION_PROMPT.md`. Save it as
 `docs\gates\S0_S11_RUNBOOK.md`. It is the only instruction set for finishing S0–S11.
-Revision: v8 — spec documents pinned (Part 0 item 5, OWN-20). v7 — FrozenBindingIdentity extensions updated; ExecutionContext and
+Revision: v9 — R-AA (S0.1 activation check) and R-AM…R-AS (S1 references, files, templates, result
+ownership, detection copy, entities) added to Part 2 on the owner's instruction (2026-09-30).
+v8 — spec documents pinned (Part 0 item 5, OWN-20). v7 — FrozenBindingIdentity extensions updated; ExecutionContext and
 module-level-state rulings added (R-X, R-Y). v6 — the owner certifier `tools/owner_certify.py` is the only
 certification authority; `raw_input` leaves ExecutionContext. v5 — R-Q rewritten (reachable high-risk path, deny threshold), R-U (single
 binding scope), R-V (S6 formula), R-W (scenario and tamper fixtures), Part 6 exact
@@ -415,6 +417,61 @@ reported name. SQLAlchemy models: replace `Base = declarative_base()` with the
 SQLAlchemy 2.0 form `class Base(DeclarativeBase): pass` in each file (one class per
 file, same as now, so table metadata is unchanged). `KernelPolicy.metadata` is
 removed; if a caller needs extra settings, add named fields instead.
+
+R-AA. **S0.1 activation check.** Immediately after S0 creates the ExecutionContext, and
+before any other work (including S8's dependency reads and the run scope), the kernel
+reads the tenant's and the workspace's `paused_until` and `scheduled_activation_at` and
+the database clock `now`. The request is DENIED at S0 when:
+
+| condition | reason (exact) |
+|---|---|
+| tenant `paused_until` > now | `tenant_paused` |
+| workspace `paused_until` > now | `workspace_paused` |
+| tenant or workspace `scheduled_activation_at` > now | `not_yet_active` |
+| the state cannot be read (missing row, database error) | `activation_state_unavailable` |
+
+The first matching row wins; `paused_until == now` is no longer paused. Time is the
+database clock, never the caller's. Fail closed. The check also runs on every reply to a
+waiting confirmation (a paused tenant completes no pending run). No S1–S11 stage produces
+output for a denied request. (Ruling R-P of the S12–S15 gate; S12 entry repeats the check
+as a safety net.)
+
+R-AM. **S1 references: `$ref` and `$N`.** `$ref:N` (N = 1..20) is the N-th most recent
+result of the caller's own conversation. Bare `$N` (one digit, 1–9) is a reference ONLY
+when that result exists; otherwise it is literal text ("$5 fee"). An explicit reference
+that cannot be resolved is CLARIFY `unresolved_reference`; the unresolved text is never
+sent on. At most 10 references per message (`too_many_references`); a reference is
+resolved in ONE pass (a resolved value is never scanned again).
+
+R-AN. **S1 files.** `$file:name` resolves to the file's METADATA in the caller's own
+workspace (`[file:name#id]`). S1 never reads or forwards file content; content access is
+a separate, gated capability that S1 must not acquire.
+
+R-AO. **S1 templates.** `{{name}}` is a variable NAME only: no expressions, filters or
+attribute access (anything else in braces stays literal text and is never evaluated).
+System variables: `today`, `yesterday`, `tomorrow` (database clock). Stored variables are
+set only by a tenant or workspace administrator through an admin path (users cannot
+define variables); a workspace value overrides the tenant's.
+
+R-AP. **S1 result ownership.** A result belongs to a USER within a conversation; a user
+never resolves another user's results, even in a shared conversation, and never another
+tenant's.
+
+R-AQ. **S1 result text.** The stored text of a result is its `summary` (at most 4000
+characters), written by S15. Nothing may write `conversation_results` until S15's
+redaction exists, so secrets cannot be stored there. Resolved text is capped (2000
+characters per result, 500 per variable), stripped of control characters, and then
+sanitised like any other input (a stored value that carries an injection is DENY
+`injection_detected`). The run's stored state never keeps resolved text.
+
+R-AR. **S1 detection copy.** Injection detection also runs on an NFKC-normalised copy with
+invisible format characters removed and whitespace collapsed, so fullwidth or
+zero-width-split text cannot evade it. Detection may only DENY; it never rewrites the text.
+The model receives the user's own text (NFC, trimmed).
+
+R-AS. **S1 entities.** Entity extraction (dates, e-mail addresses, file names, contact
+names) is deterministic, English-only and advisory: nothing decides risk, mutation,
+capability or access from an entity, and entities are NOT given to S2 as hints.
 
 ---
 

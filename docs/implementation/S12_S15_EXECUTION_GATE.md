@@ -2,6 +2,7 @@
 
 Status: APPROVED FOR EXECUTION (owner confirmed Section 6, D1–D6, as written)
 Revision: v10 — v9 plus worker-management rulings C39 (admission and eligibility, operation quota), C40 (batch: out of phase), C41 (replanning: out of phase), preflight items 15–16, suite 20, invariants I17–I18, and the owner-confirmed rulings RD-1…RD-18 of `WORKER_MGMT_SPEC_REVIEW.md` Part E. Passages changed in v10 carry a `Worker-management repair (RD-n)` or `(C39–C41)` marker. v10 audit round 2 (2026-09-29): C39 revised (A1–A6, B1–B9 of the audit; pause moved to S0.1 by S0–S11 ruling R-P, S12 entry keeps a safety net; no per-step quota or pause check; eligibility filters extended), preflight item 17. v10 addendum (2026-09-29), amended the same day: vector memory / RAG was blocked until blocker register Section 20 MR-1 was decided; MR-1 and ADR-14 DECIDED by the owner on 2026-09-29 (`ADR-14_VECTOR_MEMORY_BACKEND.md`: pgvector only, `MemoryScope` contract), so the block is lifted under the deletion contract (`s12_s15_golden/README.md`): the §1 entry, the suite 2 check and the guard `tests/golden/s12/test_arch_no_vector_code.py` are removed. Vector memory stays **out of this phase** (§14, target phase after S15). The owner re-pins the gate and the golden set.
+Amendment (owner ruling R-AY, 2026-09-30; S0–S11 ruling M2a, `docs/proposals/M2_RULINGS.md`): a plan may have one frozen binding per step (heterogeneous linear chains). Passages changed by G1–G8 carry a `(G1)`…`(G8)` marker; behaviour for a one-step plan is unchanged.
 Previous revision: v9 — v8 plus: documentation repairs C1–C23 pre-applied by the owner (the agent
 never edits specification documents); the term "Runner" replaced by "Worker Runtime"; new
 rulings C24–C38 (canonical transition tables, fence-token sequence, lease status column,
@@ -1052,13 +1053,15 @@ Principle 2 and I-024, "adding an adapter never requires kernel changes"):
   alert event). Timeouts are detected only by `TimeoutManager` (asyncio timeout),
   never by matching error text (register MC-008).
 - The outcome mapping in RELIABILITY §5 / Appendix A is superseded by Section 9.
-- **No binding re-resolution after entry.** At S12 entry the binding row is read once,
-  by `FrozenBindingIdentity.binding_id`; if its version differs from
-  `manifest.binding_version`, deny with `binding_version_mismatch` (writes nothing).
-  The snapshot used from then on is persisted in
-  `execution_plans.frozen_binding_identity` (Section 7.3). The only later read of the
-  binding row is the validity check inside `LiveAuthorizationCheck` (C35), which reads
-  status by the same `binding_id` and never selects a different binding.
+- **No binding re-resolution after entry.** At S12 entry each DISTINCT binding row of the
+  plan is read once, by `FrozenBindingIdentity.binding_id` (G2); if any row's version
+  differs from `manifest.binding_version`, deny with `binding_version_mismatch` (writes
+  nothing). The manifest carries ONE version of each kind: S11 refuses a plan whose bindings
+  carry different versions (`binding_mismatch`), so the comparison is well defined. The
+  snapshot used from then on is persisted in `execution_plans.frozen_bindings` (Section
+  7.3, G4). The only later read of a binding row is the validity check inside
+  `LiveAuthorizationCheck` (C35), which reads status by the same `binding_id` and never
+  selects a different binding.
 - The mock adapter (Section 15.3) implements all three methods.
 
 ### C33 — Budget period, time source and remaining schema defects
@@ -1171,7 +1174,7 @@ Ruling:
   was sent) is a definitive, retryable failure of that attempt, not UNKNOWN. A read
   timeout after the request was sent is UNKNOWN (TimeoutManager).
 - **Recovery validity** (ADR-7) is evaluated by `LiveAuthorizationCheck` (C23), which
-  additionally reads the status of the frozen binding (by `binding_id`) and of the
+  additionally reads the status of the frozen binding of the step being run (by `binding_id`, G5) and of the
   connection's credential. Mapping to terminal reasons (C22 enum, additive values
   `binding_invalid` and `credential_invalid`):
   BINDING_RETIRED, BINDING_DISABLED → `binding_invalid`; CREDENTIAL_INVALID →
@@ -1203,6 +1206,9 @@ Ruling:
   and later phases. No step reads another step's output.
 - P0-B stays OPEN in the register with target phase "LLM layer / planning", and this
   ruling as the interim contract.
+- (G6) Heterogeneous linear chains (S0–S11 ruling M2a) need no data flow: every step's
+  `params` are fully bound at S9 from the request and covered by `plan_hash`. This ruling
+  is unchanged for them.
 
 ### C37 — Reliability findings closed in this phase
 
@@ -1386,6 +1392,9 @@ ExecutionManifest", but ExecutionManifest has no verifier field and S11 is froze
   reliability guard with key `f"{request_id}:{step_id}:inverse"`, never compensates
   IRREVERSIBLE, and dead-letters failed inverses (`origin = 'rollback'`,
   `retry_mode = 'NONE'`, C27). Test it in isolation. Nothing calls it automatically.
+- (G8) In a multi-step plan the inverse belongs to each step's own binding
+  (`Step.inverse`, from the registry's `kernel_ops.inverse`); which steps to compensate
+  after a later step fails is this ruling's explicit `rollback_execution`, never automatic.
 
 **D3 — Join modes.** The consolidation table does not define `any` or `threshold`.
 - **Selected:** S12 executes `join_mode = "all"` only. Any other value is denied at
@@ -1447,16 +1456,20 @@ S12 receives the certified PipelineState. In order:
    `request_id`); otherwise deny with `context_incomplete` (C33).
 2. `execution_context.auth_passed is True` and `auth_result_id` is present.
    Otherwise deny with reason `authorization_missing`. Do not re-authorize.
-3. `frozen_binding_identity` is present.
+3. (G1) One frozen binding per plan step is present: exactly one of
+   `frozen_binding_identity` (a one-step plan) and `frozen_bindings` (a plan of 2 or more
+   steps), and every plan step maps onto one binding through the step→binding index that S4
+   recorded. Otherwise deny with reason `binding_missing`.
 4. `plan.join_mode == "all"` (D3).
 5. Recompute the canonical plan digest with the S11 verification function. It must
    equal `manifest.plan_hash` and `plan_hash` from S9. Otherwise deny with reason
-   `plan_integrity`.
+   `plan_integrity`. (G7) Unchanged for multi-step plans: the digest already covers every step.
 5a. No step param references another step's output; otherwise deny with
    `data_flow_unsupported` (C36).
-5b. Read the binding row once by `FrozenBindingIdentity.binding_id`; its version must
-   equal `manifest.binding_version`, otherwise deny with `binding_version_mismatch`
-   (C32).
+5b. (G2) Read each distinct binding row once by `FrozenBindingIdentity.binding_id`; every
+   row's version must equal `manifest.binding_version`, otherwise deny with
+   `binding_version_mismatch` (C32). A registry that cannot be read denies with
+   `binding_unavailable`.
 6. Build verifiers (D1).
 7. **(v10, C39) Pause safety net.** Tenant or workspace `paused_until > NOW()` → deny
    `tenant_paused` / `workspace_paused`; `scheduled_activation_at > NOW()` → deny
@@ -1478,8 +1491,8 @@ Any failure returns `StageStatus.DENY` with the specific reason, and writes noth
    - `execution_manifests`
    - `execution_plans` (Section 7.3)
    - one `execution_steps` row per step (status `pending`, with `resolved_binding_id`,
-     `effective_risk` and `effective_mutation` copied from the FrozenBindingIdentity,
-     never recomputed)
+     `effective_risk` and `effective_mutation` copied from THAT step's frozen binding
+     (G3), found through the step→binding index, never recomputed)
    - `execution_ownership` (this Worker Runtime, no lease yet)
 3. Transition the run PENDING → RUNNING.
 
@@ -1488,7 +1501,9 @@ Any failure returns `StageStatus.DENY` with the specific reason, and writes noth
 Add, via migration:
 
 - `execution_plans(execution_id PK FK execution_runs, tenant_id, plan_hash,
-  canonical_plan JSONB, frozen_binding_identity JSONB, verifiers JSONB, created_at)`.
+  canonical_plan JSONB, frozen_bindings JSONB, step_binding_index JSONB, verifiers JSONB,
+  created_at)`. (G4) `frozen_bindings` is the array of distinct frozen bindings (one element
+  for a one-step plan); `step_binding_index` maps each plan step id to its index in that array.
   This lets recovery reload the exact plan. On every load, recompute the digest and
   compare it to `plan_hash`. On mismatch during recovery, move the run to
   DEAD_LETTER with reason `plan_integrity` and alert. Do not execute any new step.
@@ -2069,7 +2084,7 @@ concurrency and crash test.
 | I7 | No `active` lease for a terminal run. No `expired` lease was reactivated. |
 | I8 | Fence tokens (one sequence, C25) are strictly increasing per worker and per execution; usable leases per worker ≤ `capacity` and equal `current_load` (C26) |
 | I9 | Every persisted plan's digest equals its `plan_hash` |
-| I10 | Every step's `resolved_binding_id`, `effective_risk` and `effective_mutation` equal the persisted FrozenBindingIdentity |
+| I10 | Every step's `resolved_binding_id`, `effective_risk` and `effective_mutation` equal that step's binding in the persisted `frozen_bindings` (G3) |
 | I11 | Every dead letter has non-empty evidence |
 | I12 | Budget per step, by step state (C17, D4, C21). A "live" reservation is one in {reserved, locked, committed}. **Non-terminal step:** at most one live reservation. **COMPLETED:** exactly one live reservation, and it is COMMITTED. **FAILED, CANCELLED, SKIPPED:** zero live reservations. **DEAD_LETTER** with its dead letter `pending` or `retrying`: exactly one live reservation if the step ever reached LOCKED, and it is LOCKED; zero otherwise. **DEAD_LETTER** with its dead letter `resolved` or `abandoned`: zero live reservations, or exactly one COMMITTED, matching the recorded resolution outcome (C21). |
 | I13 | Every CANCELLED or SKIPPED step has a `terminal_reason` from the closed enum (C22); no `terminal_reason` changed after it was written; no run with a CANCELLED step consolidated to COMPLETED |

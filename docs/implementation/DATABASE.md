@@ -1071,6 +1071,21 @@ columns `execution_runs.parent_execution_id` (RD-11), `execution_runs.batch_mode
 
 ---
 
+### Implementation deviations of the S0–S11 repair (owner rulings R-AT, R-AU, R-AW, R-AZ, 2026-09-30)
+
+The repair implements this schema as numbered SQL files (`adapters/postgres/migrations/001`…`010`, applied once each
+by `main.py --migrate`; Alembic is not used). The following differences from the definitions above are **accepted**
+and are the authoritative implementation. Everything not listed follows the text above. All tables listed as
+tenant-scoped have forced row-level security on `app.current_tenant`.
+
+| Migration | Difference from this document |
+|---|---|
+| 006 | `tenants.budget_period TEXT NOT NULL DEFAULT 'monthly' CHECK IN ('daily','weekly','monthly')`. `budget_reservations` as defined under "budget_reservations" (`created_at TIMESTAMPTZ`), with **no foreign keys** to `execution_runs` / `execution_steps` until the S12 reserve step adds them; one live (not released) reservation per step (010 adds the unique index). |
+| 007 | `webhook_credentials` also carries `endpoint_id` (stable across rotation: the public part of the webhook URL and the pre-tenant lookup key), `workspace_id`, `user_id`, `membership_id`, `connection_id`, `resource_scope` (the fixed identity events run as, like `api_keys`); unique active/retiring indexes are on `(endpoint_id, source_system)`; **no row-level security** (pre-tenant lookup, ciphertext only; application role limited to SELECT/INSERT/UPDATE, credential reads to move to `system_worker_role` before production). `event_log` stores the raw payload in `payload BYTEA` (≤ 64 KiB) and uses `TIMESTAMPTZ` (`received_at`); it keeps `UNIQUE (tenant_id, idempotency_key)`. |
+| 008 | `kernel_ops` gains `observation_method TEXT`, `observation_expects_absent BOOLEAN NOT NULL DEFAULT FALSE`, `observation_identifier_field TEXT`: the observation-method registry S12 entry needs to build verifiers (gate D1). A W/D/IRREVERSIBLE operation without `observation_method` cannot be run. |
+| 009 | `execution_runs`, `execution_steps`, `execution_manifests`, `execution_plans`, `execution_ownership`, `state_transitions`, `operation_quotas`: times are `TIMESTAMPTZ` (not `REAL`); `execution_plans.frozen_bindings JSONB` (array of distinct bindings) and `step_binding_index JSONB` replace `frozen_binding_identity` (gate G4); `execution_manifests` also stores `auth_result_id`; no foreign keys to `workers`, `worker_leases` or `worker_versions` (not created yet) and none from `budget_reservations`; `operation_quotas` has no `worker_id` column (its own CHECK forced it NULL); `state_transitions` is the minimal transition log of gate C24 (`entity_type`, `entity_id`, `from_state`, `to_state`, `reason`, `runtime_instance_id`, `fence_token`); `execution_manifests` and `execution_plans` reject UPDATE by trigger. |
+| 010 | `execution_runs.connection_id TEXT` (the live authorization check needs the run's connection) and `terminal_reason TEXT` (why a run was cancelled); `execution_steps.terminal_reason` (closed set, CHECK, immutable once written) and `dispatched_attempt`; `CHECK (status NOT IN ('cancelled','skipped') OR terminal_reason IS NOT NULL)`. |
+
 ## 4. Migrations
 
 ### Migration Naming Convention
