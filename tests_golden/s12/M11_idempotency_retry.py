@@ -39,8 +39,12 @@ Interface this file fixes:
       ``async run_attempts(step, holder, deps, *, first_attempt=1) -> AttemptOutcome`` — per attempt n: live check
         (revoked → "revoked", no call); ledger lookup (hit → the cached kind, event ``idempotency_hit`` with
         ``step_id``, ``attempt_id``, ``kind``; no call); a dispatch marker already at n without a ledger row →
-        "uncertain" ``dispatched_without_record`` (no call); ``mark_dispatched(n)``; the guarded call with
-        ``CallMeta(key, attempt_id, uuid4, tenant)``; ``ok`` → store success → "success"; ``timeout`` → "uncertain"
+        "uncertain" ``dispatched_without_record`` (no call); ``mark_dispatched(n)`` then event ``step_attempt``
+        (``step_id``, ``attempt_id``, ``attempt``; C24: a retry is a ledger event, not a transition); the guarded call
+        with ``CallMeta(key, attempt_id, uuid4, tenant)``; when the adapter was invoked (not ``circuit_open`` /
+        ``retry_storm``) events ``ProviderCalled`` (``step_id``, ``attempt_id``, ``provider_call_id``,
+        ``kernel_op_id``) and ``ProviderReturned`` (``step_id``, ``attempt_id``, ``provider_call_id``, ``status``);
+        ``ok`` → store success → "success"; ``timeout`` → "uncertain"
         ``timeout``; a non-retryable error the adapter produced → store failure → "failure"; ``circuit_open`` /
         ``retry_storm`` → "failure" without a row; a retryable error with attempts left → ``await sleep(backoff)``
         and n + 1; retries exhausted → "failure" without a row. ``FencedOut`` and ``BudgetStateError`` propagate.
@@ -311,6 +315,47 @@ def test_the_dispatch_marker_is_committed_before_every_call(db_schema, run):
     mock.program("mock.op", "fail_500_then_success", n=2)
     run(_attempts(db_schema, _step(tenant, res, mutation="R"), holder, _deps(db_schema, mock)))
     assert seen == [1, 2, 3]
+
+
+def test_each_attempt_is_a_ledger_event_and_every_provider_call_follows_its_marker(db_schema, run):
+    """C24 and I16: step_attempt (written after the marker commits) precedes ProviderCalled of the same attempt."""
+    tenant = "t-events"
+    holder, res = run(_seed(db_schema, tenant, steps=1, mutation="R"))
+    mock, events = _mock("fail_500_then_success", n=1), Events()
+    run(_attempts(db_schema, _step(tenant, res, mutation="R"), holder, _deps(db_schema, mock, events=events)))
+    assert [(k, p["attempt_id"]) for k, p in events.events] == [
+        ("step_attempt", "att-0-1"), ("ProviderCalled", "att-0-1"), ("ProviderReturned", "att-0-1"),
+        ("step_attempt", "att-0-2"), ("ProviderCalled", "att-0-2"), ("ProviderReturned", "att-0-2")]
+    called = [p["provider_call_id"] for k, p in events.events if k == "ProviderCalled"]
+    assert called == [m.provider_call_id for m in mock.calls]
+    assert [p["status"] for k, p in events.events if k == "ProviderReturned"] == ["error", "ok"]
+
+
+def test_a_call_the_guard_refused_is_not_a_provider_call(db_schema, run):
+    from adapters.runtime.circuit_breaker import InProcessCircuitBreaker
+    tenant = "t-refused"
+    holder, res = run(_seed(db_schema, tenant, steps=1))
+    mock, events = _mock(), Events()
+    deps = _deps(db_schema, mock, events=events)
+    breaker = InProcessCircuitBreaker(1, 60.0)
+    breaker.record_failure("mockp")
+    deps = dataclasses.replace(deps, guard=_with_breaker(deps.guard, mock, breaker))
+    out = run(_attempts(db_schema, _step(tenant, res), holder, deps))
+    assert (out.kind, out.result.error_class, mock.calls) == ("failure", "circuit_open", [])
+    assert [k for k, _ in events.events] == ["step_attempt"]
+
+
+def _with_breaker(guard, adapter, breaker):
+    from adapters.runtime.reliability import (InProcessBilling, InProcessBulkhead, InProcessHealthMonitor,
+                                              InProcessRetryStormGuard)
+    from engine.stages.s12_execute.reliability import ReliabilityGuard, TimeoutManager
+
+    class Pass:
+        async def check(self, call):
+            return None
+    return ReliabilityGuard(adapter, bulkhead=InProcessBulkhead(4), breaker=breaker, budget=Pass(),
+                            retry_storm=InProcessRetryStormGuard(100, 60.0), timeouts=TimeoutManager(),
+                            health=InProcessHealthMonitor(), billing=InProcessBilling(), probe_timeout_s=0.5)
 
 
 def test_live_authorization_runs_before_every_call(db_schema, run):

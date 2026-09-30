@@ -61,8 +61,8 @@ Interface this file fixes:
     "success", *, n=0, ms=0, probe="ledger", observe="ledger")``; ``call`` behaviours: success,
     fail_500_then_success, rate_limit_429, auth_401, validation_422, timeout_executed, timeout_not_executed,
     timeout_failed (executes, fails, then times out), verify_mismatch, slow, connect_refused, raise_exception;
-    ``probe``: ledger (from the side-effect ledger), inconclusive, none (the BaseAdapter default); ``observe``:
-    ledger, none. ``side_effects(idempotency_key)`` counts real executions; a key already executed successfully is
+    ``probe``: ledger (from the side-effect ledger), inconclusive, default (the BaseAdapter default); ``observe``:
+    ledger, default. ``side_effects(idempotency_key)`` counts real executions; a key already executed successfully is
     not executed again. Each call/probe/observe asks ``credentials.credential(tenant_id, connection_id)``.
 """
 from __future__ import annotations
@@ -545,7 +545,7 @@ def test_health_and_billing_are_recorded_after_every_adapter_call_and_never_with
     ("timeout_failed", "ledger", "EXECUTED_FAILURE"),
     ("timeout_not_executed", "ledger", "NOT_EXECUTED"),
     ("timeout_executed", "inconclusive", "INCONCLUSIVE"),
-    ("timeout_executed", "none", "INCONCLUSIVE"),              # BaseAdapter default
+    ("timeout_executed", "default", "INCONCLUSIVE"),           # BaseAdapter default
 ])
 def test_probe_outcomes(behaviour, probe, outcome):
     mock, _ = _mock(call=behaviour, probe=probe)
@@ -589,7 +589,7 @@ def test_the_default_observation_is_unknown_and_observations_never_raise():
         async def observe(self, kernel_op_id, observation_spec, binding, context):
             await asyncio.sleep(60)
 
-    mock, _ = _mock(call="success", observe="none")
+    mock, _ = _mock(call="success", observe="default")
     default = _run(_guard(mock)[0].observe("mock.op", {"idempotency_key": "req-1:s1"}, _binding(), _context()))
     assert default.matches_expected is None and default.error == "observe_not_supported"
     hung = _run(_guard(Hanging(), probe_timeout_s=0.05)[0].observe("mock.op", {}, _binding(), _context()))
