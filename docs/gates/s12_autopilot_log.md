@@ -25,3 +25,4 @@ MILESTONE M8 REACHED at 6e49b7a except owner rows S12-PIN (B2 unpinned) and S12-
 MILESTONE M8a REACHED at 24e2296 except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002, STOP-003; CONF-019, CONF-020) — ★ STOP for owner review
 32fa999 | M9 | full | 18/20 | BudgetReserver; golden M9 17/17, x5, sabotage caught; agent 12 (mutation-checked); tests 836, tests_postgres 330; S12-S011 held after OWN-08 fix (module tables immutable); DEF-004 opened (M12)
 MILESTONE M9 REACHED at 32fa999 except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
+7abdaa9 | B3 | review | - | second (expert) pass on the B3 drafts: +25 cases (M10 64, M11 46, M12 33, M13 13, M14 27), +7 sabotage (39/39 caught), reference 672/672 M01–M14 + tests 836, B3 x10 stable; reference defects found: dropped plan-integrity and FencedOut handling, lease takeover between steps, foreign-operation ledger hit, trial held on cancel; CONF-033..035 opened; drafts stay unpinned

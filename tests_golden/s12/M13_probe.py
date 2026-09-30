@@ -22,14 +22,16 @@ Interface this file fixes (on top of M12):
     ``ReconciliationStatus.NONE``). Then per probe attempt:
     ``pending_probe → reconciling (attempt_started)``; the ledger first (a hit closes ``ledger_hit`` /
     ``ledger_hit_failure``, outcome LEDGER_HIT, no probe); else ``guard.probe``:
-      EXECUTED_SUCCESS → verify → episode ``confirmed_success (executed_success)``, step ``completed
-        (probe_executed_success)``, budget committed;
+      EXECUTED_SUCCESS → verify → PASS: episode ``confirmed_success (executed_success)``, step ``completed
+        (probe_executed_success)``, budget committed; FAIL: episode ``confirmed_failure (verified_fail)``, outcome
+        VERIFIED_FAIL, step ``failed (verification_failed)``, budget released, dependents SKIPPED;
       EXECUTED_FAILURE → episode ``confirmed_failure (executed_failure)``, step ``failed (probe_executed_failure)``,
         budget released, dependents SKIPPED;
       NOT_EXECUTED → episode ``confirmed_failure (not_executed)``, step ``pending (probe_not_executed)``, budget
         released; retried within the ceiling as attempt n + 1 with a new reservation, else ``cancelled
         (not_executed_no_retry)``;
-      INCONCLUSIVE → episode ``reconciling → pending_probe (inconclusive)``, backoff, again; after
+      INCONCLUSIVE → episode ``reconciling → pending_probe (inconclusive)``, ``await sleep(d)`` with ``d >=
+        probe_backoff_s`` (never shrinking, none after the last attempt), again; after
         ``probe_max_attempts`` the episode is closed with outcome EXHAUSTED (status stays ``pending_probe``; event
         ``episode_closed``), the step ``dead_letter (probe_exhausted)``, the budget stays LOCKED, every remaining
         PENDING step ``cancelled (run_dead_lettered)``.
@@ -233,6 +235,82 @@ def test_a_read_is_re_executed_without_a_probe(db_schema, run):
     assert (episode["status"], episode["outcome"]) == ("confirmed_failure", "NOT_EXECUTED")
     assert _evidence(episode).get("reason") == "read_reexecution_safe"
     run(assert_system_invariants(db_schema))
+
+
+def test_a_probe_success_that_fails_verification_fails_the_step(db_schema, run):
+    state = _state("golden-probe-vfail", "vfail")
+    tenant, execution = _admit(db_schema, run, state)
+    first, *rest = _order(state)
+
+    async def fail_first(step, binding, result):
+        return "FAIL" if step.id == first else "PASS"
+
+    mock = _mock(**{_ops(state)[first]: {"call": "timeout_executed"}})
+    deps = dataclasses.replace(_probe_deps(db_schema, mock), verify=fail_first)
+    result = _loop(db_schema, run, deps, tenant, execution)
+    assert result.steps[first] == ("failed", None)
+    assert all(result.steps[sid] == ("skipped", "dependency_failed") for sid in rest)
+    step = _steps(db_schema, run, execution)[first]
+    assert step["budget"] == "released" and len(mock.probes) == 1
+    assert _moves(db_schema, run, "step", step["step_id"])[-1] == ("pending_probe", "failed", "verification_failed")
+    (episode,) = _episodes(db_schema, run, step["step_id"])
+    assert (episode["status"], episode["outcome"]) == ("confirmed_failure", "VERIFIED_FAIL")
+    assert _episode_moves(db_schema, run, episode["episode_id"])[-1] == ("reconciling", "confirmed_failure",
+                                                                        "verified_fail")
+    run(assert_system_invariants(db_schema))
+
+
+def test_a_failure_found_in_the_ledger_fails_the_step_without_a_probe(db_schema, run):
+    from adapters.postgres.fencing import FenceHolder
+    from adapters.postgres.idempotency import PostgresIdempotencyLedger
+    from adapters.runtime.mock_adapter import MockAdapter
+    from contracts.step_execution import AdapterResult
+    from tests_golden.s12.M12_loop import Credentials
+    state = _state("golden-probe-ledger-fail", "ledgerfail")
+    tenant, execution = _admit(db_schema, run, state)
+    first, *rest = _order(state)
+    ledger = PostgresIdempotencyLedger(db_schema.database())
+
+    class RecordsAFailureThenHangs(MockAdapter):
+        async def call(self, kernel_op_id, params, binding, context, *, call_meta=None):
+            if call_meta.idempotency_key.endswith(f":{first}"):
+                owner = (await db_schema.fetch("SELECT runtime_instance_id, fencing_token FROM execution_ownership"
+                                               " WHERE execution_id = $1", execution))[0]
+                holder = FenceHolder(tenant_id=tenant, execution_id=execution,
+                                     runtime_instance_id=owner["runtime_instance_id"],
+                                     fence_token=owner["fencing_token"])
+                await ledger.store(holder, idempotency_key=call_meta.idempotency_key, kernel_op_id=kernel_op_id,
+                                   result=AdapterResult("error", False, "client_error"), ttl_s=3600)
+                self.program(kernel_op_id, "timeout_executed")
+            return await super().call(kernel_op_id, params, binding, context, call_meta=call_meta)
+
+    mock = RecordsAFailureThenHangs(Credentials())
+    result = _loop(db_schema, run, _probe_deps(db_schema, mock), tenant, execution)
+    assert result.steps[first] == ("failed", None) and mock.probes == []
+    assert all(result.steps[sid] == ("skipped", "dependency_failed") for sid in rest)
+    step = _steps(db_schema, run, execution)[first]
+    assert step["budget"] == "released"
+    assert _moves(db_schema, run, "step", step["step_id"])[-1] == ("pending_probe", "failed", "ledger_hit_failure")
+    (episode,) = _episodes(db_schema, run, step["step_id"])
+    assert (episode["status"], episode["outcome"]) == ("confirmed_failure", "LEDGER_HIT")
+    assert _episode_moves(db_schema, run, episode["episode_id"])[-1] == ("reconciling", "confirmed_failure",
+                                                                        "ledger_hit_failure")
+    run(assert_system_invariants(db_schema))
+
+
+def test_inconclusive_probes_back_off_between_attempts(db_schema, run):
+    state = _state("golden-probe-backoff", "backoff")
+    tenant, execution = _admit(db_schema, run, state)
+    first = _order(state)[0]
+    mock = _mock(**{_ops(state)[first]: {"call": "timeout_executed", "probe": "inconclusive"}})
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+    deps = dataclasses.replace(_probe_deps(db_schema, mock, probe_backoff_s=0.002), sleep=sleep)
+    _loop(db_schema, run, deps, tenant, execution)
+    assert len(mock.probes) == 3 and len(slept) == 2                    # between attempts, none after the last
+    assert all(d >= 0.002 for d in slept) and slept == sorted(slept)
 
 
 # --- RECONCILING, I6, the S13 package (C12, C13) ---------------------------------------------------------------------

@@ -27,7 +27,9 @@ Interface this file fixes:
       ``CredentialProvider`` (Protocol): ``async credential(tenant_id, connection_id) -> str``.
       ``BudgetStateError`` (Exception).
       ``GuardedCall`` (frozen): ``kernel_op_id``, ``params``, ``binding`` (FrozenBindingIdentity), ``context``
-        (ExecutionContext), ``call_meta``, ``step_id``, ``reservation_id``, ``attempt``, ``timeout_s``.
+        (ExecutionContext), ``call_meta``, ``step_id``, ``reservation_id``, ``attempt``, ``timeout_s``. Construction
+        fails closed with ``ValueError`` when ``call_meta.tenant_id`` differs from ``context.tenant_id`` (C34),
+        ``attempt < 1`` or ``timeout_s <= 0``.
   * ``engine.stages.s12_execute.reliability``:
       ``BudgetTracker(lookup)`` — ``async check(call)``: ``await lookup.reservation(tenant_id, reservation_id)`` must
         return a row whose ``step_id`` is the call's and whose ``status`` is ``locked``; else ``BudgetStateError``.
@@ -46,7 +48,10 @@ Interface this file fixes:
           Breaker: ``ok`` success; ``client_error`` ignored; everything else failure. Refusals without an adapter
           call: breaker closed to the call → ``error circuit_open``; retry storm → ``error retry_storm``; a trial the
           breaker admitted but that never reached the adapter is released with ``record_ignored``.
-          ``BudgetStateError`` propagates.
+          ``BudgetStateError`` propagates. An exception escaping the adapter is logged at ERROR with the
+          ``attempt_id`` and ``kernel_op_id`` as record attributes (the alert), never its message. A call cancelled
+          while the adapter runs (``CancelledError``) propagates after releasing its half-open trial
+          (``record_ignored``) and its slot.
         ``async probe(call) -> ProbeOutcome`` and ``async observe(kernel_op_id, spec, binding, context) ->
           Observation`` — own Bulkhead slot, ``probe_timeout_s``, no breaker, no budget; never raise (INCONCLUSIVE /
           ``matches_expected=None``).
@@ -251,6 +256,15 @@ def test_an_escaping_exception_is_adapter_defect_and_its_message_never_leaks(cap
     result = _run(guard.call(_call()))
     assert (result.status, result.error_class, result.retryable) == ("error", "adapter_defect", False)
     assert SECRET not in repr(result) + repr(health.events) + repr(billing.events) + caplog.text
+
+
+def test_an_adapter_defect_raises_one_alert_carrying_the_attempt(caplog):
+    mock, _ = _mock(call="raise_exception")
+    caplog.set_level(logging.DEBUG)
+    _run(_guard(mock)[0].call(_call(attempt=1)))
+    alerts = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(alerts) == 1
+    assert (getattr(alerts[0], "attempt_id", None), getattr(alerts[0], "kernel_op_id", None)) == ("att-0-1", "mock.op")
 
 
 def test_an_unclassified_error_or_foreign_result_is_adapter_defect():
@@ -464,6 +478,75 @@ def test_client_errors_never_open_a_closed_breaker():
     assert breaker.state("mockp") == "CLOSED"
 
 
+def _scripted(results):
+    """An adapter returning the given results in order, one per call."""
+    from contracts.adapter_interface import BaseAdapter
+
+    class Scripted(BaseAdapter):
+        async def call(self, kernel_op_id, params, binding, context, *, call_meta=None):
+            return left.pop(0)
+
+    left = list(results)
+    return Scripted()
+
+
+def test_the_breaker_opens_on_consecutive_failures_only():
+    from adapters.runtime.circuit_breaker import InProcessCircuitBreaker
+    from contracts.step_execution import AdapterResult
+    fail, ok, client = (AdapterResult("error", True, "server_error"), AdapterResult("ok"),
+                        AdapterResult("error", False, "client_error"))
+    breaker = InProcessCircuitBreaker(3, 30.0, Clock())
+    guard, _, _ = _guard(_scripted([fail, fail, ok, fail, client, fail, fail]), breaker=breaker)
+    seen = []
+    for i in range(7):
+        _run(guard.call(_call(key=f"k-{i}")))
+        seen.append(breaker.state("mockp"))
+    # a success resets the count; a client error neither counts nor resets
+    assert seen == ["CLOSED"] * 6 + ["OPEN"]
+
+
+def test_a_trial_refused_by_the_retry_storm_is_released():
+    from adapters.runtime.reliability import InProcessRetryStormGuard
+    breaker, clock = _open_breaker()
+    clock.t += 11
+    mock, _ = _mock(call="success")
+    guard, _, _ = _guard(mock, breaker=breaker, retry_storm=InProcessRetryStormGuard(0, 60.0, Clock()))
+    result = _run(guard.call(_call(attempt=2)))
+    assert (result.status, result.error_class) == ("error", "retry_storm") and mock.side_effects("req-1:s1") == 0
+    assert breaker.state("mockp") == "HALF_OPEN" and breaker.allow("mockp") is True
+
+
+def test_a_cancelled_call_releases_its_trial_and_its_slot():
+    from adapters.runtime.reliability import InProcessBulkhead
+    breaker, clock = _open_breaker()
+    clock.t += 11
+    bulkhead = InProcessBulkhead(1)
+    mock, _ = _mock(call="slow", ms=2000)
+    guard, _, _ = _guard(mock, breaker=breaker, bulkhead=bulkhead)
+
+    async def scenario():
+        task = asyncio.create_task(guard.call(_call(timeout_s=5.0)))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    _run(scenario())
+    assert bulkhead.in_use("mockp") == 0
+    assert breaker.state("mockp") == "HALF_OPEN" and breaker.allow("mockp") is True     # never stuck half-open
+
+
+@pytest.mark.parametrize("change", [{"tenant": "other-tenant"}, {"attempt": 0}, {"timeout_s": 0}, {"timeout_s": -1}])
+def test_a_guarded_call_that_is_not_self_consistent_cannot_be_built(change):
+    from contracts.adapter_interface import CallMeta, GuardedCall
+    attempt = change.get("attempt", 1)
+    meta = CallMeta(idempotency_key="req-1:s1", attempt_id="att-0-1", provider_call_id="pc-1",
+                    tenant_id=change.get("tenant", T))
+    with pytest.raises(ValueError):
+        GuardedCall(kernel_op_id="mock.op", params={}, binding=_binding(), context=_context(), call_meta=meta,
+                    step_id="e-1:s1", reservation_id="r-1", attempt=attempt, timeout_s=change.get("timeout_s", 2.0))
+
+
 # --- retry storm, bulkhead, health, billing --------------------------------------------------------------------------
 
 def test_retry_storm_blocks_retries_not_first_attempts():
@@ -474,6 +557,18 @@ def test_retry_storm_blocks_retries_not_first_attempts():
     assert [(r.status, r.error_class) for r in retries] == [("ok", None), ("ok", None), ("error", "retry_storm")]
     assert mock.side_effects("k-2") == 0
     assert _run(guard.call(_call(attempt=1, key="k-first"))).status == "ok"
+
+
+def test_the_retry_storm_window_slides_and_is_per_operation():
+    from adapters.runtime.reliability import InProcessRetryStormGuard
+    clock = Clock()
+    storm = InProcessRetryStormGuard(2, 60.0, clock)
+    assert [storm.allow_retry("mockp", "mock.op") for _ in range(3)] == [True, True, False]
+    assert storm.allow_retry("mockp", "other.op") is True and storm.allow_retry("otherp", "mock.op") is True
+    clock.t += 30
+    assert storm.allow_retry("mockp", "mock.op") is False
+    clock.t += 31                                              # the first two retries left the 60 s window
+    assert [storm.allow_retry("mockp", "mock.op") for _ in range(3)] == [True, True, False]
 
 
 @pytest.mark.parametrize("behaviour,timeout_s", [("success", 2.0), ("fail_500_then_success", 2.0),

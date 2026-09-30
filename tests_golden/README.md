@@ -30,13 +30,15 @@ was added while drafting M05: as a superuser, the frozen confirmation store cons
 
 | File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |
 |---|---|---|---|---|---|
-| `s12/M10_guard.py` | M10 | 55 | 54 fail, 1 standing rule passes | 55 / 55 | 8 / 8 |
-| `s12/M11_idempotency_retry.py` | M11 | 43 | 42 fail, 1 passes | 43 / 43 | 8 / 8 |
-| `s12/M12_loop.py` | M12 | 24 | 20 fail, 4 pass (prototype topological order, standing rule) | 24 / 24 | 6 / 6 |
-| `s12/M13_probe.py` | M13 | 10 | 10 fail | 10 / 10 | 4 / 4 |
-| `s12/M14_revocation_cancel.py` | M14 ★ | 26 | 26 fail | 26 / 26 | 6 / 6 |
+| `s12/M10_guard.py` | M10 | 64 | 63 fail, 1 standing rule passes | 64 / 64 | 10 / 10 |
+| `s12/M11_idempotency_retry.py` | M11 | 46 | 45 fail, 1 passes | 46 / 46 | 10 / 10 |
+| `s12/M12_loop.py` | M12 | 33 | 29 fail, 4 pass (prototype topological order, standing rule) | 33 / 33 | 8 / 8 |
+| `s12/M13_probe.py` | M13 | 13 | 13 fail | 13 / 13 | 4 / 4 |
+| `s12/M14_revocation_cancel.py` | M14 ★ | 27 | 27 fail | 27 / 27 | 7 / 7 |
 
-All 677 cases of M01–M14 pass together on the reference. Interfaces fixed by B3 (details in each docstring):
+After the second (expert) review pass (25 cases, 7 sabotage patches, CONF-033..035 added), all 672 cases of M01–M14
+pass together on the reference (489 + 183; the first draft's "677" was a miscount of 647), and the B3 files passed 10
+consecutive runs. Interfaces fixed by B3 (details in each docstring):
 - M10 `contracts.adapter_interface` (`CallMeta`, `ProbeOutcome`, `Observation`, `ErrorClass`, `BaseAdapter`,
   `CredentialProvider`, `BudgetStateError`, `GuardedCall`), `engine.stages.s12_execute.reliability`
   (`ReliabilityGuard`, `BudgetTracker`, `TimeoutManager`), `adapters.runtime.reliability`,
@@ -49,6 +51,8 @@ All 677 cases of M01–M14 pass together on the reference. Interfaces fixed by B
   `topological_order`), `engine.stages.s12_execute.dispatch.InProcessDispatcher`.
 - M13 `adapters.postgres.reconciliation.PostgresEpisodes`, `engine.stages.s13_reconciliation.probe`.
 - M14 `PostgresLiveAuthorization(scopes, *, database, credentials)`, `adapters.postgres.cancellation`.
+- Second pass: `GuardedCall` validates itself (ValueError); `PostgresLeaseManager.acquire` gains the keyword `holder`
+  (FencedOut when ownership moved; M07 unchanged without it); `LoopResult.reason` `fenced_out` / `plan_integrity`.
 
 ## Batch B2 status (drafted in the implementation session on the owner's instruction "draft B2 here")
 
