@@ -156,9 +156,10 @@ async def _live(deps, loaded, binding):
                                  user_id=loaded.user_id, connection_id=loaded.connection_id, binding=binding)
 
 
-async def _release(deps, loaded, reservation_id: str | None) -> None:
+async def _release(deps, loaded, reservation_id: str | None, reason: str) -> None:
     if reservation_id is not None:
-        await deps.budget.release(loaded.tenant_id, reservation_id)
+        await deps.budget.release(deps.repo.holder(loaded.tenant_id, loaded.execution_id), reservation_id,
+                                  reason=reason)
 
 
 async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
@@ -180,17 +181,17 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
         return _Halt(R.CANCELLED.value, revoked.reason, revoked.reason)
 
     # reserve budget (C3): exhausted -> this step and every remaining one is CANCELLED (C15)
-    reservation = await deps.budget.reserve(tenant_id=tenant, user_id=loaded.user_id, execution_id=execution,
-                                            step_id=step_id, cost=step.cost)
+    holder = deps.repo.holder(tenant, execution)
+    reservation = await deps.budget.reserve(holder, user_id=loaded.user_id, step_id=step_id, cost=step.cost)
     if reservation.reservation_id is None:
         await _set(deps, loaded, statuses, step, S.CANCELLED.value, reason="budget_exhausted",
                    terminal_reason="budget_exhausted")
         return _Halt(R.CANCELLED.value, "budget_exhausted", "budget_exhausted")
     rid = reservation.reservation_id
 
-    # PENDING -> RUNNING, budget RESERVED -> LOCKED
+    # PENDING -> RUNNING, budget RESERVED -> LOCKED (two transactions here; M12 joins them, Appendix A.2 / DEF-004)
     await _set(deps, loaded, statuses, step, S.RUNNING.value, reason="step_started")
-    await deps.budget.lock(tenant, rid)
+    await deps.budget.lock(holder, rid, reason="step_started")
 
     verifier = loaded.verifiers.get(step.id)
     attempt = 1
@@ -200,7 +201,7 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
         if revoked is not None:
             await _set(deps, loaded, statuses, step, S.CANCELLED.value, reason=revoked.reason,
                        terminal_reason=revoked.reason)
-            await _release(deps, loaded, rid)
+            await _release(deps, loaded, rid, "no_dispatch_marker" if attempt == 1 else "step_failed")
             return _Halt(R.CANCELLED.value, revoked.reason, revoked.reason)
         await deps.repo.mark_dispatched(tenant, execution, step_id, attempt)
         began = time.monotonic()
@@ -227,7 +228,7 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
         # definitive failure (a mutation is never retried without the idempotency ledger)
         await _set(deps, loaded, statuses, step, S.FAILED.value, reason="adapter_error", error=result.error_class,
                    attempt=attempt, duration_ms=elapsed_ms)
-        await _release(deps, loaded, rid)
+        await _release(deps, loaded, rid, "step_failed")
         await _skip_dependents(deps, loaded, statuses, step.id)
         return None
 
@@ -237,7 +238,7 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
         if verdict == FAIL:
             await _set(deps, loaded, statuses, step, S.FAILED.value, reason="verification_failed",
                        error="verification_failed", attempt=attempt, duration_ms=elapsed_ms)
-            await _release(deps, loaded, rid)
+            await _release(deps, loaded, rid, "step_failed")
             await _skip_dependents(deps, loaded, statuses, step.id)
             return None
         if verdict != PASS:
@@ -251,7 +252,7 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
         undo = json.dumps({"inverse_kernel_op_id": step.inverse, "step_id": step_id}, sort_keys=True)
     await _set(deps, loaded, statuses, step, S.COMPLETED.value, reason="step_completed", attempt=attempt,
                undo_token=undo, duration_ms=elapsed_ms, data=result.data or None)
-    await deps.budget.commit(tenant, rid)
+    await deps.budget.commit(holder, rid, reason="step_completed")
     return None
 
 

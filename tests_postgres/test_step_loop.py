@@ -268,14 +268,28 @@ def test_budget_exhaustion_cancels_this_step_and_the_rest_and_keeps_earlier_comm
     assert run["terminal_reason"] == "budget_exhausted"
 
 
+async def _reservable(db, eid, n):
+    """n extra PENDING steps of the admitted run (copies of its first step), and the loop's fence holder."""
+    async with db.tenant_transaction(A) as c:
+        for i in range(n):
+            await c.execute(
+                "INSERT INTO execution_steps (step_id, plan_step_id, execution_id, tenant_id, kernel_op_id,"
+                " resolved_binding_id, effective_risk, effective_mutation, request_fingerprint, status, attempt)"
+                " SELECT $2 || ':extra-' || $3, 'extra-' || $3, execution_id, tenant_id, kernel_op_id,"
+                " resolved_binding_id, effective_risk, effective_mutation, request_fingerprint, status, 0"
+                " FROM execution_steps WHERE execution_id = $1 ORDER BY plan_step_id LIMIT 1", eid, eid, str(i))
+    return [f"{eid}:extra-{i}" for i in range(n)], PostgresExecutionRepository(db, "runtime-1").holder(A, eid)
+
+
 def test_the_reserver_reserves_atomically_against_the_pool_and_is_idempotent_per_step(pg):
     async def body(db):
         eid, _ = await _admitted(db)
+        steps, holder = await _reservable(db, eid, 4)
         reserver = PostgresBudgetReserver(db)
-        results = await asyncio.gather(*[reserver.reserve(
-            tenant_id=A, user_id="tenant-a.user", execution_id=eid, step_id=f"s{i}", cost=2) for i in range(4)])
-        again = await reserver.reserve(tenant_id=A, user_id="tenant-a.user", execution_id=eid,
-                                       step_id=next(f"s{i}" for i, r in enumerate(results) if r.reservation_id), cost=2)
+        results = await asyncio.gather(*[reserver.reserve(holder, user_id="tenant-a.user", step_id=s, cost=2)
+                                         for s in steps])
+        again = await reserver.reserve(holder, user_id="tenant-a.user",
+                                       step_id=next(s for s, r in zip(steps, results) if r.reservation_id), cost=2)
         return results, again
     results, again = go(pg, body, "UPDATE tenants SET budget_pool = 5 WHERE tenant_id = 'tenant-a'")
     assert sum(1 for r in results if r.reservation_id) == 2                # 5 / 2 = two fit, exactly
@@ -287,19 +301,21 @@ def test_reservation_moves_follow_the_state_machine(pg):
 
     async def body(db):
         eid, _ = await _admitted(db)
+        (step,), holder = await _reservable(db, eid, 1)
         r = PostgresBudgetReserver(db)
-        rid = (await r.reserve(tenant_id=A, user_id="u", execution_id=eid, step_id="s1", cost=1)).reservation_id
+        rid = (await r.reserve(holder, user_id="u", step_id=step, cost=1)).reservation_id
         errors = []
-        for move in (r.commit, r.lock, r.lock):                   # reserved cannot commit; then lock; locked cannot lock
+        moves = ((r.commit, "step_completed"), (r.lock, "step_started"), (r.lock, "step_started"))
+        for move, reason in moves:                                # reserved cannot commit; then lock; locked cannot lock
             try:
-                await move(A, rid)
+                await move(holder, rid, reason=reason)
                 errors.append(None)
             except StateTransitionError as exc:
                 errors.append(str(exc))
-        await r.commit(A, rid)
-        for move in (r.release, r.lock):
+        await r.commit(holder, rid, reason="step_completed")
+        for move, reason in ((r.release, "step_failed"), (r.lock, "step_started")):
             try:
-                await move(A, rid)
+                await move(holder, rid, reason=reason)
                 errors.append(None)
             except StateTransitionError as exc:
                 errors.append(str(exc))
@@ -311,14 +327,15 @@ def test_reservation_moves_follow_the_state_machine(pg):
 def test_released_budget_is_available_again_and_committed_budget_is_not(pg):
     async def body(db):
         eid, _ = await _admitted(db)
+        (s1, s2, s3), holder = await _reservable(db, eid, 3)
         r = PostgresBudgetReserver(db)
-        first = await r.reserve(tenant_id=A, user_id="u", execution_id=eid, step_id="s1", cost=4)
-        blocked = await r.reserve(tenant_id=A, user_id="u", execution_id=eid, step_id="s2", cost=4)
-        await r.release(A, first.reservation_id)
-        second = await r.reserve(tenant_id=A, user_id="u", execution_id=eid, step_id="s2", cost=4)
-        await r.lock(A, second.reservation_id)
-        await r.commit(A, second.reservation_id)
-        third = await r.reserve(tenant_id=A, user_id="u", execution_id=eid, step_id="s3", cost=4)
+        first = await r.reserve(holder, user_id="u", step_id=s1, cost=4)
+        blocked = await r.reserve(holder, user_id="u", step_id=s2, cost=4)
+        await r.release(holder, first.reservation_id, reason="preflight_failed")
+        second = await r.reserve(holder, user_id="u", step_id=s2, cost=4)
+        await r.lock(holder, second.reservation_id, reason="step_started")
+        await r.commit(holder, second.reservation_id, reason="step_completed")
+        third = await r.reserve(holder, user_id="u", step_id=s3, cost=4)
         return first, blocked, second, third
     first, blocked, second, third = go(pg, body, "UPDATE tenants SET budget_pool = 5 WHERE tenant_id = 'tenant-a'")
     assert (first.reservation_id is not None, blocked.reservation_id is None,

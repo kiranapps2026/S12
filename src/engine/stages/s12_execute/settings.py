@@ -9,24 +9,25 @@ Admission limits (gate C39 soft quota, §21 S1) have phase defaults and may be s
 """
 from __future__ import annotations
 
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 
-_ENV = {
+_ENV = types.MappingProxyType({
     "adapter_client_timeout_s": "S12_ADAPTER_CLIENT_TIMEOUT_S",
     "step_timeout_s": "S12_STEP_TIMEOUT_S",
     "probe_timeout_s": "S12_PROBE_TIMEOUT_S",
     "lease_ttl_s": "S12_LEASE_TTL_S",
     "lease_renewal_interval_s": "S12_LEASE_RENEWAL_INTERVAL_S",
-}
+})
 QUOTA_RETRY_MAX = 3            # soft quota: attempts of the §7.2 transaction before DENY quota_exhausted (C39)
 QUOTA_BACKOFF_S = 0.05         # wait before attempt n+1: n x this
 QUOTA_RETRY_AFTER_MS = 1000    # retry_after_ms on the soft-quota DENY
-_OPTIONAL_ENV = {
+_OPTIONAL_ENV = types.MappingProxyType({
     "quota_retry_max": ("S12_QUOTA_RETRY_MAX", int),
     "quota_backoff_s": ("S12_QUOTA_BACKOFF_S", float),
     "quota_retry_after_ms": ("S12_QUOTA_RETRY_AFTER_MS", int),
-}
+})
 
 
 @dataclass(frozen=True)
