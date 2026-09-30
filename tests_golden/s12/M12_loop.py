@@ -567,12 +567,11 @@ class _Proxy:
 def test_a_run_that_is_not_running_is_left_untouched(db_schema, run):
     state = _state("golden-loop-notrunning", "notrunning")
     tenant, execution = _admit(db_schema, run, state)
-    run(db_schema.execute("UPDATE execution_runs SET status = 'cancelled', terminal_reason = 'user_cancelled'"
-                          " WHERE execution_id = $1", execution))
+    run(db_schema.execute("UPDATE execution_runs SET status = 'pending' WHERE execution_id = $1", execution))
     before = run(_snapshot(db_schema, tenant, execution))
     mock, consolidate = _mock(), Recorder()
     result = _loop(db_schema, run, _deps(db_schema, mock, consolidate=consolidate), tenant, execution)
-    assert result.run_status == "cancelled" and mock.calls == [] and consolidate.calls == []
+    assert result.run_status == "pending" and mock.calls == [] and consolidate.calls == []
     assert run(_snapshot(db_schema, tenant, execution)) == before
 
 

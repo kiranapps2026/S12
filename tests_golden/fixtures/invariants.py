@@ -23,6 +23,14 @@ It grows milestone by milestone. Active now:
     ``pending_probe``. C13 (M13): when a run moved to ``reconciling``, every other step was terminal.
   * I14 (M14): no ``ProviderCalled`` event after the run's ``authorization_revoked`` event; a terminal run with that
     event ended ``cancelled`` or ``dead_letter``.
+  * I3 (M16): no step is non-terminal in a terminal run.
+  * I13 (M16): every ``cancelled`` or ``skipped`` step has a ``terminal_reason`` from the closed enum (C22), equal to the
+    reason of the transition that ended it (never rewritten); no run with a ``cancelled`` step is ``completed``.
+  * I11 (M17): every dead letter has non-empty evidence (``context``).
+  * I12 (M17, dead-letter parts): a ``dead_letter`` step whose execution dead letter is ``pending`` or ``retrying`` (or
+    that has none yet) holds exactly one live reservation, ``locked``, if its reservation was ever locked, else none;
+    once the dead letter is ``resolved`` or ``abandoned``: none live after NOT_EXECUTED, else exactly one ``committed``
+    (if it was ever locked).
 """
 from __future__ import annotations
 
@@ -226,6 +234,61 @@ async def uncertainty_problems(schema) -> list[str]:
     return problems
 
 
+_TERMINAL_RUN = "('completed','partial','failed','cancelled','dead_letter')"
+_TERMINAL_STEP = frozenset({"completed", "failed", "cancelled", "skipped", "dead_letter"})
+
+
+async def terminal_problems(schema) -> list[str]:
+    problems = [f"I3 step {r['step_id']}: {r['status']} in a {r['run']} run" for r in await schema.fetch(
+        "SELECT s.step_id, s.status, e.status AS run FROM execution_steps s JOIN execution_runs e"
+        f" ON e.execution_id = s.execution_id WHERE e.status IN {_TERMINAL_RUN}") if r["status"] not in _TERMINAL_STEP]
+    for r in await schema.fetch(
+            "SELECT s.step_id, s.status, s.terminal_reason, (SELECT t.reason FROM state_transitions t"
+            " WHERE t.entity_id = s.step_id AND t.to_state = s.status ORDER BY t.transition_id DESC LIMIT 1) AS logged"
+            " FROM execution_steps s WHERE s.status IN ('cancelled','skipped')"):
+        if r["terminal_reason"] not in TERMINAL_REASONS:
+            problems.append(f"I13 step {r['step_id']}: {r['status']} with terminal_reason {r['terminal_reason']!r}")
+        elif r["logged"] is not None and r["logged"] != r["terminal_reason"]:      # rows a fixture wrote unlogged
+            problems.append(f"I13 step {r['step_id']}: terminal_reason {r['terminal_reason']!r} but ended by"
+                            f" {r['logged']!r}")
+    problems += [f"I13 run {r['execution_id']}: completed with a cancelled step" for r in await schema.fetch(
+        "SELECT DISTINCT e.execution_id FROM execution_runs e JOIN execution_steps s ON s.execution_id = e.execution_id"
+        " WHERE e.status = 'completed' AND s.status = 'cancelled'")]
+    return problems
+
+
+async def dead_letter_problems(schema) -> list[str]:
+    import json
+    problems = []
+    for r in await schema.fetch("SELECT dead_letter_id, context FROM dead_letters"):
+        body = json.loads(r["context"]) if isinstance(r["context"], str) else r["context"]
+        if not isinstance(body, dict) or not body:
+            problems.append(f"I11 dead letter {r['dead_letter_id']}: empty evidence")
+    for r in await schema.fetch(
+            "SELECT s.step_id,"
+            " (SELECT d.status FROM dead_letters d WHERE d.step_id = s.step_id AND d.origin = 'execution'"
+            "  ORDER BY d.created_at DESC LIMIT 1) AS letter,"
+            " (SELECT d.resolution_outcome FROM dead_letters d WHERE d.step_id = s.step_id AND d.origin = 'execution'"
+            "  ORDER BY d.created_at DESC LIMIT 1) AS outcome,"
+            " EXISTS (SELECT 1 FROM state_transitions t JOIN budget_reservations b ON b.reservation_id = t.entity_id"
+            "  WHERE b.step_id = s.step_id AND t.to_state = 'locked') AS was_locked,"
+            " count(b.reservation_id) FILTER (WHERE b.status IN ('reserved','locked','committed')) AS live,"
+            " count(b.reservation_id) FILTER (WHERE b.status = 'locked') AS locked,"
+            " count(b.reservation_id) FILTER (WHERE b.status = 'committed') AS committed"
+            " FROM execution_steps s LEFT JOIN budget_reservations b ON b.step_id = s.step_id"
+            " WHERE s.status = 'dead_letter' GROUP BY s.step_id"):
+        if r["letter"] in (None, "pending", "retrying"):
+            want = (1, 1, 0) if r["was_locked"] else (0, 0, 0)
+        elif r["outcome"] == "NOT_EXECUTED" or not r["was_locked"]:
+            want = (0, 0, 0)
+        else:
+            want = (1, 0, 1)
+        if (r["live"], r["locked"], r["committed"]) != want:
+            problems.append(f"I12 dead-letter step {r['step_id']}: letter {r['letter']} / {r['outcome']} with"
+                            f" {r['live']} live, {r['locked']} locked, {r['committed']} committed")
+    return problems
+
+
 async def assert_system_invariants(schema) -> None:
     columns = {r["column_name"] for r in await schema.fetch(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'state_transitions'",
@@ -235,5 +298,6 @@ async def assert_system_invariants(schema) -> None:
                               " FROM state_transitions ORDER BY transition_id")
     problems = ([f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
                 + await lease_problems(schema) + await budget_problems(schema) + await dispatch_problems(schema)
-                + await uncertainty_problems(schema) + await revocation_problems(schema))
+                + await uncertainty_problems(schema) + await revocation_problems(schema)
+                + await terminal_problems(schema) + await dead_letter_problems(schema))
     assert not problems, "invariants violated:\n" + "\n".join(problems)

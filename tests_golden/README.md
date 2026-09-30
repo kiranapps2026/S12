@@ -26,6 +26,28 @@ as the non-superuser role `golden_app`, so row-level security is really enforced
 was added while drafting M05: as a superuser, the frozen confirmation store consumed another tenant's confirmation
 (DEF-003), so a result must never depend on which role the URL names.
 
+## Batch B4 status (drafted on the owner's instruction "B4 review for M15 onwards"; review: `docs/gates/S12_B4_REVIEW.md`)
+
+| File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |
+|---|---|---|---|---|---|
+| `s12/M15_verification.py` | M15 | 47 | 46 fail, 1 passes (invariants) | 47 / 47 | 3 / 3 |
+| `s12/M16_consolidation.py` | M16 | 28 | 27 fail, 1 passes (invariants) | 28 / 28 | 3 / 3 |
+| `s12/M17_dead_letter.py` | M17 | 32 | 31 fail, 1 passes (invariants) | 32 / 32 | 3 / 3 |
+| `s12/M18_response.py` | M18 | 14 | 14 fail | 14 / 14 | 3 / 3 |
+
+All 794 cases of M01–M18 pass together on the reference, and the B4 files passed 10 consecutive runs. The invariant
+checker gains I3, I13 (M16), I11 and the dead-letter parts of I12 (M17). Interfaces fixed by B4 (details in each
+docstring):
+- M15 `contracts.verification`, `engine.stages.s13_reconciliation.verification` (`required_verification_layers`,
+  `parse_semantic`, `StepVerifier`), `LoopDeps.verification`, VERIFICATION episodes in the loop.
+- M16 `engine.stages.s13_reconciliation.consolidation.consolidation_outcome`,
+  `adapters.postgres.consolidation.PostgresConsolidator` (`consolidate`, `cancel`), `LoopDeps.cancel_run`,
+  `contracts.execution_states.ConsolidationOutcome`.
+- M17 `adapters.postgres.dead_letters.PostgresDeadLetters`, `engine.stages.s14_dead_letter.retry.retry_dead_letter`,
+  `engine.stages.s14_dead_letter.rollback.rollback_execution`, `reliability.InverseBudget`, `LoopDeps.dead_letters`.
+- M18 `contracts.envelope`, `engine.stages.s15_final_state.response.build_envelope`,
+  `adapters.postgres.run_summary.PostgresRunSummaries`.
+
 ## Batch B3 status (drafted on the owner's instruction "draft B3"; review: `docs/gates/S12_B3_REVIEW.md`)
 
 | File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |
