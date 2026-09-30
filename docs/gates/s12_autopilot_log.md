@@ -10,3 +10,6 @@ MILESTONE M1 REACHED at 4fa314c except owner-only rows S12-PIN, S12-REC (unpinne
 MILESTONE M2 REACHED at 838ebcf except S12-REC (STOP-001 awaits owner "applied")
 b9e6123 | M3 | full | 9/10 | validator with reasons for run/step/reservation; golden M3 130/130, sabotage 3/3; tests 836, tests_postgres 330
 MILESTONE M3 REACHED at b9e6123 except S12-REC (STOP-001)
+8f38edb | M4 | full | 10/11 | all nine machines + no bare state literals; golden M4 79/79, sabotage 2/2; tests 836, tests_postgres 330
+MILESTONE M4 REACHED at 8f38edb except S12-REC (STOP-001)
+8f38edb | M5 | G-M5 | - | STOP-002: no B2 golden file for M5
