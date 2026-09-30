@@ -30,12 +30,13 @@ was added while drafting M05: as a superuser, the frozen confirmation store cons
 
 | File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |
 |---|---|---|---|---|---|
-| `s12/M15_verification.py` | M15 | 47 | 46 fail, 1 passes (invariants) | 47 / 47 | 3 / 3 |
-| `s12/M16_consolidation.py` | M16 | 28 | 27 fail, 1 passes (invariants) | 28 / 28 | 3 / 3 |
-| `s12/M17_dead_letter.py` | M17 | 32 | 31 fail, 1 passes (invariants) | 32 / 32 | 3 / 3 |
-| `s12/M18_response.py` | M18 | 14 | 14 fail | 14 / 14 | 3 / 3 |
+| `s12/M15_verification.py` | M15 | 51 | 50 fail, 1 passes (invariants) | 51 / 51 | 3 / 3 |
+| `s12/M16_consolidation.py` | M16 | 31 | 30 fail, 1 passes (invariants) | 31 / 31 | 3 / 3 |
+| `s12/M17_dead_letter.py` | M17 | 37 | 36 fail, 1 passes (invariants) | 37 / 37 | 3 / 3 |
+| `s12/M18_response.py` | M18 | 16 | 16 fail | 16 / 16 | 3 / 3 |
 
-All 794 cases of M01–M18 pass together on the reference, and the B4 files passed 10 consecutive runs. The invariant
+After a second review pass (14 guard-drill cases), all 808 cases of M01–M18 pass together on the reference, and the B4
+files passed 10 consecutive runs. The invariant
 checker gains I3, I13 (M16), I11 and the dead-letter parts of I12 (M17). Interfaces fixed by B4 (details in each
 docstring):
 - M15 `contracts.verification`, `engine.stages.s13_reconciliation.verification` (`required_verification_layers`,

@@ -13,7 +13,7 @@ Each file was run three ways:
 - **Under every sabotage patch**: each must turn an assertion red, never a setup error.
 
 Results on the reference:
-- All 19 golden files M01–M18 pass together, 794 cases: 489 for M01–M09, 184 for M10–M14, 121 for B4. With `tests_agent` the total is 888.
+- All 19 golden files M01–M18 pass together, 808 cases: 489 for M01–M09, 184 for M10–M14, 135 for B4. With `tests_agent` the total is 902.
 - The frozen `tests/` suite passes (836).
 - The four B4 files passed 10 consecutive runs.
 
@@ -21,10 +21,10 @@ M01–M09 stay green on `s12-work` with the new invariants (583 with `tests_agen
 
 | File | Cases | Red on `s12-work` | Reference | Sabotage caught |
 |---|---|---|---|---|
-| `s12/M15_verification.py` | 47 | 46 fail, 1 passes (invariants of an unfinished schema) | 47 / 47 | 3 / 3 |
-| `s12/M16_consolidation.py` | 28 | 27 fail, 1 passes (same) | 28 / 28 | 3 / 3 |
-| `s12/M17_dead_letter.py` | 32 | 31 fail, 1 passes (same) | 32 / 32 | 3 / 3 |
-| `s12/M18_response.py` | 14 | 14 fail | 14 / 14 | 3 / 3 |
+| `s12/M15_verification.py` | 51 | 50 fail, 1 passes (invariants of an unfinished schema) | 51 / 51 | 3 / 3 |
+| `s12/M16_consolidation.py` | 31 | 30 fail, 1 passes (same) | 31 / 31 | 3 / 3 |
+| `s12/M17_dead_letter.py` | 37 | 36 fail, 1 passes (same) | 37 / 37 | 3 / 3 |
+| `s12/M18_response.py` | 16 | 16 fail | 16 / 16 | 3 / 3 |
 
 Two cases were also mutation-checked by hand on the reference:
 - M18 redaction: making the guard log the exception text fails the M18 redaction case and M10's leak case.
@@ -42,6 +42,32 @@ Fixture changes with B4:
 | M16 | Every row of the §10 table (11 cases). A CANCELLED step never gives COMPLETED. Consolidation needs every step terminal. The loop with the real consolidator: outcome and events; VERIFICATION_STARTED / COMPLETED with the layer results, in the run's transaction; FAILED / PARTIAL / DEAD_LETTER with LOCKED only under D4. An admission reject after a completed step gives PARTIAL. A tampered plan gives DEAD_LETTER (CONF-034). No RESERVED reservation survives. Consolidation is refused on live steps and never runs twice. The quota refund applies to a cancel with no completed step, at tenant and workspace level, in the same transaction; a user cancel refunds once; there is no refund after a completed step or for a FAILED run. |
 | M17 | Creation rules:<br>• retries exhausted: transient / NONE with evidence and the last attempt id<br>• 401 / 422: no record<br>• verification FAIL: data / NONE, and the run follows its step states<br>• EXECUTION exhausted: PROBE with its episode, LOCKED budget, alert event and ERROR log<br>• VERIFICATION exhausted: VERIFY<br>• human layer: NONE<br>• refused: empty, None or list evidence, an empty error, unknown enum values<br>The A.6 lifecycle and its illegal moves. The budget per resolution (4 cases) never changes the run or the step. A failed step's record moves no budget. Retries: PROBE calls only the probe; NOT_EXECUTED releases the budget; VERIFY calls only the verifier (adapter and probe: 0 calls); NONE never retries and writes nothing; inconclusive ×3 gives abandoned UNDETERMINED, committed. Rollback:<br>• confirms, then compensates in reverse order through the guard with the `:inverse` key; never twice<br>• unconfirmed: no inverse<br>• a failed inverse becomes a `rollback` dead letter and changes nothing else<br>• IRREVERSIBLE is never compensated; a live run is refused<br>• `InverseBudget` admits only inverses without a reservation<br>• nothing calls rollback automatically |
 | M18 | The mapping for ok, partial, cancelled (3 reasons), no_worker wording, dead_letter, and non-terminal. Summaries follow the plan. The envelope holds no execution, request, tenant, user, workspace, runtime, step or reservation id, and another tenant cannot read a summary. Redaction: the credential, a stack trace and a provider error body are absent from the envelope, every log record and every persisted row of 9 tables, for an adapter defect, a 401 with a body, and retries exhausted with a body (with a dead letter). |
+
+## Second review pass (guard drills)
+
+Each case was re-read with one question: which wrong implementation would still pass? The pass added 14 cases (plus
+one parametrization). Where a case guards a rule the reference already follows, a hand mutation of the reference proved
+it can fail.
+
+| File | Added case (the defect it catches) | Hand mutation of the reference that turns it red (— : none needed, the case fails on any implementation missing the rule) |
+|---|---|---|
+| M15 | the model is shown exactly (expected state, observed state) | — (assertion tightened) |
+| M15 | an observation error that also reports a mismatch is UNKNOWN, never FAIL | FAIL on `matches_expected is False` whatever the error |
+| M15 | layer evidence never holds provider observation data or the model's raw text | — |
+| M15 | VERIFICATION episode attempts are spaced by `verification_backoff_s`, none after the last | — |
+| M15 | an open human layer is never re-attempted while the other layers resolve; then DEAD_LETTER `human_verification_pending` | — |
+| M15 | a takeover during verification: no layer event, no commit, lease released `fenced_out` | — |
+| M16 | the RESERVED-leftover release reason on the cancel path (`run_cancelled`) | — (parametrized) |
+| M16 | consolidate and cancel are fenced writes of their own execution (stale token → FencedOut; another execution → ValueError; nothing written) | — |
+| M16 | the refund leaves another workspace's and another period's rows alone; the cancel path emits the VERIFICATION events too | refund without its workspace / period filter |
+| M16 | two concurrent endings, both started while the run row is locked, end the run and refund once | consolidation without its run-row lock |
+| M17 | no alert for `transient` or `data` records | — |
+| M17 | a record is a fenced write; a rollback record needs evidence too | — |
+| M17 | a resolution needs a known outcome and the record's own tenant (another tenant reads nothing, resolves nothing) | — |
+| M17 | two concurrent resolutions, both started while the record is locked, settle the record and its budget once | resolution without its row lock (the first draft of this case ran the two one after the other and could not see it) |
+| M17 | EXECUTED_FAILURE (probe) and FAIL (verify) resolve EXECUTED and commit | — |
+| M18 | a FAILED run lists its failed and cancelled steps | — |
+| M18 | what the verifier observed at the provider (a key, a trace) reaches no envelope, log or row | — |
 
 ## Defects caught while drafting
 

@@ -110,6 +110,7 @@ def test_retries_exhausted_leave_the_step_failed_with_a_transient_record(db_sche
     assert letter["step_id"] == _steps(db_schema, run, execution)[first]["step_id"]
     assert run(db_schema.fetchval("SELECT status FROM execution_runs WHERE execution_id = $1", execution)) == "failed"
     assert _moves(db_schema, run, "dead_letter", letter["dead_letter_id"]) == [(None, "pending", "created")]
+    assert _events(db_schema, run, execution, "dead_letter_alert") == []        # alerts: permanent, unresolved only
     run(assert_system_invariants(db_schema))
 
 
@@ -133,6 +134,7 @@ def test_a_verification_failure_is_a_data_record_and_the_run_follows_its_step_st
     (letter,) = _letters(db_schema, run, execution)
     assert (letter["error_type"], letter["retry_mode"], letter["error"]) == ("data", "NONE", "verification_failed")
     assert {"layer": "provider_state", "verdict": "FAIL"} in _evidence(letter)["layers"]
+    assert _events(db_schema, run, execution, "dead_letter_alert") == []
     assert run(db_schema.fetchval("SELECT status FROM execution_runs WHERE execution_id = $1", execution)) == "failed"
     run(assert_system_invariants(db_schema))
 
@@ -215,6 +217,24 @@ def test_a_record_without_evidence_or_with_an_unknown_value_is_refused(db_schema
     assert _letters(db_schema, run, execution) == []
 
 
+def test_a_record_is_a_fenced_write_and_a_rollback_record_needs_evidence_too(db_schema, run):
+    from adapters.postgres.dead_letters import PostgresDeadLetters
+    from contracts.step_execution import FencedOut
+    state = _state("golden-dl-fenced", "dlfenced")
+    tenant, execution = _admit(db_schema, run, state)
+    step_id = _steps(db_schema, run, execution)[_order(state)[0]]["step_id"]
+    holder = _holder(db_schema, run, tenant, execution)
+    letters = PostgresDeadLetters(db_schema.database())
+    with pytest.raises(FencedOut):
+        run(letters.create(dataclasses.replace(holder, fence_token=holder.fence_token - 1), step_id=step_id,
+                           kernel_op_id="op", error_type="transient", retry_mode="NONE", error="x",
+                           evidence={"attempts": 1}))
+    with pytest.raises(ValueError):
+        run(letters.create_rollback(tenant, execution_id=execution, step_id=step_id, kernel_op_id="op.inverse",
+                                    error_type="permanent", error="inverse_failed", evidence={}, mutation="W"))
+    assert _letters(db_schema, run, execution) == []
+
+
 # --- lifecycle and budget (A.6, C21, D4) -----------------------------------------------------------------------------
 
 def _probe_letter(schema, run, name):
@@ -277,6 +297,49 @@ def test_a_resolution_settles_the_locked_budget_and_never_changes_the_run_or_ste
     run(assert_system_invariants(db_schema))
 
 
+def test_a_resolution_needs_a_known_outcome_and_the_records_own_tenant(db_schema, run):
+    from adapters.postgres.dead_letters import PostgresDeadLetters
+    tenant, execution, letter = _probe_letter(db_schema, run, "guard")
+    letters, did = PostgresDeadLetters(db_schema.database()), letter["dead_letter_id"]
+    with pytest.raises(ValueError):
+        run(letters.resolve(tenant, did, "PROBABLY"))
+    assert run(letters.get("golden-some-other-tenant", did)) is None
+    with pytest.raises(LookupError):
+        run(letters.resolve("golden-some-other-tenant", did, "EXECUTED"))
+    row = _letters(db_schema, run, execution)[0]
+    assert (row["status"], row["resolution_outcome"]) == ("pending", None)
+    assert run(db_schema.fetchval("SELECT status FROM budget_reservations WHERE reservation_id = $1",
+                                  letter["reservation_id"])) == "locked"
+    run(assert_system_invariants(db_schema))
+
+
+def test_two_concurrent_resolutions_settle_the_record_and_its_budget_once(db_schema, run):
+    import asyncio
+    from adapters.postgres.dead_letters import PostgresDeadLetters
+    from engine.stages.s12_execute.transitions import IllegalStateTransition
+    tenant, execution, letter = _probe_letter(db_schema, run, "race")
+    letters, did = PostgresDeadLetters(db_schema.database()), letter["dead_letter_id"]
+
+    async def race():
+        """Both resolutions start while the record is locked, so both read it before either commits."""
+        async with db_schema.database().tenant_transaction(tenant) as c:
+            await c.execute("SELECT 1 FROM dead_letters WHERE dead_letter_id = $1 FOR UPDATE", did)
+            both = asyncio.gather(letters.resolve(tenant, did, "EXECUTED"),
+                                  letters.resolve(tenant, did, "NOT_EXECUTED"), return_exceptions=True)
+            await asyncio.sleep(0.3)
+        return await both
+
+    results = run(race())
+    assert sorted(type(r).__name__ for r in results) == sorted(["NoneType", IllegalStateTransition.__name__])
+    won = "EXECUTED" if results[0] is None else "NOT_EXECUTED"
+    assert _letters(db_schema, run, execution)[0]["resolution_outcome"] == won
+    budget_moves = [m for m in _moves(db_schema, run, "reservation", letter["reservation_id"])
+                    if m[2].startswith("dead_letter_")]
+    assert len(budget_moves) == 1
+    assert len([m for m in _moves(db_schema, run, "dead_letter", did) if m[1] == "resolved"]) == 1
+    run(assert_system_invariants(db_schema))
+
+
 def test_resolving_a_record_of_a_failed_step_moves_no_budget(db_schema, run):
     from adapters.postgres.dead_letters import PostgresDeadLetters
     state = _state("golden-dl-failedstep", "dlfailedstep")
@@ -317,6 +380,26 @@ def test_a_probe_retry_calls_only_the_probe(db_schema, run):
     assert _retry(db_schema, run, tenant, letter["dead_letter_id"], probe, reverify) == "resolved"
     assert len(probe.records) == 1 and reverify.records == []
     assert probe.records[0].episode_id == letter["episode_id"]
+    assert run(db_schema.fetchval("SELECT status FROM budget_reservations WHERE reservation_id = $1",
+                                  letter["reservation_id"])) == "committed"
+    run(assert_system_invariants(db_schema))
+
+
+@pytest.mark.parametrize("mode,answer", [("probe", "EXECUTED_FAILURE"), ("verify", "FAIL")])
+def test_an_answer_that_the_operation_ran_resolves_executed_and_commits(db_schema, run, mode, answer):
+    if mode == "probe":
+        tenant, execution, letter = _probe_letter(db_schema, run, f"ran{answer[:6].lower()}")
+        probe, reverify = Answers(answer), Answers("PASS")
+    else:
+        state = _state("golden-dl-ranverify", "dlranverify")
+        tenant, execution = _admit(db_schema, run, state)
+        first = _order(state)[0]
+        _loop(db_schema, run, _dl_deps(db_schema, _mocked(**{_ops(state)[first]: {
+            "call": "success", "observe": "inconclusive"}})), tenant, execution)
+        (letter,) = _letters(db_schema, run, execution)
+        probe, reverify = Answers("NOT_EXECUTED"), Answers(answer)
+    assert _retry(db_schema, run, tenant, letter["dead_letter_id"], probe, reverify) == "resolved"
+    assert _letters(db_schema, run, execution)[0]["resolution_outcome"] == "EXECUTED"
     assert run(db_schema.fetchval("SELECT status FROM budget_reservations WHERE reservation_id = $1",
                                   letter["reservation_id"])) == "committed"
     run(assert_system_invariants(db_schema))

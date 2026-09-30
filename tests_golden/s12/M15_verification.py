@@ -213,7 +213,8 @@ def test_injected_text_in_a_provider_response_never_reaches_the_model_nor_passes
     result = _executed(mock)
     injected = AdapterResult("ok", data={**result.data, "note": SECRET_INJECTION})
     outcome = _verify(mock, injected, binding=_binding(risk=0.9), semantic=model)
-    assert outcome.verdict == "PASS" and model.seen                       # the model judged the observation only
+    assert outcome.verdict == "PASS"
+    assert model.seen == [(_verifier().expected_state, {"exists": True})]   # expected vs observed, nothing else
     assert SECRET_INJECTION not in repr(model.seen)
     mismatch = _mock(call="verify_mismatch")
     bad = _executed(mismatch)
@@ -236,6 +237,42 @@ def test_an_observation_that_fails_is_unknown_never_fail_and_is_bounded(observe)
     outcome = _verify(mock, _executed(mock), sleep=sleeps)
     assert _verdicts(outcome)["provider_state"] == "UNKNOWN" and outcome.verdict == "UNKNOWN"
     assert len(mock.observations) == 3 and sleeps.seconds == [1.0, 1.0]           # 3 attempts, 1 s apart
+
+
+def test_an_observation_error_is_unknown_even_when_it_reports_a_mismatch():
+    """WORKER_LIFECYCLE §9: only a SUCCESSFUL observation that contradicts the expected state is FAIL."""
+    import time
+    from adapters.runtime.mock_adapter import MockAdapter
+    from contracts.adapter_interface import Observation
+
+    class BrokenRead(MockAdapter):
+        async def observe(self, kernel_op_id, observation_spec, binding, context):
+            self.observations.append(dict(observation_spec))
+            return Observation(len(self.observations), time.time(), 504, None, False, "read_timeout")
+
+    mock = BrokenRead(Credentials())
+    mock.program("mock.op", "success")
+    outcome = _verify(mock, _executed(mock))
+    assert _verdicts(outcome)["provider_state"] == "UNKNOWN" and len(mock.observations) == 3
+
+
+def test_layer_evidence_never_holds_provider_or_model_text():
+    import time
+    from adapters.runtime.mock_adapter import MockAdapter
+    from contracts.adapter_interface import Observation
+    leak = "sk-golden-observed-3e1"
+
+    class ChattyRead(MockAdapter):
+        async def observe(self, kernel_op_id, observation_spec, binding, context):
+            self.observations.append(dict(observation_spec))
+            return Observation(1, time.time(), 200, {"exists": True, "owner_token": leak}, True, None)
+
+    mock = ChattyRead(Credentials())
+    mock.program("mock.op", "success")
+    outcome = _verify(mock, _executed(mock), binding=_binding(risk=0.9), semantic=Assessor(f"PASS {leak}"))
+    assert _verdicts(outcome) == {"schema": "PASS", "deterministic": "PASS", "provider_state": "PASS",
+                                  "semantic": "UNKNOWN"}
+    assert leak not in repr([r.evidence for r in outcome.layers])
 
 
 def test_a_later_observation_can_still_pass():
@@ -382,8 +419,10 @@ def test_a_persistent_unknown_dead_letters_the_step_with_its_budget_locked(db_sc
     tenant, execution = _admit(db_schema, run, state)
     first, *rest = _order(state)
     mock = _mocked(**{_ops(state)[first]: {"call": "success", "observe": "inconclusive"}})
-    deps = _verifying(db_schema, mock)
+    slept = Sleeps()
+    deps = dataclasses.replace(_verifying(db_schema, mock, verification_backoff_s=0.25), sleep=slept)
     result = _loop(db_schema, run, deps, tenant, execution)
+    assert slept.seconds.count(0.25) == 2                          # between the 3 episode attempts, none after the last
     assert result.steps[first] == ("dead_letter", None)
     assert all(result.steps[sid] == ("cancelled", "run_dead_lettered") for sid in rest)
     step = _steps(db_schema, run, execution)[first]
@@ -469,6 +508,45 @@ def test_the_human_layer_dead_letters_the_step_at_once(db_schema, run):
     (episode,) = _episodes(db_schema, run, step["step_id"])
     assert (episode["kind"], episode["outcome"], episode["attempts"]) == ("VERIFICATION", "EXHAUSTED", 0)
     run(assert_system_invariants(db_schema))
+
+
+def test_an_open_human_layer_is_never_re_attempted_while_other_layers_resolve(db_schema, run):
+    state = _state("golden-verify-mixed", "vmixed")
+    _, execution, first, script, result = _scripted_loop(
+        db_schema, run, state, _outcome(schema="PASS", provider_state="UNKNOWN", human="UNKNOWN"),
+        _outcome(provider_state="PASS"))
+    assert result.steps[first] == ("dead_letter", None)
+    assert [layers for _, layers in script.layers] == [None, ("provider_state",)]        # human never re-run
+    step = _steps(db_schema, run, execution)[first]
+    assert _moves(db_schema, run, "step", step["step_id"])[-1] == ("pending_probe", "dead_letter",
+                                                                  "human_verification_pending")
+    (episode,) = _episodes(db_schema, run, step["step_id"])
+    assert (episode["outcome"], episode["attempts"]) == ("EXHAUSTED", 1)
+    run(assert_system_invariants(db_schema))
+
+
+def test_a_takeover_during_verification_stops_the_loop_before_any_further_write(db_schema, run):
+    from adapters.runtime.mock_adapter import MockAdapter
+    from tests_golden.s12.M12_loop import _snapshot, _take_over
+    state = _state("golden-verify-fenced", "vfenced")
+    tenant, execution = _admit(db_schema, run, state)
+    first = _order(state)[0]
+    after = {}
+
+    class TakenOverWhileObserving(MockAdapter):
+        async def observe(self, kernel_op_id, observation_spec, binding, context):
+            seen = await super().observe(kernel_op_id, observation_spec, binding, context)
+            if not after:
+                await _take_over(db_schema, execution)
+                after["snapshot"] = await _snapshot(db_schema, tenant, execution)
+            return seen
+
+    mock = TakenOverWhileObserving(Credentials())
+    result = _loop(db_schema, run, _verifying(db_schema, mock), tenant, execution)
+    assert result.reason == "fenced_out" and result.steps[first] == ("running", None)
+    assert run(_snapshot(db_schema, tenant, execution)) == after["snapshot"]      # no layer event, no commit
+    lease_id = run(db_schema.fetchval("SELECT lease_id FROM worker_leases WHERE execution_id = $1", execution))
+    assert _moves(db_schema, run, "lease", lease_id)[-1] == ("active", "released", "fenced_out")
 
 
 def test_a_probe_confirmed_step_with_an_unknown_verification_resolves_in_a_verification_episode(db_schema, run):

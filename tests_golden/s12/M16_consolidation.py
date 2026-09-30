@@ -191,12 +191,14 @@ def test_a_tampered_plan_consolidates_to_dead_letter(db_schema, run):
     run(assert_system_invariants(db_schema))
 
 
-def test_no_reservation_stays_reserved_after_consolidation(db_schema, run):
+@pytest.mark.parametrize("ending,reason", [("consolidate", "budget_released_before_start"),
+                                           ("cancel", "run_cancelled")])
+def test_no_reservation_stays_reserved_after_consolidation(db_schema, run, ending, reason):
     from adapters.postgres.budget_reserver import PostgresBudgetReserver
     from adapters.postgres.consolidation import PostgresConsolidator
     from engine.stages.s12_execute.admission_control import AdmissionSnapshot
     from tests_golden.s12.M12_loop import Recorder
-    state = _state("golden-cons-reserved", "creserved")
+    state = _state(f"golden-cons-reserved-{ending}", f"creserved{ending}")
     tenant, execution = _admit(db_schema, run, state)
     first = _order(state)[0]
 
@@ -211,11 +213,14 @@ def test_no_reservation_stays_reserved_after_consolidation(db_schema, run):
         holder, user_id=state.execution_context.user_id, step_id=_steps(db_schema, run, execution)[_order(state)[1]]
         ["step_id"], cost=1))
     assert stray.reservation_id is not None
-    run(PostgresConsolidator(db_schema.database()).consolidate(holder, tenant, execution))
+    consolidator = PostgresConsolidator(db_schema.database())
+    if ending == "cancel":
+        run(consolidator.cancel(holder, tenant, execution, reason="user_cancelled"))
+    else:
+        run(consolidator.consolidate(holder, tenant, execution))
     assert run(db_schema.fetchval("SELECT count(*) FROM budget_reservations WHERE execution_id = $1"
                                   " AND status = 'reserved'", execution)) == 0
-    assert _moves(db_schema, run, "reservation", stray.reservation_id)[-1] == (
-        "reserved", "released", "budget_released_before_start")
+    assert _moves(db_schema, run, "reservation", stray.reservation_id)[-1] == ("reserved", "released", reason)
     run(assert_system_invariants(db_schema))
 
 
@@ -236,6 +241,31 @@ def test_consolidation_is_refused_while_a_step_is_not_terminal_and_never_runs_tw
         run(consolidator.consolidate(_holder(db_schema, run, done_tenant, done_execution), done_tenant,
                                      done_execution))
     assert len(_events(db_schema, run, done_execution)) == count
+
+
+def test_consolidation_is_a_fenced_write_of_its_own_execution(db_schema, run):
+    from adapters.postgres.consolidation import PostgresConsolidator
+    from contracts.step_execution import FencedOut
+    from tests_golden.s12.M12_loop import Recorder
+    state = _state("golden-cons-fenced", "cfenced")
+    tenant, execution = _admit(db_schema, run, state)
+    deps = dataclasses.replace(_consolidating(db_schema, _mocked()), consolidate=Recorder())
+    _loop(db_schema, run, deps, tenant, execution)                            # every step settled, run RUNNING
+    holder = _holder(db_schema, run, tenant, execution)
+    consolidator = PostgresConsolidator(db_schema.database())
+    events = len(_events(db_schema, run, execution))
+    stale = dataclasses.replace(holder, fence_token=holder.fence_token - 1)
+    for attempt in (consolidator.consolidate(stale, tenant, execution),
+                    consolidator.cancel(stale, tenant, execution, reason="user_cancelled")):
+        with pytest.raises(FencedOut):
+            run(attempt)
+    with pytest.raises(ValueError):                                           # a holder of another execution
+        run(consolidator.consolidate(holder, tenant, "golden-exec-someone-else"))
+    assert _run_row(db_schema, run, execution)["status"] == "running"
+    assert len(_events(db_schema, run, execution)) == events
+    run(consolidator.consolidate(holder, tenant, execution))                  # the owner still can
+    assert _run_row(db_schema, run, execution)["status"] == "completed"
+    run(assert_system_invariants(db_schema))
 
 
 # --- the quota refund (C39) ------------------------------------------------------------------------------------------
@@ -264,6 +294,17 @@ def test_a_run_cancelled_before_any_step_completed_refunds_its_quota_in_the_same
     state = _state("golden-cons-refund", "crefund")
     pool = state.plan.plan.steps[0].cost - 1
     quotas = _seed_quotas(db_schema, run, state, workspace_level=True, budget_pool=pool)
+    ctx = state.execution_context
+    run(db_schema.execute("INSERT INTO workspaces (workspace_id, tenant_id, name) VALUES ($1, $2, 'other')",
+                          f"{ctx.workspace_id}-other", ctx.tenant_id, tenant=ctx.tenant_id))
+    untouched = {f"q-{ctx.tenant_id}-other-ws": (f"{ctx.workspace_id}-other", "now() - interval '1 hour'",
+                                                 "now() + interval '1 hour'"),
+                 f"q-{ctx.tenant_id}-last-period": (None, "now() - interval '3 hours'", "now() - interval '1 hour'")}
+    for quota_id, (workspace, start, end) in untouched.items():
+        run(db_schema.execute(
+            "INSERT INTO operation_quotas (quota_id, tenant_id, workspace_id, resource_type, period_start, period_end,"
+            f" limit_value, used_count, is_hard) VALUES ($1, $2, $3, 'executions', {start}, {end}, 5, 2, true)",
+            quota_id, ctx.tenant_id, workspace, tenant=ctx.tenant_id))
     tenant, execution = _admit(db_schema, run, state, budget_pool=pool)
     assert _used(db_schema, run, quotas) == [1, 1]
     result = _loop(db_schema, run, _consolidating(db_schema, _mocked()), tenant, execution)
@@ -276,6 +317,9 @@ def test_a_run_cancelled_before_any_step_completed_refunds_its_quota_in_the_same
     assert cancelled == run(db_schema.fetchval("SELECT xmin::text FROM execution_events WHERE execution_id = $1"
                                                " AND event_type = 'quota_refunded'", execution))
     assert _run_row(db_schema, run, execution)["terminal_reason"] == "budget_exhausted"
+    assert _used(db_schema, run, list(untouched)) == [2, 2]                  # another workspace, another period
+    kinds = [e["event_type"] for e in _events(db_schema, run, execution)]
+    assert kinds.count("VERIFICATION_STARTED") == kinds.count("VERIFICATION_COMPLETED") == 1     # cancel path too
     run(assert_system_invariants(db_schema))
 
 
@@ -293,6 +337,40 @@ def test_a_user_cancel_before_start_refunds_and_a_second_cancel_refunds_nothing(
         run(PostgresConsolidator(db_schema.database()).cancel(_holder(db_schema, run, tenant, execution), tenant,
                                                               execution, reason="user_cancelled"))
     assert _used(db_schema, run, quotas) == [0] and len(_events(db_schema, run, execution, "quota_refunded")) == 1
+
+
+def test_two_concurrent_endings_end_the_run_and_refund_once(db_schema, run):
+    import asyncio
+    from adapters.postgres.consolidation import PostgresConsolidator
+    from engine.stages.s12_execute.admission_control import AdmissionSnapshot
+    from tests_golden.s12.M12_loop import Recorder
+    state = _state("golden-cons-race", "crace")
+    quotas = _seed_quotas(db_schema, run, state)
+    tenant, execution = _admit(db_schema, run, state)
+
+    async def reject_all(tenant_id, execution_id, plan_step_id):
+        return AdmissionSnapshot(**{**PASSING, "provider_allowed": False})
+
+    deps = dataclasses.replace(_consolidating(db_schema, _mocked()), consolidate=Recorder(), admission=reject_all)
+    _loop(db_schema, run, deps, tenant, execution)                            # every step cancelled, run RUNNING
+    holder, consolidator = _holder(db_schema, run, tenant, execution), PostgresConsolidator(db_schema.database())
+
+    async def race():
+        """Both endings start while the run row is locked, so both read RUNNING before either commits."""
+        async with db_schema.database().tenant_transaction(tenant) as c:
+            await c.execute("SELECT 1 FROM execution_runs WHERE execution_id = $1 FOR UPDATE", execution)
+            both = asyncio.gather(consolidator.cancel(holder, tenant, execution, reason="user_cancelled"),
+                                  consolidator.cancel(holder, tenant, execution, reason="user_cancelled"),
+                                  return_exceptions=True)
+            await asyncio.sleep(0.3)
+        return await both
+
+    results = run(race())
+    assert sorted(type(r).__name__ for r in results) == ["ConsolidationResult", "ValueError"]
+    assert _used(db_schema, run, quotas) == [0] and len(_events(db_schema, run, execution, "quota_refunded")) == 1
+    assert [m for m in _moves(db_schema, run, "run", execution) if m[1] == "cancelled"] == [
+        ("running", "cancelled", "user_cancelled")]
+    run(assert_system_invariants(db_schema))
 
 
 def test_no_refund_once_a_step_completed_or_for_a_run_that_was_not_cancelled(db_schema, run):

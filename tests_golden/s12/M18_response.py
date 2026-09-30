@@ -84,6 +84,14 @@ def test_a_cancelled_run_is_an_error_that_lists_what_already_completed(reason, k
         assert env.message == env.error.message == message
 
 
+def test_a_failed_run_lists_its_failed_and_cancelled_steps():
+    from engine.stages.s15_final_state.response import build_envelope
+    env = build_envelope(_summary("failed", [("failed", None), ("skipped", "dependency_failed"),
+                                             ("cancelled", "preflight_failed")]))
+    assert (env.status, env.error.type, env.data) == ("error", "execution_failed", None)
+    assert env.error.details == {"failed_steps": _listed((1, "failed"), (3, "cancelled"))}
+
+
 def test_no_eligible_worker_uses_the_matrix_wording():
     from engine.stages.s15_final_state.response import build_envelope
     env = build_envelope(_summary("failed", [("cancelled", "no_worker"), ("cancelled", "no_worker")]))
@@ -193,3 +201,26 @@ def test_secrets_traces_and_provider_bodies_reach_no_envelope_log_or_row(db_sche
     if name == "exhausted":
         assert run(db_schema.fetchval("SELECT count(*) FROM dead_letters WHERE execution_id = $1", execution)) == 1
     run(assert_system_invariants(db_schema))
+
+
+def test_what_the_verifier_observed_at_the_provider_is_never_persisted_or_answered(db_schema, run, caplog):
+    import time
+    from adapters.runtime.mock_adapter import MockAdapter
+    from contracts.adapter_interface import Observation
+    state = _state("golden-resp-observed", "respobserved")
+    tenant, execution = _admit(db_schema, run, state)
+    caplog.set_level(logging.DEBUG)
+
+    class ChattyRead(MockAdapter):
+        async def observe(self, kernel_op_id, observation_spec, binding, context):
+            self.observations.append(dict(observation_spec))
+            return Observation(1, time.time(), 200, {"exists": True, "api_key": SECRET, "debug": TRACE}, True, None)
+
+    mock = ChattyRead(SecretCredentials())
+    _loop(db_schema, run, _full(db_schema, mock), tenant, execution)
+    assert mock.observations                                                   # the leak really was offered
+    _, env = _envelope(db_schema, run, tenant, execution)
+    assert env.status == "ok"
+    stored, logs = _persisted(db_schema, run, tenant), caplog.text
+    for leak in (SECRET, TRACE):
+        assert leak not in repr(env) and leak not in stored and leak not in logs, leak
