@@ -23,7 +23,16 @@ FAIL. Recorded as CONF-009.
 | File | Milestone | Cases | Red on `s12-work` (tag schema) | Reference implementation | Sabotage caught |
 |---|---|---|---|---|---|
 | `s12/M01_schema.py` | M1 | 89 | 59 fail, 30 pass | 89 / 89 pass | 4 / 4 |
-| `s12/M02_…`–`M04_…` | M2–M4 | — | not drafted yet | — | — |
+| `s12/M02_fencing_core.py` | M2 | 18 | 16 fail, 2 pass | 18 / 18 pass | 3 / 3 |
+| `s12/M03_machines_run_step_budget.py` | M3 | 130 | 128 fail, 2 pass | 130 / 130 pass | 3 / 3 |
+| `s12/M04_machines_other.py` | M4 | 79 | 78 fail, 1 pass | 79 / 79 pass | 2 / 2 |
+
+The reference implementation passes all 316 cases of M1–M4 in one run. Building it caught two defects in the drafts
+before they could reach Fable (M02: a sabotage run could hang the schema teardown; M04: the machine name
+`dead_letter` is spelled like a state value, so the bare-literal rule was unsatisfiable). Both are fixed.
+The cases that already pass on `s12-work` are fixture self-tests (`test_invariant_checker_rejects_illegal_rows`),
+standing rules the tree already obeys (`test_s0_s11_code_unchanged_since_the_tag`, `test_no_code_writes_step_state_unknown`,
+`test_s12_code_does_not_use_the_non_canonical_validator`, `test_worker_pause_is_not_a_state`).
 
 The 30 cases that already pass cover schema the tag already has (migrations 009/010: step `terminal_reason` CHECK and
 trigger, `execution_plans`, the run/step status CHECKs apart from the enum import, no cascades, key types). Plan §5.2
@@ -47,10 +56,28 @@ worktree and deleted; nothing of it is in `src/`.
 - `tenant_id NOT NULL` and forced RLS with a policy on every C34 table.
 - Timestamps of new tables are `TIMESTAMPTZ`; minimal inserts in the test helpers must be valid.
 
+## Interfaces fixed by M02–M04
+
+- `adapters.postgres.fencing`: `FenceHolder(tenant_id, execution_id, runtime_instance_id, fence_token)`;
+  `fenced_write(database, holder, write)` checks and **locks** the `execution_ownership` row in the same tenant
+  transaction, then returns `await write(connection)`; otherwise `contracts.step_execution.FencedOut` and nothing written.
+- `adapters.postgres.transition_log.log_transition(connection, *, tenant_id, machine, entity_id, from_state, to_state,
+  reason, runtime_instance_id, fence_token, execution_id=None)`: exactly one row.
+- `engine.stages.s12_execute.settings.ExecutionSettings` (+ `from_env`, `S12_*` variables), C37 checks at construction.
+- `engine.stages.s12_execute.transitions.validate(machine, from_state, to_state, *, reason, closed=False)` and
+  `IllegalStateTransition`, for run, step, reservation, lease, worker, dead_letter, episode, confirmation, breaker;
+  legal edges and reasons are read from the pinned gate Appendix A by `fixtures/appendix_a.py`.
+- `contracts.execution_states.CircuitBreakerState` (closed, open, half_open).
+- Static rules over **S12 code** (`fixtures/code_scan.py`: `src/` minus the frozen S0–S11 files; the prototype files
+  count as S12 code, CONF-011): every SQL statement on an S12 table names `tenant_id`; no bare state literal (C28);
+  no `StepState.UNKNOWN`; no import of `contracts.state_validators` (CONF-006); frozen files byte-identical to the tag.
+- `fixtures/invariants.py`: `assert_system_invariants(schema)` with I5 (every logged transition legal per Appendix A).
+
 ## Sabotage (owner verify)
 
-`tests_golden/sabotage/*.sql` run after the migrations when `GOLDEN_SABOTAGE=<file>` is set; each must turn at least one
-case of its milestone FAIL (an assertion, not a setup error):
+`tests_golden/sabotage/*.sql` run after the migrations, and `*.py` patches (`apply()`) monkeypatch the interface under
+test, when `GOLDEN_SABOTAGE=<file>` is set; each must turn at least one case of its milestone FAIL (an assertion, not a
+setup error):
 
 | Patch | Caught by |
 |---|---|
@@ -58,9 +85,18 @@ case of its milestone FAIL (an assertion, not a setup error):
 | `M01_two_open_episodes.sql` | `test_one_open_episode_per_step`, `test_required_indexes[step_reconciliations…]` |
 | `M01_check_wider_than_enum.sql` | `test_check_constraint_equals_its_enum[execution_steps-status]` |
 | `M01_cascade_delete.sql` | `test_no_on_delete_cascade` |
+| `M02_skip_fence_check.py` | `test_stale_or_foreign_holder_is_fenced_out_and_writes_nothing` (3), others |
+| `M02_check_without_lock.py` | `test_takeover_waits_for_an_open_fenced_write_then_fences_the_old_owner` |
+| `M02_settings_unvalidated.py` | `test_settings_reject_inverted_timeouts` (3) |
+| `M03_retry_is_a_transition.py` | `test_every_other_pair_is_illegal[step]`, `test_step_edges_the_gate_names_illegal` |
+| `M03_old_data_contracts_edges.py` | `test_step_edges_the_gate_names_illegal` (3 cases) |
+| `M03_reason_ignored.py` | `test_legal_edge_rejects_any_other_reason` (15 cases) |
+| `M04_closed_episode_moves.py` | `test_no_episode_move_after_closed_at` |
+| `M04_expired_lease_renewed.py` | `test_every_other_pair_is_illegal[lease]`, `test_lease_can_only_be_renewed_while_active` |
 
 ```powershell
-Get-ChildItem tests_golden\sabotage\M01_*.sql | ForEach-Object {
-  $env:GOLDEN_SABOTAGE = $_.FullName; python -m pytest tests_golden\s12\M01_schema.py -q -p no:cacheprovider }
+Get-ChildItem tests_golden\sabotage\M0* | ForEach-Object {
+  $env:GOLDEN_SABOTAGE = $_.FullName; $m = $_.Name.Substring(0, 3)
+  python -m pytest (Get-ChildItem "tests_golden\s12\$m`_*.py").FullName -q -p no:cacheprovider }
 Remove-Item Env:GOLDEN_SABOTAGE
 ```

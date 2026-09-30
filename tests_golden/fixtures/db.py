@@ -11,6 +11,7 @@ Interface used by golden tests:
     await schema.fetchval(...)
     await schema.execute(sql, *args, tenant="t1")   # app.current_tenant set for forced RLS
     await schema.migrate()                # apply_migrations again, returns the names it applied
+    schema.database()                     # adapters.postgres.database.Database over the module schema
     schema.name                           # the schema name, for catalog queries
 """
 from __future__ import annotations
@@ -58,6 +59,11 @@ class GoldenSchema:
             await admin.execute(f'DROP SCHEMA IF EXISTS "{self.name}" CASCADE')
         finally:
             await admin.close()
+
+    def database(self) -> Database:
+        """The project's Database wrapper over this schema's pool (for code under test)."""
+        assert self._pool is not None
+        return Database(self._pool)
 
     async def migrate(self) -> list[str]:
         assert self._pool is not None

@@ -38,13 +38,27 @@ def db_schema(request):
         loop.run_until_complete(schema.create())
         schema.applied_first = loop.run_until_complete(schema.migrate())
         sabotage = os.environ.get("GOLDEN_SABOTAGE")   # owner verify only: a tests_golden/sabotage/*.sql file
-        if sabotage:
+        if sabotage and sabotage.endswith(".sql"):
             loop.run_until_complete(schema.execute(Path(sabotage).read_text(encoding="utf-8")))
         schema.loop = loop
         yield schema
     finally:
         loop.run_until_complete(schema.drop())
         loop.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def code_sabotage():
+    """Owner verify only: GOLDEN_SABOTAGE=<tests_golden/sabotage/*.py> monkeypatches the interface under test
+    (its ``apply()`` runs once, before any test); every such patch must turn some case of its milestone FAIL."""
+    path = os.environ.get("GOLDEN_SABOTAGE", "")
+    if path.endswith(".py"):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("golden_sabotage", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.apply()
+    yield
 
 
 @pytest.fixture
