@@ -31,6 +31,7 @@ It grows milestone by milestone. Active now:
     that has none yet) holds exactly one live reservation, ``locked``, if its reservation was ever locked, else none;
     once the dead letter is ``resolved`` or ``abandoned``: none live after NOT_EXECUTED, else exactly one ``committed``
     (if it was ever locked).
+  * I15 (M19): every row of an S12–S15 table that names an execution has a non-null ``tenant_id`` equal to its run's.
 """
 from __future__ import annotations
 
@@ -289,6 +290,27 @@ async def dead_letter_problems(schema) -> list[str]:
     return problems
 
 
+_TENANT_TABLES = ("execution_steps", "execution_plans", "execution_manifests", "execution_ownership",
+                  "budget_reservations", "worker_leases", "step_reconciliations", "dead_letters", "execution_events",
+                  "state_transitions", "checkpoints")
+
+
+async def tenant_problems(schema) -> list[str]:
+    present = {r["t"] for r in await schema.fetch(
+        "SELECT table_name AS t FROM information_schema.columns WHERE table_schema = $1 AND column_name ="
+        " 'execution_id'", schema.name)}
+    problems = []
+    for table in _TENANT_TABLES:
+        if table not in present:
+            continue
+        for r in await schema.fetch(
+                f"SELECT x.execution_id, x.tenant_id, e.tenant_id AS run_tenant FROM {table} x JOIN execution_runs e"
+                " ON e.execution_id = x.execution_id WHERE x.tenant_id IS DISTINCT FROM e.tenant_id"):
+            problems.append(f"I15 {table} row of {r['execution_id']}: tenant {r['tenant_id']!r}, run tenant"
+                            f" {r['run_tenant']!r}")
+    return problems
+
+
 async def assert_system_invariants(schema) -> None:
     columns = {r["column_name"] for r in await schema.fetch(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'state_transitions'",
@@ -299,5 +321,5 @@ async def assert_system_invariants(schema) -> None:
     problems = ([f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
                 + await lease_problems(schema) + await budget_problems(schema) + await dispatch_problems(schema)
                 + await uncertainty_problems(schema) + await revocation_problems(schema)
-                + await terminal_problems(schema) + await dead_letter_problems(schema))
+                + await terminal_problems(schema) + await dead_letter_problems(schema) + await tenant_problems(schema))
     assert not problems, "invariants violated:\n" + "\n".join(problems)
