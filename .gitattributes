@@ -8,3 +8,6 @@ tests/stages/test_s9_plan_creation.py -text
 tests/stages/test_s10_confirmation.py -text
 tests/stages/test_s11_plan_validation.py -text
 tests/stages/test_s7_to_s11.py -text
+tools/owner_certify_s12.py -text
+tests_golden/** -text
+docs/gates/S12_AUTOPILOT.md -text
