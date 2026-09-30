@@ -12,7 +12,7 @@ Interface used by golden tests:
     await schema.fetchval(...)
     await schema.execute(sql, *args, tenant="t1")   # app.current_tenant set for forced RLS
     await schema.migrate()                # apply_migrations again, returns the names it applied
-    schema.database()                     # adapters.postgres.database.Database over the module schema
+    schema.database()                     # Database for code under test: role golden_app, RLS enforced
     schema.name                           # the schema name, for catalog queries
 """
 from __future__ import annotations
@@ -49,24 +49,45 @@ def golden_database_url() -> str:
     return url
 
 
+APP_ROLE = "golden_app"
+
+
 class GoldenSchema:
+    """``fetch``/``execute`` run as the connecting role (test setup and catalog checks). ``database()`` — the code under
+    test — runs as the non-superuser role ``golden_app`` when the connecting role is a superuser, so row-level security
+    is enforced whatever role TEST_DATABASE_URL names (as in tests_postgres)."""
+
     def __init__(self, url: str, name: str) -> None:
         self.url = url
         self.name = name
         self._pool: asyncpg.Pool | None = None
+        self._app_pool: asyncpg.Pool | None = None
+        self._superuser = False
 
     async def create(self) -> None:
         admin = await asyncpg.connect(self.url)
         try:
             await admin.execute(f'CREATE SCHEMA "{self.name}"')
+            self._superuser = bool(await admin.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user"))
+            if self._superuser and not await admin.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", APP_ROLE):
+                await admin.execute(f"CREATE ROLE {APP_ROLE} NOLOGIN NOSUPERUSER NOBYPASSRLS")
         finally:
             await admin.close()
         self._pool = await asyncpg.create_pool(self.url, min_size=1, max_size=4,
                                                server_settings={"search_path": self.name})
+        app_settings = {"search_path": self.name, **({"role": APP_ROLE} if self._superuser else {})}
+        self._app_pool = await asyncpg.create_pool(self.url, min_size=1, max_size=8, server_settings=app_settings)
+
+    async def grant(self) -> None:
+        if self._superuser:
+            await self.execute(f'GRANT USAGE ON SCHEMA "{self.name}" TO {APP_ROLE};'
+                               f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "{self.name}" TO {APP_ROLE};'
+                               f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "{self.name}" TO {APP_ROLE}')
 
     async def drop(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
+        for pool in (self._app_pool, self._pool):
+            if pool is not None:
+                await pool.close()
         admin = await asyncpg.connect(self.url)
         try:
             await admin.execute(f'DROP SCHEMA IF EXISTS "{self.name}" CASCADE')
@@ -74,13 +95,15 @@ class GoldenSchema:
             await admin.close()
 
     def database(self) -> Database:
-        """The project's Database wrapper over this schema's pool (for code under test)."""
-        assert self._pool is not None
-        return Database(self._pool)
+        """The project's Database wrapper for code under test (non-superuser role, RLS enforced)."""
+        assert self._app_pool is not None
+        return Database(self._app_pool)
 
     async def migrate(self) -> list[str]:
         assert self._pool is not None
-        return await apply_migrations(Database(self._pool))
+        applied = await apply_migrations(Database(self._pool))
+        await self.grant()
+        return applied
 
     async def _run(self, method: str, sql: str, *args, tenant: str | None = None):
         assert self._pool is not None
