@@ -13,6 +13,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-Location $Repo
+$env:PYTHONUTF8 = "1"   # the tests read source files with the default codec; Windows would use cp1252
 
 $dirty = git status --porcelain
 if ($dirty) { Write-Host "Uncommitted changes here; commit or stash them first:" -ForegroundColor Red; $dirty; exit 1 }

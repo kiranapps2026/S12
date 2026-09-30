@@ -14,6 +14,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-Location $Repo
+$env:PYTHONUTF8 = "1"   # the tests read source files with the default codec; Windows would use cp1252
 
 if ($Pull) {
     git fetch origin s0-s11-repair
