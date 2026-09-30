@@ -4,6 +4,9 @@ It grows milestone by milestone. Active now:
   * I5 (M2): every row of the transition log is legal per gate Appendix A: a creation row (``from_state`` NULL, or
     ``none`` for an episode) goes to the machine's initial state with its creation reason; every other row is an
     Appendix A edge whose reason is allowed on that edge.
+  * I9 (M6): every persisted plan's canonical digest equals its ``plan_hash``.
+  * I10 (M6): every step's ``resolved_binding_id``, ``effective_risk`` and ``effective_mutation`` equal that step's binding
+    in the persisted ``frozen_bindings`` (through ``step_binding_index``).
 """
 from __future__ import annotations
 
@@ -40,6 +43,33 @@ def transition_problems(rows) -> list[str]:
     return problems
 
 
+async def plan_problems(schema) -> list[str]:
+    import json
+
+    from contracts import codec
+    from contracts.frozen_binding import FrozenBindingIdentity
+    from contracts.plan_hash import canonical_plan_digest
+    from contracts.stage_outputs import Plan
+    problems = []
+    for p in await schema.fetch("SELECT execution_id, plan_hash, canonical_plan, frozen_bindings, step_binding_index"
+                                " FROM execution_plans"):
+        plan = codec.decode(Plan, json.loads(p["canonical_plan"]))
+        if canonical_plan_digest(plan) != p["plan_hash"]:
+            problems.append(f"I9 {p['execution_id']}: stored plan digest differs from plan_hash")
+        bindings = codec.decode(tuple[FrozenBindingIdentity, ...], json.loads(p["frozen_bindings"]))
+        index = json.loads(p["step_binding_index"])
+        for s in await schema.fetch("SELECT plan_step_id, resolved_binding_id, effective_risk, effective_mutation"
+                                    " FROM execution_steps WHERE execution_id = $1", p["execution_id"]):
+            if s["plan_step_id"] not in index:
+                problems.append(f"I10 {p['execution_id']}/{s['plan_step_id']}: step not in step_binding_index")
+                continue
+            b = bindings[index[s["plan_step_id"]]]
+            if (s["resolved_binding_id"], s["effective_risk"], s["effective_mutation"]) != \
+                    (b.binding_id, b.effective_risk, b.effective_mutation):
+                problems.append(f"I10 {p['execution_id']}/{s['plan_step_id']}: step differs from its frozen binding")
+    return problems
+
+
 async def assert_system_invariants(schema) -> None:
     columns = {r["column_name"] for r in await schema.fetch(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'state_transitions'",
@@ -47,5 +77,5 @@ async def assert_system_invariants(schema) -> None:
     machine = "machine" if "machine" in columns else "entity_type"
     rows = await schema.fetch(f"SELECT {machine} AS machine, entity_id, from_state, to_state, reason"
                               " FROM state_transitions ORDER BY transition_id")
-    problems = transition_problems(rows)
-    assert not problems, "I5 violated:\n" + "\n".join(problems)
+    problems = [f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
+    assert not problems, "invariants violated:\n" + "\n".join(problems)

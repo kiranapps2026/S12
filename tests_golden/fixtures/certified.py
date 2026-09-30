@@ -64,3 +64,26 @@ class NoPause:
 
 def entry_readers() -> dict:
     return {"bindings": ManifestBindings(), "activation": NoPause(), "metadata": AllMetadata()}
+
+
+def fresh(state, suffix: str):
+    """The same certified plan as a new request: own request_id, trace_id and execution_id (the digest covers only the
+    plan, so the state stays certified)."""
+    execution_id = f"golden-exec-{suffix}"
+    ctx = dataclasses.replace(state.execution_context, request_id=f"golden-req-{suffix}", trace_id=f"golden-tr-{suffix}")
+    plan = dataclasses.replace(state.plan, execution_id=execution_id)
+    manifest = dataclasses.replace(state.execution_manifest, execution_id=execution_id, trace_id=ctx.trace_id)
+    return dataclasses.replace(state, execution_context=ctx, plan=plan, execution_manifest=manifest)
+
+
+async def seed_identity(schema, state, *, budget_pool: int = 1000) -> None:
+    """Tenant, workspace and user rows the run's foreign keys need (as the connecting role, tenant set for RLS)."""
+    ctx = state.execution_context
+    await schema.execute(
+        "INSERT INTO tenants (tenant_id, name, status, budget_pool, kill_switch_engaged, max_mutation, policy_version_id)"
+        " VALUES ($1, 'golden', 'active', $2, false, 'IRREVERSIBLE', 'p1') ON CONFLICT DO NOTHING",
+        ctx.tenant_id, budget_pool, tenant=ctx.tenant_id)
+    await schema.execute("INSERT INTO workspaces (workspace_id, tenant_id, name) VALUES ($1, $2, 'w')"
+                         " ON CONFLICT DO NOTHING", ctx.workspace_id, ctx.tenant_id, tenant=ctx.tenant_id)
+    await schema.execute("INSERT INTO users (user_id, tenant_id, status) VALUES ($1, $2, 'active')"
+                         " ON CONFLICT DO NOTHING", ctx.user_id, ctx.tenant_id, tenant=ctx.tenant_id)
