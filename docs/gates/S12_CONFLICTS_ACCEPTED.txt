@@ -1,0 +1,2 @@
+# Findings of tools/doc_consistency.py that the owner has ruled on. Format: key | ruling (who, date, S12_RECORDS id)
+# Example: C1:A.3-budget_reservation | CONF-003 ruled 2026-10-01 (owner): STATE_TRANSITIONS is descriptive
