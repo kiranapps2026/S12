@@ -1,5 +1,5 @@
 """
-S12 entry checks — gate §7.1 items 1–5b and 7, in the gate's order. First failure decides.
+S12 entry checks — gate §7.1 items 1–5b and 7, in the gate's order, then the C20 confirmation check. First failure decides.
 
 A pure decision: nothing is written, nothing is re-authorised, nothing is re-resolved. The caller
 (the S12 admission step, when it exists) writes only after `allowed` is True.
@@ -25,9 +25,11 @@ from contracts.binding_reader import BindingVersionReader
 from contracts.pipeline_state import PipelineState
 from contracts.plan_hash import canonical_plan_digest
 from contracts.stage_outputs import StepOutputReference, StepParameterBinding
+from contracts.confirmation_record import ConsumedConfirmationReader
 from contracts.verifier import KernelOpMetadataReader, Verifier
 from engine.stages.plan_steps import plan_step_bindings
 from engine.stages.s12_entry.verifiers import build_verifiers
+from engine.stages.s12_entry.confirmation import confirmation_denial
 from engine.stages.s0_entry.activation import UNAVAILABLE as ACTIVATION_UNAVAILABLE, inactive_reason
 
 logger = logging.getLogger(__name__)
@@ -100,7 +102,8 @@ def _binding_ids(state: PipelineState) -> tuple[str, ...] | None:
 
 async def check_entry(state: PipelineState, *, bindings: BindingVersionReader | None,
                       activation: ActivationStateReader | None,
-                      metadata: KernelOpMetadataReader | None = None) -> EntryDecision:
+                      metadata: KernelOpMetadataReader | None = None,
+                      confirmations: ConsumedConfirmationReader | None = None) -> EntryDecision:
     ctx, manifest, plan_result = state.execution_context, state.execution_manifest, state.plan
 
     # 1. S11 succeeded and issued the manifest.
@@ -166,4 +169,11 @@ async def check_entry(state: PipelineState, *, bindings: BindingVersionReader | 
     reason = inactive_reason(state_now)
     if reason is not None:
         return _deny(reason)
+
+    # C20. A plan that needed a confirmation runs only if the store row shows it consumed for THIS run (same
+    # tenant, execution_id and plan_hash). Not a numbered §7.1 item, so it comes after them; it reads the store only
+    # when every other check passed.
+    denied = await confirmation_denial(state, confirmations)
+    if denied is not None:
+        return _deny(denied)
     return EntryDecision(True, verifiers=built.verifiers)

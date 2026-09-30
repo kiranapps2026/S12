@@ -16,7 +16,13 @@ against its plan §4 card and the gate text. Each fix was re-validated: red on `
 
 Counts after the fixes: M05 30, M06 23, M07 15, M08 36, M08a 49, M09 17 (170 B2 cases; 486 with B1).
 
-## Needs a ruling (recorded in S12_RECORDS.md)
+## Rulings (owner, 2026-09-30)
+
+CONF-015, CONF-016 and CONF-018 accepted as proposed; CONF-017 ruled DELAY: gates 9 and 11 now DELAY in golden M08
+(39 cases, reference 39/39, 4 sabotage patches including `M08_backpressure_rejects.py`); the DELAY retry case uses a
+snapshot instead of swapping `evaluate`. DEF-003 is still the owner's decision.
+
+## Needed a ruling (recorded in S12_RECORDS.md)
 
 | ID | Finding | Proposal |
 |---|---|---|

@@ -3,7 +3,7 @@
 Gate v10: §8 steps 1–3, C5 (a worker at capacity is not selectable), C30 (REJECT mapped by gate_failed; gate 7 is a
 QUEUE, never a REJECT; every decision is a ledger event), WORKER_LIFECYCLE §10 (gates 1–11 in order, first reject
 wins, admission is stateless), §11 (AdmissionDecision), §13 (locality scoring is deterministic and advisory);
-ruling CONF-015 (the §11 contract, not the frozen contracts/worker.py one).
+rulings CONF-015 (the §11 contract, not the frozen contracts/worker.py one) and CONF-017 (gates 9 and 11 are DELAY).
 
 Interface this file fixes:
   * ``contracts.step_admission.AdmissionDecision(status, reason=None, detail=None, retry_after_ms=None,
@@ -14,8 +14,9 @@ Interface this file fixes:
       ``workspace_active``, ``mode_allowed``, ``provider_allowed``, ``worker_capacity_available``, ``circuit_open``,
       ``db_pool_pressure``, ``budget_available``, ``system_overloaded``, ``degrade`` (default False);
       ``evaluate(snapshot) -> AdmissionDecision`` — pure; first failing gate decides; gate 7 → QUEUE with reason
-      ``worker_at_capacity`` and a ``retry_after_ms``; any other failing gate → REJECT with the §10 reason; all passing →
-      ACCEPT, or DEGRADE when ``degrade``;
+      ``worker_at_capacity`` and a ``retry_after_ms``; gates 9 (``db_pool_pressure``) and 11 (``system_overloaded``) →
+      DELAY with that reason and a ``retry_after_ms`` (backpressure, §11; ruling CONF-017); any other failing gate → REJECT
+      with the §10 reason; all passing → ACCEPT, or DEGRADE when ``degrade``;
       ``async admit_step(snapshot_source, *, ledger, max_attempts, sleep) -> AdmissionDecision`` — calls
       ``await snapshot_source()`` then ``evaluate``; QUEUE/DELAY → ``await sleep(retry_after_ms / 1000)`` and again, at
       most ``max_attempts`` evaluations, then REJECT with reason ``admission_exhausted``; every decision is recorded with
@@ -94,8 +95,15 @@ def test_degrade_when_all_pass_and_degraded():
 def test_each_gate_rejects_with_its_reason(gate, field, value, reason):
     from engine.stages.s12_execute.admission_control import evaluate
     decision = evaluate(_ok(**{field: value}))
-    expected_status = "QUEUE" if gate == "7" else "REJECT"
+    expected_status = {"7": "QUEUE", "9": "DELAY", "11": "DELAY"}.get(gate, "REJECT")
     assert (decision.status, decision.gate_failed, decision.reason) == (expected_status, gate, reason)
+
+
+@pytest.mark.parametrize("field", ["db_pool_pressure", "system_overloaded"])
+def test_backpressure_is_a_delay_with_retry_after_never_a_reject(field):
+    from engine.stages.s12_execute.admission_control import evaluate
+    decision = evaluate(_ok(**{field: True}))
+    assert decision.status == "DELAY" and decision.retry_after_ms and decision.retry_after_ms > 0
 
 
 def test_capacity_is_a_queue_with_retry_after_never_a_reject():
@@ -153,28 +161,40 @@ def test_queue_is_bounded_then_admission_exhausted():
     assert ledger.events[-1][1]["reason"] == "admission_exhausted" and len(ledger.events) == 4
 
 
-def test_delay_is_handled_like_queue():
-    from contracts.step_admission import AdmissionDecision
-    import engine.stages.s12_execute.admission_control as ac
-    decisions = iter([AdmissionDecision("DELAY", reason="backpressure", retry_after_ms=10), AdmissionDecision("ACCEPT")])
-    original = ac.evaluate
-    ac.evaluate = lambda snapshot: next(decisions)
-    try:
-        async def source():
-            return _ok()
+def test_delay_is_retried_like_queue():
+    from engine.stages.s12_execute.admission_control import admit_step
+    snapshots = iter([_ok(system_overloaded=True), _ok(db_pool_pressure=True), _ok()])
+    slept, ledger = [], Ledger()
 
-        async def sleep(seconds):
-            pass
+    async def source():
+        return next(snapshots)
 
-        assert asyncio.run(ac.admit_step(source, ledger=Ledger(), max_attempts=3, sleep=sleep)).status == "ACCEPT"
-    finally:
-        ac.evaluate = original
+    async def sleep(seconds):
+        slept.append(seconds)
+
+    decision = asyncio.run(admit_step(source, ledger=ledger, max_attempts=5, sleep=sleep))
+    assert decision.status == "ACCEPT" and len(slept) == 2
+    assert [p["status"] for _, p in ledger.events] == ["DELAY", "DELAY", "ACCEPT"]
+
+
+def test_persistent_backpressure_ends_as_admission_exhausted():
+    from engine.stages.s12_execute.admission_control import admit_step, reject_outcome
+
+    async def source():
+        return _ok(db_pool_pressure=True)
+
+    async def sleep(seconds):
+        pass
+
+    decision = asyncio.run(admit_step(source, ledger=Ledger(), max_attempts=2, sleep=sleep))
+    assert (decision.status, decision.reason) == ("REJECT", "admission_exhausted")
+    assert reject_outcome(decision) == ("admission_rejected", "consolidate")
 
 
 @pytest.mark.parametrize("gate,expected", [
     ("1", ("kill_switch_engaged", "revocation")), ("3", ("authorization_revoked", "revocation")),
     ("10", ("budget_exhausted", "budget")), ("2", ("admission_rejected", "consolidate")),
-    ("6", ("admission_rejected", "consolidate")), ("11", ("admission_rejected", "consolidate"))])
+    ("6", ("admission_rejected", "consolidate")), ("8", ("admission_rejected", "consolidate"))])
 def test_reject_is_mapped_by_gate(gate, expected):
     from engine.stages.s12_execute.admission_control import evaluate, reject_outcome
     field, value = next((g[1], g[2]) for g in GATES if g[0] == gate)

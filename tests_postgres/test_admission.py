@@ -10,6 +10,7 @@ import pytest
 
 from adapters.postgres.activation import PostgresActivationReader
 from adapters.postgres.admission import PostgresExecutionAdmission
+from adapters.postgres.confirmation_records import PostgresConsumedConfirmationReader
 from adapters.postgres.registry import PostgresBindingVersionReader, PostgresKernelOpMetadataReader
 from bootstrap import build_runner
 from contracts import codec
@@ -37,9 +38,11 @@ async def _certified(db, model, tenant=A, request_id=None):
 
 
 def _admit(db, state, **kw):
+    # a run resumed after a confirmation is checked against the stored confirmation row (gate C20)
     return admit_run(state, bindings=PostgresBindingVersionReader(db), activation=PostgresActivationReader(db),
                      metadata=PostgresKernelOpMetadataReader(db), admitter=kw.get("admitter", PostgresExecutionAdmission(db)),
-                     runtime_instance_id=kw.get("runtime", "runtime-1"))
+                     runtime_instance_id=kw.get("runtime", "runtime-1"),
+                     confirmations=PostgresConsumedConfirmationReader(db))
 
 
 async def _count(db, tenant, table, where="true"):
@@ -80,7 +83,8 @@ def test_a_certified_read_run_is_admitted_and_left_running(pg):
         (state.frozen_binding_identity.binding_id, "R", "crm.contact_list")
     assert (owner["runtime_instance_id"], owner["worker_id"], owner["lease_id"], owner["fencing_token"]) == \
         ("runtime-1", None, None, 0)
-    assert moves == [("step", None, "pending"), ("run", None, "pending"), ("run", "pending", "running")]
+    # the run row exists before its steps, so its creation is logged first (C24 history in real order)
+    assert moves == [("run", None, "pending"), ("step", None, "pending"), ("run", "pending", "running")]
 
 
 def test_a_chain_is_admitted_with_one_step_row_per_step_its_own_binding_and_its_verifiers(pg):

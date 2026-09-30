@@ -12,14 +12,18 @@ import json
 from datetime import datetime, timezone
 
 from adapters.postgres.database import Database
+from adapters.postgres.transition_log import log_transition
 from contracts import codec
 from contracts.admission import ADMITTED, DENIED, DUPLICATE, AdmissionOutcome
-from contracts.execution_states import ExecutionStatus
+from contracts.execution_states import ExecutionStatus, StepState
 from contracts.pipeline_state import PipelineState
 from contracts.verifier import Verifier
 from engine.stages.plan_steps import plan_step_bindings
+from engine.stages.s12_execute import transitions
 
 QUOTA_EXHAUSTED = "quota_exhausted"
+CREATED = "created"                 # Appendix A: creation reason of a run and of a step
+ADMITTED_REASON = "admitted"        # Appendix A.1: pending -> running at admission
 SOFT_QUOTA_ATTEMPTS = 3
 SOFT_QUOTA_BACKOFF_SECONDS = 0.05
 SOFT_QUOTA_RETRY_AFTER_MS = 1000
@@ -93,6 +97,13 @@ class PostgresExecutionAdmission:
         execution_id, tenant = plan_result.execution_id, ctx.tenant_id
         created = datetime.fromtimestamp(manifest.created_at or 0.0, timezone.utc)
 
+        async def log(c, machine: str, entity_id: str, old: str | None, new: str, reason: str) -> None:
+            """Every creation and move is validated against Appendix A and written by the one log writer (C24)."""
+            transitions.validate(machine, old, new, reason=reason)
+            await log_transition(c, tenant_id=tenant, machine=machine, entity_id=entity_id, from_state=old,
+                                 to_state=new, reason=reason, runtime_instance_id=runtime_instance_id,
+                                 fence_token=None, execution_id=execution_id)
+
         async with self._db.tenant_transaction(tenant) as c:
             # 1. duplicate check: the same request is never admitted twice
             existing = await c.fetchrow(
@@ -122,12 +133,13 @@ class PostgresExecutionAdmission:
             inserted = await c.fetchval(
                 "INSERT INTO execution_runs (execution_id, request_id, trace_id, task_id, user_id, tenant_id,"
                 " workspace_id, conversation_id, plan_id, status, actor_type, actor_id, connection_id)"
-                " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending','user',$5,$10)"
+                " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$11,'user',$5,$10)"
                 " ON CONFLICT (tenant_id, request_id) DO NOTHING RETURNING execution_id",
                 execution_id, ctx.request_id, ctx.trace_id, ctx.task_id, ctx.user_id, tenant,
-                ctx.workspace_id, ctx.conversation_id, plan.id, ctx.connection_id)
+                ctx.workspace_id, ctx.conversation_id, plan.id, ctx.connection_id, ExecutionStatus.PENDING.value)
             if inserted is None:
                 raise _Duplicate()
+            await log(c, "run", execution_id, None, ExecutionStatus.PENDING.value, CREATED)
 
             # 4. manifest (byte-identical to S11's), frozen plan, steps, ownership
             await c.execute(
@@ -151,25 +163,18 @@ class PostgresExecutionAdmission:
                 await c.execute(
                     "INSERT INTO execution_steps (step_id, plan_step_id, execution_id, tenant_id, plan_id,"
                     " kernel_op_id, resolved_binding_id, effective_risk, effective_mutation,"
-                    " request_fingerprint, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')",
+                    " request_fingerprint, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
                     step_id, step.id, execution_id, tenant, plan.id, step.kernel_op_id, binding.binding_id,
                     binding.effective_risk, binding.effective_mutation,
-                    _fingerprint(step.kernel_op_id, step.params))
-                await c.execute(
-                    "INSERT INTO state_transitions (tenant_id, entity_type, entity_id, from_state, to_state,"
-                    " reason, runtime_instance_id) VALUES ($1,'step',$2,NULL,'pending','admitted',$3)",
-                    tenant, step_id, runtime_instance_id)
+                    _fingerprint(step.kernel_op_id, step.params), StepState.PENDING.value)
+                await log(c, "step", step_id, None, StepState.PENDING.value, CREATED)
             await c.execute(
                 "INSERT INTO execution_ownership (execution_id, tenant_id, runtime_instance_id)"
                 " VALUES ($1,$2,$3)", execution_id, tenant, runtime_instance_id)
 
-            # 5. PENDING -> RUNNING
+            # 5. PENDING -> RUNNING (§7.2 step 3, Appendix A.1 reason "admitted")
+            await log(c, "run", execution_id, ExecutionStatus.PENDING.value, ExecutionStatus.RUNNING.value, ADMITTED_REASON)
             await c.execute(
-                "INSERT INTO state_transitions (tenant_id, entity_type, entity_id, from_state, to_state,"
-                " reason, runtime_instance_id) VALUES ($1,'run',$2,NULL,'pending','admitted',$3),"
-                " ($1,'run',$2,'pending','running','admission_complete',$3)",
-                tenant, execution_id, runtime_instance_id)
-            await c.execute(
-                "UPDATE execution_runs SET status = 'running', started_at = now()"
-                " WHERE tenant_id = $1 AND execution_id = $2", tenant, execution_id)
+                "UPDATE execution_runs SET status = $3, started_at = now()"
+                " WHERE tenant_id = $1 AND execution_id = $2", tenant, execution_id, ExecutionStatus.RUNNING.value)
         return AdmissionOutcome(ADMITTED, execution_id, ExecutionStatus.RUNNING.value)
