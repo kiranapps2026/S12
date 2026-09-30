@@ -34,8 +34,8 @@ def database_url() -> str | None:
         return os.environ["DATABASE_URL"]
     env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
     if os.path.exists(env):
-        for line in open(env, encoding="utf-8"):
-            key, _, value = line.strip().partition("=")
+        for line in open(env, encoding="utf-8-sig"):
+            key, _, value = line.strip().removeprefix("export ").partition("=")
             if key.strip() == "DATABASE_URL" and value.strip():
                 return value.strip().strip("\"'")
     return None
