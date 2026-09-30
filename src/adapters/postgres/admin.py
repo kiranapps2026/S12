@@ -80,9 +80,11 @@ class AdminService:
             " details) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)", actor.principal.tenant_id, actor.principal.user_id,
             actor.principal.membership_id, action, target_type, target_id, json.dumps(details))
 
-    async def _identity(self, c, actor: Actor, membership_id: str, connection_id: str, scope: str) -> Principal:
+    async def _identity(self, c, actor: Actor, membership_id: str, connection_id: str, scope: str,
+                        service: bool = False) -> Principal:
         """The identity a new credential will act as. Both rows must be in the actor's tenant (RLS), agree with each
-        other, be active, and the membership's role must not exceed the actor's."""
+        other, be active, and the membership's role must not exceed the actor's. With `service` the user must be a
+        SERVICE user (webhook endpoints and schedules never run as a person, ruling R-AT)."""
         tenant = actor.principal.tenant_id
         m = await c.fetchrow("SELECT user_id, workspace_id, role, is_active, revoked_at FROM memberships"
                              " WHERE membership_id = $1 AND tenant_id = $2", membership_id, tenant)
@@ -92,9 +94,12 @@ class AdminService:
             raise AdminError(409, "membership_inactive")
         if RANK[m["role"]] > RANK[actor.role]:
             raise AdminError(403, "role_exceeds_yours")
-        user = await c.fetchval("SELECT status FROM users WHERE user_id = $1 AND tenant_id = $2", m["user_id"], tenant)
-        if user != "active":
+        user = await c.fetchrow("SELECT status, is_service FROM users WHERE user_id = $1 AND tenant_id = $2",
+                                m["user_id"], tenant)
+        if user is None or user["status"] != "active":
             raise AdminError(409, "user_inactive")
+        if service and not user["is_service"]:
+            raise AdminError(409, "not_a_service_user")
         conn = await c.fetchrow("SELECT user_id, workspace_id, status, (expires_at IS NOT NULL AND expires_at <= now())"
                                 " AS expired FROM connections WHERE connection_id = $1 AND tenant_id = $2",
                                 connection_id, tenant)
@@ -153,13 +158,13 @@ class AdminService:
     async def issue_endpoint(self, actor: Actor, source_system: str, membership_id: str, connection_id: str,
                              resource_scope: str = "", label: str | None = None) -> tuple[str, str]:
         """(endpoint_id, secret). The secret is shown once. The identity should be a dedicated service user
-        (ruling R-AT); the API enforces the tenant, the role ceiling and the consistency of the identity."""
+        (ruling R-AT, enforced: `not_a_service_user`); the API also enforces the tenant, the role ceiling and the consistency of the identity."""
         credentials = self._need_credentials()
         if source_system not in ENDPOINT_SYSTEMS:
             raise AdminError(422, "source_system_invalid")
         label = self._label(label)
         async with self._db.tenant_transaction(actor.principal.tenant_id) as c:
-            identity = await self._identity(c, actor, membership_id, connection_id, resource_scope)
+            identity = await self._identity(c, actor, membership_id, connection_id, resource_scope, service=True)
             endpoint_id, secret = await credentials.issue(identity, source_system, label=label,
                                                           created_by=actor.principal.user_id, connection=c)
             await self._audit(c, actor, "endpoint.issue", "endpoint", endpoint_id, source_system=source_system,
@@ -279,7 +284,7 @@ class AdminService:
         self._schema_key("cron", event_type)
         tenant = actor.principal.tenant_id
         async with self._db.tenant_transaction(tenant) as c:
-            identity = await self._identity(c, actor, membership_id, connection_id, resource_scope)
+            identity = await self._identity(c, actor, membership_id, connection_id, resource_scope, service=True)
             schedule = Schedule(schedule_id=str(uuid.uuid4()), principal=identity, event_type=event_type,
                                 payload=payload, kind=kind, anchor=anchor, interval_seconds=interval_seconds,
                                 at_seconds=at_seconds, weekday=weekday)

@@ -47,6 +47,7 @@ WORLD = (
     *_member(A, "svc", "member"), *_member(A, "boss", "owner"), *_member(A, "peer", "admin"),
     *_member(A, "viewer", "viewer"), *_member(B, "svc", "member"),
     # the service identity may use the same capabilities the seed grants tenant-a's own user
+    "UPDATE users SET is_service = true WHERE user_id IN ('tenant-a.svc', 'tenant-b.svc')",
     "INSERT INTO capability_grants SELECT 'g.svc.' || capability_id, tenant_id, workspace_id, 'tenant-a.svc',"
     " capability_id, true, NULL FROM capability_grants WHERE user_id = 'tenant-a.user'",
 )

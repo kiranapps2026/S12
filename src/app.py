@@ -170,6 +170,8 @@ def create_app(pipeline=None, authenticator=None, *, webhooks=None, admin=None,
     app.include_router(control_plane_router, prefix="/api/v1", tags=["control-plane"])
     from engine.control_plane.admin_api import router as admin_router
     app.include_router(admin_router, prefix="/api/v1")
+    from engine.control_plane.admin_access_api import router as admin_access_router
+    app.include_router(admin_access_router, prefix="/api/v1")
 
     return app
 
