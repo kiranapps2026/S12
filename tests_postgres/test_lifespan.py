@@ -78,7 +78,9 @@ def test_lifespan_wires_the_pool_and_serves_a_real_run(database_url):
 
 
 def test_without_a_model_the_pipeline_is_not_wired_but_auth_is(database_url, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    import config
+    # the settings object is built once at import, so a key in .env or the environment is already in it
+    monkeypatch.setattr(config.SETTINGS, "deepseek_api_key", "")
 
     async def scenario():
         url = await _prepare(database_url)
