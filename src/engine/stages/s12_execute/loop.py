@@ -106,7 +106,7 @@ async def _run(deps, loaded, statuses: dict, started: float) -> LoopResult:
     except (ValueError, TypeError):
         order, intact = [], False
     if not intact:                                          # gate §7.3: never execute a plan that changed
-        halt = _Halt("dead_letter", "plan_integrity", "run_dead_lettered")
+        halt = _Halt(S.DEAD_LETTER.value, "plan_integrity", "run_dead_lettered")
         await _cancel_pending(deps, loaded, statuses, halt.step_reason)
         return await _finish(deps, loaded, statuses, halt, started)
 
@@ -220,9 +220,9 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
         # probe (M13) is not built: never guess. The budget stays LOCKED (D4).
         await _set(deps, loaded, statuses, step, "timeout", reason="timeout")
         await _set(deps, loaded, statuses, step, S.PENDING_PROBE.value, reason="timeout_probe_queued")
-        await _set(deps, loaded, statuses, step, "dead_letter", reason="probe_unavailable",
+        await _set(deps, loaded, statuses, step, S.DEAD_LETTER.value, reason="probe_unavailable",
                    error="timeout", attempt=attempt)
-        return _Halt("dead_letter", "unknown_unresolved", "run_dead_lettered")
+        return _Halt(S.DEAD_LETTER.value, "unknown_unresolved", "run_dead_lettered")
 
     if result.status != "ok":
         # definitive failure (a mutation is never retried without the idempotency ledger)
@@ -243,9 +243,9 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
             return None
         if verdict != PASS:
             await _set(deps, loaded, statuses, step, S.PENDING_PROBE.value, reason="verification_unknown")
-            await _set(deps, loaded, statuses, step, "dead_letter", reason="verification_unresolved",
+            await _set(deps, loaded, statuses, step, S.DEAD_LETTER.value, reason="verification_unresolved",
                        error="verification_unknown", attempt=attempt)
-            return _Halt("dead_letter", "unknown_unresolved", "run_dead_lettered")
+            return _Halt(S.DEAD_LETTER.value, "unknown_unresolved", "run_dead_lettered")
 
     undo = None
     if step.inverse and step.mutation in ("W", "D"):
