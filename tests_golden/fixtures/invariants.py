@@ -10,6 +10,12 @@ It grows milestone by milestone. Active now:
     a token carry it in ``fence_token``); usable leases per
     worker (``active`` and ``expires_at > now()``) never exceed ``capacity`` and equal ``current_load`` once stale leases
     have been expired (checked on the stored rows: ``active`` leases per worker equal ``current_load`` and <= capacity).
+  * I1 (M9): per tenant and budget period, the cost of its reserved + locked + committed reservations never exceeds
+    ``budget_pool``.
+  * I2 (M9): no reservation is ``reserved`` for a terminal run; a ``locked`` one for a terminal run only on a
+    ``dead_letter`` step (D4).
+  * I12 (M9, non-dead-letter parts): a non-terminal step has at most one live reservation (reserved, locked,
+    committed); a ``completed`` step exactly one, ``committed``; a ``failed``, ``cancelled`` or ``skipped`` step none.
   * I10 (M6): every step's ``resolved_binding_id``, ``effective_risk`` and ``effective_mutation`` equal that step's binding
     in the persisted ``frozen_bindings`` (through ``step_binding_index``).
 """
@@ -118,6 +124,37 @@ async def lease_problems(schema) -> list[str]:
     return problems
 
 
+async def budget_problems(schema) -> list[str]:
+    from adapters.postgres.budget import PERIOD_START_SQL
+    problems = []
+    for r in await schema.fetch(
+            "SELECT t.tenant_id, t.budget_pool, COALESCE((SELECT SUM(r.cost) FROM budget_reservations r"
+            " WHERE r.tenant_id = t.tenant_id AND r.status IN ('reserved','locked','committed')"
+            f" AND r.created_at >= {PERIOD_START_SQL}), 0) AS used FROM tenants t"):
+        if r["used"] > r["budget_pool"]:
+            problems.append(f"I1 tenant {r['tenant_id']}: {r['used']} reserved/locked/committed > pool {r['budget_pool']}")
+    terminal = "('completed','partial','failed','cancelled','dead_letter')"
+    for r in await schema.fetch(
+            "SELECT b.reservation_id, b.status, s.status AS step FROM budget_reservations b"
+            " JOIN execution_runs e ON e.execution_id = b.execution_id"
+            " LEFT JOIN execution_steps s ON s.step_id = b.step_id"
+            f" WHERE e.status IN {terminal} AND b.status IN ('reserved','locked')"):
+        if r["status"] == "reserved" or r["step"] != "dead_letter":
+            problems.append(f"I2 reservation {r['reservation_id']}: {r['status']} for a terminal run (step {r['step']})")
+    for r in await schema.fetch(
+            "SELECT s.step_id, s.status, count(b.reservation_id) FILTER (WHERE b.status IN ('reserved','locked','committed'))"
+            " AS live, count(b.reservation_id) FILTER (WHERE b.status = 'committed') AS committed"
+            " FROM execution_steps s LEFT JOIN budget_reservations b ON b.step_id = s.step_id GROUP BY s.step_id, s.status"):
+        status, live, committed = r["status"], r["live"], r["committed"]
+        if status == "completed" and not (live == 1 and committed == 1):
+            problems.append(f"I12 step {r['step_id']}: completed with {live} live / {committed} committed reservations")
+        elif status in ("failed", "cancelled", "skipped") and live:
+            problems.append(f"I12 step {r['step_id']}: {status} with {live} live reservation(s)")
+        elif status in ("pending", "running", "timeout", "pending_probe") and live > 1:
+            problems.append(f"I12 step {r['step_id']}: {status} with {live} live reservations")
+    return problems
+
+
 async def assert_system_invariants(schema) -> None:
     columns = {r["column_name"] for r in await schema.fetch(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'state_transitions'",
@@ -126,5 +163,5 @@ async def assert_system_invariants(schema) -> None:
     rows = await schema.fetch(f"SELECT {machine} AS machine, entity_id, from_state, to_state, reason"
                               " FROM state_transitions ORDER BY transition_id")
     problems = ([f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
-                + await lease_problems(schema))
+                + await lease_problems(schema) + await budget_problems(schema))
     assert not problems, "invariants violated:\n" + "\n".join(problems)

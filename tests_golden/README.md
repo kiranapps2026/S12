@@ -18,6 +18,48 @@ Each module gets its own schema in that database (created, migrated, dropped: ga
 (OWN-13) runs `pytest tests` and must stay 19/19 through S12–S15. Inside `tests\` every red golden file would turn OWN-13
 FAIL. Recorded as CONF-009.
 
+## Harness (changed with B2)
+
+The connection named by `TEST_DATABASE_URL` must be a **superuser** (the harness refuses otherwise): test setup, catalog
+checks and the invariant checker must see every tenant's rows. Code under test always runs through `schema.database()`
+as the non-superuser role `golden_app`, so row-level security is really enforced on it (as in `tests_postgres`). This
+was added while drafting M05: as a superuser, the frozen confirmation store consumed another tenant's confirmation
+(DEF-003), so a result must never depend on which role the URL names.
+
+## Batch B2 status (drafted in the implementation session on the owner's instruction "draft B2 here")
+
+| File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |
+|---|---|---|---|---|---|
+| `s12/M05_confirmation_store.py` | M5 | 30 | 11 fail, 19 pass (the frozen store: regression, CONF-010) | 30 / 30 | 3 / 3 |
+| `s12/M06_entry.py` | M6 | 23 | 3 fail (DEF-001), 20 pass (prototype entry) | 23 / 23 | 3 / 3 |
+| `s12/M07_leases.py` | M7 | 14 | 14 fail | 14 / 14 | 3 / 3 |
+| `s12/M08_admission.py` | M8 | 36 | 36 fail | 36 / 36 | 3 / 3 |
+| `s12/M08a_worker_mgmt.py` | M8a | 47 | 37 fail, 10 pass (prototype entry quota) | 47 / 47 | 3 / 3 |
+| `s12/M09_budget.py` | M9 | 16 | 15 fail | 16 / 16 | 3 / 3 |
+
+All 482 cases of M01–M09 pass together on the reference (a scratch worktree, deleted; nothing of it is in `src/`).
+Building the reference caught five defects in the B2 drafts before pinning: M05 depended on the database role; M06's
+verifier case used a read-only plan and its race used `asyncio.gather` outside a loop; M06 could not see a wrong binding
+copied consistently into both the step row and the index (G3 now checked against the certified state); M07's I8 ordered
+tokens by `acquired_at` (transaction start time); M09 reused one execution id across tests.
+
+New fixtures: `fixtures/certified.py` (a state certified by running the real S0–S11 pipeline; entry readers; `fresh`;
+`seed_identity`); `fixtures/invariants.py` now checks I1, I2, I5, I7, I8, I9, I10, I12 (non-dead-letter parts).
+
+Interfaces fixed by B2 (details in each file's docstring):
+- M5 `adapters.postgres.confirmation_records.PostgresConsumedConfirmationReader`,
+  `engine.stages.s12_entry.confirmation.confirmation_denial` (C20; reasons `confirmation_mismatch`,
+  `confirmation_unavailable`), `check_entry(..., confirmations=...)`.
+- M6 the prototype's `admit_run` / `PostgresExecutionAdmission` / `check_entry`; creation logged `created`,
+  admission `admitted` (DEF-001).
+- M7 `adapters.postgres.leases.PostgresLeaseManager` (`acquire`, `renew`, `release`), `Lease`, `LeaseLost`.
+- M8 `contracts.step_admission.AdmissionDecision` (CONF-015), `engine.stages.s12_execute.admission_control`
+  (`AdmissionSnapshot`, `evaluate`, `admit_step`, `reject_outcome`), `engine.stages.s12_execute.selection`
+  (`select_worker`, `lease_for_step`).
+- M8a `engine.stages.s12_execute.eligibility` (`WorkerCandidate`, `SelectionContext`, `filter_workers`, CONF-016),
+  `adapters.postgres.selection.PostgresSelectionReader`.
+- M9 `PostgresBudgetReserver` operations take a `FenceHolder` and an Appendix A reason; `Reservation.reason`.
+
 ## Batch B1 status
 
 | File | Milestone | Cases | Red on `s12-work` (tag schema) | Reference implementation | Sabotage caught |
@@ -95,6 +137,16 @@ setup error):
 | `M03_reason_ignored.py` | `test_legal_edge_rejects_any_other_reason` (15 cases) |
 | `M04_closed_episode_moves.py` | `test_no_episode_move_after_closed_at` |
 | `M04_expired_lease_renewed.py` | `test_every_other_pair_is_illegal[lease]`, `test_lease_can_only_be_renewed_while_active` |
+| `M05_ignore_execution_id.py`, `M05_accept_pending.py` | the C20 mismatch cases |
+| `M05_consume_read_then_update.py` | `test_twenty_concurrent_consumers_one_winner` |
+| `M06_write_before_checks.py`, `M06_skip_plan_integrity.py` | denial / zero-row cases |
+| `M06_first_binding_for_every_step.py` | `test_admitted_run_is_durable_and_consistent[two-step-chain]` (G3) |
+| `M07_per_worker_token.py`, `M07_stale_leases_counted.py`, `M07_renew_after_expiry.py` | takeover, expiry, renewal cases |
+| `M08_capacity_rejects.py`, `M08_last_gate_wins.py`, `M08_owner_ignored.py` | gate 7, first-reject, locality |
+| `M08a_null_workspace_matches.py`, `M08a_assignment_for_event_runs.py`, `M08a_bypass_everything.py` | filters 4b, 14, bypass scope |
+| `M09_no_tenant_lock.py`, `M09_all_periods_count.py`, `M09_commit_from_reserved.py` | concurrency, period, illegal commit |
+
+`_lease_base.py` and `_budget_base.py` are helpers shared by those patches (not patches themselves).
 
 ```powershell
 Get-ChildItem tests_golden\sabotage\M0* | ForEach-Object {
