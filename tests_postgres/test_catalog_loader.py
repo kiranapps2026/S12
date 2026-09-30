@@ -83,3 +83,19 @@ def test_a_loaded_catalog_runs_a_request_through_s11_and_a_chain_through_s12_adm
         return outcome
     outcome = pg(body, *EMPTY)
     assert outcome.status == "ADMITTED" and outcome.run_status == "running"
+
+
+def test_the_committed_starter_catalog_loads_and_leaves_no_operation_blocked(pg):
+    doc = yaml.safe_load((Path(__file__).resolve().parent.parent / "docs" / "catalog" / "catalog.yaml").read_text(encoding="utf-8"))
+
+    async def body(db):
+        await catalog.apply(db, copy.deepcopy(doc))
+        blocked = await _rows(db, "SELECT kernel_op_id FROM kernel_ops WHERE truth_state = 'PRODUCTION_ENABLED' AND mutation <> 'R'"
+                                  " AND (observation_method IS NULL OR observation_method = '')")
+        counts = await _rows(db, "SELECT (SELECT count(*) FROM kernel_ops) AS ops, (SELECT count(*) FROM capabilities) AS caps,"
+                                 " (SELECT count(*) FROM bindings) AS binds")
+        mail = await _rows(db, "SELECT mutation, inverse FROM kernel_ops WHERE kernel_op_id = 'mail.email_send'")
+        return blocked, counts, mail
+    blocked, counts, mail = pg(body, *EMPTY)
+    assert blocked == [] and counts == [{"ops": 12, "caps": 12, "binds": 12}]
+    assert mail == [{"mutation": "IRREVERSIBLE", "inverse": None}]

@@ -18,7 +18,7 @@ Never ask for or repeat passwords/keys; the DeepSeek key is a test key the owner
 
 ## Pending
 1. Owner: finish `python tools\setup_database.py --reset-password --write-env` (was at the password prompt), then `sync_and_check.ps1`.
-2. Owner writes the REAL catalog (`docs/catalog/catalog.yaml`, template `catalog.example.yaml`), then `python tools/load_catalog.py docs/catalog/catalog.yaml --apply` and `registry_readiness.py` = 0 blocked (D1d). The `suprpg` registry is empty until then.
+2. Owner reviews the STARTER catalog `docs/catalog/catalog.yaml` (12 CRM/e-mail operations, placeholders for adapters; drafted without knowing the real operations) and edits it to the real ones (template: `catalog.example.yaml`), then `python tools/load_catalog.py docs/catalog/catalog.yaml --apply` and `registry_readiness.py` = 0 blocked (D1d). The `suprpg` registry is empty until then.
 3. Owner runs `tools/owner_verify.ps1` (hard-coded path `C:\Users\Administrator\Documents\1SuperAgents`; set `PYTHONUTF8=1`) and tags `s0-s11-certified`. Hold the tag until item 2 is done. Then S0–S11 code is frozen.
 4. `tools/owner_pin.ps1` has a stale hash (integrity file; needs the owner's instruction).
 5. Built after the first handoff (`ONBOARDING.md`, migration 014): `tools/create_tenant.py` (first tenant + owner + key), invitations, PostgreSQL rate limits (429), LLM usage metering + `/admin/usage`, file-metadata and template writers, `PostgresResultWriter` (for S15 to call). Still not built: IdP linking, invitation email delivery, per-tenant limits, usage caps/invoicing, file content storage, the S15 caller of `record_result`.

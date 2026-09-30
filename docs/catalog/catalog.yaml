@@ -1,0 +1,60 @@
+# STARTER registry catalog: a CRM-style example set (contacts, notes, tasks, one outbound e-mail).
+# It was drafted WITHOUT knowing your real operations. REVIEW EVERY LINE, then replace or trim it:
+#   * `provider`, `engine_module` and `adapter_class` are placeholders: the S12 adapters (milestone M10) do not exist yet;
+#   * every `observation.method` (get_contact, get_note, ...) must be a read your provider adapter really implements,
+#     because S12 uses it to prove a write happened (or, for a delete, that the resource is gone);
+#   * risk_floor / cost are starting values: reads 0.1, writes 0.2-0.3, deletes 0.5-0.6, e-mail 0.8. The kernel refuses a
+#     plan whose risk reaches the tenant's threshold, and asks for confirmation on deletes and irreversible steps;
+#   * `mail.email_send` is IRREVERSIBLE (a sent message cannot be recalled): it has no inverse on purpose.
+# Load:  python tools/load_catalog.py docs/catalog/catalog.yaml            (dry run)
+#        python tools/load_catalog.py docs/catalog/catalog.yaml --apply
+# Then give users the capabilities they may use (admin API: POST /api/v1/admin/grants); loading does not grant anything.
+versions:
+  capability: cap-1
+  binding: bind-1
+  risk_policy: risk-1
+  authorization: auth-1
+  worker_runtime: rt-1
+  model: model-1
+
+kernel_ops:
+  - {id: crm.contact_list, mutation: R, risk_floor: 0.1, cost: 1, timeout_seconds: 30, retry_safety: safe}
+  - {id: crm.contact_create, mutation: W, risk_floor: 0.2, cost: 3, timeout_seconds: 30, retry_safety: never, inverse: crm.contact_delete, observation: {method: get_contact, identifier_field: id}}
+  - {id: crm.contact_update, mutation: W, risk_floor: 0.3, cost: 3, timeout_seconds: 30, retry_safety: never, observation: {method: get_contact, identifier_field: id}}
+  - {id: crm.contact_delete, mutation: D, risk_floor: 0.6, cost: 5, timeout_seconds: 30, retry_safety: never, observation: {method: get_contact, identifier_field: id, expects_absent: true}}
+  - {id: crm.note_list, mutation: R, risk_floor: 0.1, cost: 1, timeout_seconds: 30, retry_safety: safe}
+  - {id: crm.note_create, mutation: W, risk_floor: 0.2, cost: 2, timeout_seconds: 30, retry_safety: never, inverse: crm.note_delete, observation: {method: get_note, identifier_field: id}}
+  - {id: crm.note_delete, mutation: D, risk_floor: 0.5, cost: 4, timeout_seconds: 30, retry_safety: never, observation: {method: get_note, identifier_field: id, expects_absent: true}}
+  - {id: crm.task_list, mutation: R, risk_floor: 0.1, cost: 1, timeout_seconds: 30, retry_safety: safe}
+  - {id: crm.task_create, mutation: W, risk_floor: 0.2, cost: 2, timeout_seconds: 30, retry_safety: never, inverse: crm.task_delete, observation: {method: get_task, identifier_field: id}}
+  - {id: crm.task_update, mutation: W, risk_floor: 0.3, cost: 2, timeout_seconds: 30, retry_safety: never, observation: {method: get_task, identifier_field: id}}
+  - {id: crm.task_delete, mutation: D, risk_floor: 0.5, cost: 4, timeout_seconds: 30, retry_safety: never, observation: {method: get_task, identifier_field: id, expects_absent: true}}
+  - {id: mail.email_send, mutation: IRREVERSIBLE, risk_floor: 0.8, cost: 8, timeout_seconds: 30, retry_safety: never, observation: {method: get_message, identifier_field: id}}
+
+capabilities:
+  - {id: cap.contact.list, name: List contact, intent: contact.list, mutation: R, risk_floor: 0.1, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.contact.create, name: Create contact, intent: contact.create, mutation: W, risk_floor: 0.2, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.contact.update, name: Update contact, intent: contact.update, mutation: W, risk_floor: 0.3, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.contact.delete, name: Delete contact, intent: contact.delete, mutation: D, risk_floor: 0.6, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.note.list, name: List note, intent: note.list, mutation: R, risk_floor: 0.1, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.note.create, name: Create note, intent: note.create, mutation: W, risk_floor: 0.2, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.note.delete, name: Delete note, intent: note.delete, mutation: D, risk_floor: 0.5, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.task.list, name: List task, intent: task.list, mutation: R, risk_floor: 0.1, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.task.create, name: Create task, intent: task.create, mutation: W, risk_floor: 0.2, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.task.update, name: Update task, intent: task.update, mutation: W, risk_floor: 0.3, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.task.delete, name: Delete task, intent: task.delete, mutation: D, risk_floor: 0.5, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.email.send, name: Send email, intent: email.send, mutation: IRREVERSIBLE, risk_floor: 0.8, risk_rule: 0.0, risk_implied: 0.0}
+
+bindings:
+  - {id: bind.contact.list, capability: cap.contact.list, kernel_op: crm.contact_list, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.contact.create, capability: cap.contact.create, kernel_op: crm.contact_create, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.contact.update, capability: cap.contact.update, kernel_op: crm.contact_update, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.contact.delete, capability: cap.contact.delete, kernel_op: crm.contact_delete, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.note.list, capability: cap.note.list, kernel_op: crm.note_list, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.note.create, capability: cap.note.create, kernel_op: crm.note_create, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.note.delete, capability: cap.note.delete, kernel_op: crm.note_delete, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.task.list, capability: cap.task.list, kernel_op: crm.task_list, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.task.create, capability: cap.task.create, kernel_op: crm.task_create, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.task.update, capability: cap.task.update, kernel_op: crm.task_update, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.task.delete, capability: cap.task.delete, kernel_op: crm.task_delete, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.email.send, capability: cap.email.send, kernel_op: mail.email_send, provider: mail, engine_module: engines.mail, adapter_class: MailAdapter}

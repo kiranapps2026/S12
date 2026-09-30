@@ -68,3 +68,9 @@ def test_references_types_ranges_and_consistency_are_checked():
 def test_garbage_input_is_reported_not_raised():
     assert "must be a mapping" in _problems([])
     assert "must be a list of mappings" in _problems({"versions": EXAMPLE["versions"], "kernel_ops": "x"})
+
+
+def test_the_committed_catalog_file_is_valid():
+    """docs/catalog/catalog.yaml is what the owner loads: it must always pass validation (also after the owner edits it)."""
+    path = Path(__file__).resolve().parent.parent / "docs" / "catalog" / "catalog.yaml"
+    assert catalog.validate(yaml.safe_load(path.read_text(encoding="utf-8"))) == []
