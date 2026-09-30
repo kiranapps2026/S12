@@ -10,6 +10,7 @@ import pytest
 
 from adapters.postgres.activation import PostgresActivationReader
 from adapters.postgres.admission import PostgresExecutionAdmission
+from adapters.postgres.confirmation_records import PostgresConsumedConfirmationReader
 from adapters.postgres.registry import PostgresBindingVersionReader, PostgresKernelOpMetadataReader
 from bootstrap import build_runner
 from contracts import codec
@@ -37,9 +38,11 @@ async def _certified(db, model, tenant=A, request_id=None):
 
 
 def _admit(db, state, **kw):
+    # a run resumed after a confirmation is checked against the stored confirmation row (gate C20)
     return admit_run(state, bindings=PostgresBindingVersionReader(db), activation=PostgresActivationReader(db),
                      metadata=PostgresKernelOpMetadataReader(db), admitter=kw.get("admitter", PostgresExecutionAdmission(db)),
-                     runtime_instance_id=kw.get("runtime", "runtime-1"))
+                     runtime_instance_id=kw.get("runtime", "runtime-1"),
+                     confirmations=PostgresConsumedConfirmationReader(db))
 
 
 async def _count(db, tenant, table, where="true"):

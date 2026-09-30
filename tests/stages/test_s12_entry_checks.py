@@ -286,9 +286,25 @@ def test_denials_are_reported_not_raised_and_the_state_is_untouched():
 
 # ---- item 6: verifiers -----------------------------------------------------------------------
 
-def _decide(state, metadata=None):
+class StoreReader:
+    """Fixture ConsumedConfirmationReader (gate C20) over the in-memory confirmation store a pipeline used."""
+    def __init__(self, store):
+        self.store = store
+
+    async def read(self, confirmation_id, *, tenant_id):
+        from contracts.confirmation_record import ConsumedConfirmation
+        store = getattr(self.store, "_inner", self.store)     # the recording wrapper delegates to the real store
+        row = store._rows.get(confirmation_id)
+        if row is None or row[1] != tenant_id:
+            return None
+        conf, _, execution_id = row
+        status = "consumed" if conf.consumed_at is not None else "pending"
+        return ConsumedConfirmation(status, execution_id, conf.plan_hash, conf.user_id)
+
+
+def _decide(state, metadata=None, confirmations=None):
     return asyncio.run(check_entry(state, bindings=Bindings(), activation=StaticActivation(),
-                                   metadata=metadata or Metadata()))
+                                   metadata=metadata or Metadata(), confirmations=confirmations))
 
 
 def test_item_6_a_read_only_plan_needs_no_verifier_and_no_metadata():
@@ -319,7 +335,7 @@ def test_item_6_a_delete_is_verified_by_absence():
     done = asyncio.run(build_pipeline(deps).reply("tenant-1", r.final_state.confirmation.confirmation.confirmation_id,
                                                   "user-1", True))
     assert done.status.value == "NORMAL"
-    d = _decide(done.final_state)
+    d = _decide(done.final_state, confirmations=StoreReader(deps.confirmation_store))
     assert [v.expected_state for v in d.verifiers] == [{"exists": True, "properties": {}}, {"exists": False}]
 
 
