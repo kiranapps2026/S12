@@ -344,6 +344,11 @@ def test_infrastructure_settings_come_from_the_environment_and_are_validated():
     assert (settings.step_timeout_s, settings.lease_ttl_s) == (30.0, 30.0)
     with pytest.raises(ValueError):
         ExecutionSettings.from_env({**env, "S12_STEP_TIMEOUT_S": "4"})         # inverted timeouts (C37)
+    assert 0 < settings.recovery_sweep_interval_s < 30                           # §13: under 30 seconds
+    assert ExecutionSettings.from_env({**env, "S12_RECOVERY_SWEEP_INTERVAL_S": "5"}).recovery_sweep_interval_s == 5
+    for bad in ("30", "0", "soon"):
+        with pytest.raises(ValueError):
+            ExecutionSettings.from_env({**env, "S12_RECOVERY_SWEEP_INTERVAL_S": bad})
 
 
 def test_every_move_on_these_paths_is_legal(db_schema, run):

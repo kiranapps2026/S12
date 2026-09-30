@@ -30,18 +30,20 @@ was added while drafting M05: as a superuser, the frozen confirmation store cons
 
 | File | Milestone | Cases | Red on `s12-work` | Reference implementation | Sabotage caught |
 |---|---|---|---|---|---|
-| `s12/M19_recovery.py` | M19 | 21 | 20 fail, 1 passes (invariants) | 21 / 21 | 4 / 4 |
-| `s12/M20_multiprocess.py` | M20 | 9 | 8 fail, 1 passes (portability scan, standing rule) | 9 / 9 | 3 / 3 |
-| `s12/M21_journeys.py` | M21 ★ | 18 | 12 fail, 6 pass (standing architecture rules, settings, invariants) | 18 / 18 | 2 / 2 |
+| `s12/M19_recovery.py` | M19 | 40 | 39 fail, 1 passes (invariants) | 40 / 40 | 4 / 4 |
+| `s12/M20_multiprocess.py` | M20 | 10 | 9 fail, 1 passes (portability scan, standing rule) | 10 / 10 | 4 / 4 |
+| `s12/M21_journeys.py` | M21 ★ | 18 | 13 fail, 5 pass (standing architecture rules, invariants) | 18 / 18 | 2 / 2 |
 
-All 857 cases of M01–M21 pass together on the reference; the B5 files passed 10 consecutive runs, real subprocesses
+After a second review pass (20 guard-drill cases, nine of them red on the first-pass reference for real defects), all
+877 cases of M01–M21 pass together on the reference; the B5 files passed 20 consecutive runs, real subprocesses
 included. New fixture `fixtures/runtime_process.py`: a real Worker Runtime process whose `FileProvider` keeps its side
 effects in a file shared by all processes (it also applies `GOLDEN_SABOTAGE`). The invariant checker gains I15.
 Interfaces fixed by B5 (details in each docstring):
 - M19 `engine.stages.s12_execute.fault_injection` (`POINTS`, `SimulatedCrash`, `NoFaults`), `LoopDeps.faults`,
   `loop.recover_execution`, `engine.stages.s12_execute.recovery.RecoverySweeper`, `acquire(..., skip_locked=)`,
   `PostgresLeaseManager.expire_lapsed`, `PostgresEpisodes.find_open`, `PostgresExecutionEvents.layer_verdicts`,
-  migration 017 `s12_recovery_candidates`.
+  migration 017 `s12_recovery_candidates(runtime_instance_id, limit, orphan_after_s)` (judged by the latest lease,
+  CONF-046), `RecoverySweeper.run`, `ExecutionSettings.recovery_sweep_interval_s`, `LoadedStep.kernel_op_id`.
 - M20 nothing new: real processes, two runtimes, SKIP LOCKED, tenant isolation, forced RLS, portability.
 - M21 `contracts.metrics` (`MetricsHook`, `NoMetrics`, counter names), `LoopDeps.metrics`; the journeys and the
   architecture suite.

@@ -131,3 +131,81 @@ The certification run on `s12-work` replaces these numbers; the certifier OS goe
 - Migration 017.
 
 All are additive: M01–M18 pass unchanged on the reference.
+
+## Second review pass (2026-09-30, on the owner's instruction "review once again deeply")
+
+The drafts were read again against gate §13 line by line, §15.2, C13, C14, C16, C24, C35 and suite 18, and against the
+earlier milestones they depend on (M07 lease CAS, M11 dispatch marker and attempts, M12 loop and plan integrity, M13
+probe continuation, M14 cancellation, M15 VERIFICATION continuation, M16 consolidation, M17 dead letters). The question
+stayed the same: which wrong implementation would still pass? Twenty cases were added (M19 +19, M20 +1), one M21 case
+was extended, and a sabotage patch was added. **Nine of the new cases were red on the first-pass reference for real
+defects**, now fixed there (the reference is scratch; nothing of it is committed).
+
+### Defects the new cases found in the reference
+
+| Finding | Why it matters | Fix (reference) |
+|---|---|---|
+| a step in UNKNOWN was not treated as in flight (§13 step 3 lists RUNNING / TIMEOUT / UNKNOWN / PENDING_PROBE) | the run could never finish: the loop skips a non-PENDING step and consolidation refuses a live one; every sweep would take it again | UNKNOWN is in flight: `unknown → pending_probe (recovery)`, then the rule |
+| a RECONCILING run was taken over, then handed to `run_execution`, which drives only RUNNING runs | the run stayed RECONCILING for ever, re-taken on every sweep with a new token | recovery consolidates a RECONCILING run after resolving it (C13); a step found NOT_EXECUTED there cannot retry (no RECONCILING → RUNNING), so it ends `cancelled (not_executed_no_retry)` (CONF-047) |
+| the CONF-043 path (in-flight step of a tampered plan) read the step's operation from the plan's bindings, which are empty for an untrusted plan | a KeyError in recovery; that path had no case (the first-pass tamper case had no step in flight) | the operation comes from the admitted `execution_steps` row (`LoadedStep.kernel_op_id`) |
+| one run whose recovery raised (here an idempotency conflict) aborted the whole sweep | one poisoned run starved every other orphan of every sweep | each run is isolated: logged at ERROR (`recovery_failed`, the run and the error type, never its text), the sweep goes on; a simulated crash (BaseException) is never caught |
+| a run with no usable lease was a candidate immediately, including a run its live admitting runtime was about to lease and a live run **between two steps** (the loop releases its lease when a step commits) | another runtime's sweeper took over live runs (safe under fencing, but a needless takeover). This was the one failure seen in the 10× repeats (1 of 660 case runs): M20's "claimed exactly once" is nondeterministic while it holds. Found by reasoning from the log (no database error in that window, so an assertion on timing) and then pinned deterministically | a run is judged by its latest lease: lapsed or expired → at once; released → one lease TTL after the release; none → one TTL after the ownership was written (CONF-046) |
+| the `SECURITY DEFINER` discovery function used `SET search_path FROM CURRENT` | PostgreSQL resolves `pg_temp` first unless it is listed: a caller's temporary `execution_runs` stood in for the real one inside a function that bypasses RLS | `search_path` pinned to the schema with `pg_temp` last; it is the only `SECURITY DEFINER` function in the schema (CONF-046) |
+| no sweeper loop existed: the runtime process swept in a hand-written loop | §13 "on start ... start the recovery sweeper, which runs at an interval under 30 seconds" had no product code and no setting | `RecoverySweeper.run(stop, interval_s)` (0 < interval < 30, a failed sweep is logged and the next one runs) and `ExecutionSettings.recovery_sweep_interval_s` (default 10, `S12_RECOVERY_SWEEP_INTERVAL_S`); the M20 processes now run the product loop |
+
+Two first-draft expectations of mine were wrong and were corrected, not the reference:
+- after a crash with no dispatch marker, recovery retries with the same attempt number (attempt 1 never left the process, so its number is reused; C35 counts dispatched attempts). The double-crash case pins `att-0-2`, not `att-0-3`.
+- `LoopResult.run_status` after a consolidation is the loop's view (`running`, as M14 pins), not the consolidated status, so the RECONCILING case reads the status from the database.
+
+### Cases added
+
+| File | Case | What a wrong implementation would get past without it |
+|---|---|---|
+| M19 | recovery is itself recoverable (4 parametrized double crashes: probe, retry after NOT_EXECUTED, Crash A, VERIFICATION) | a second crash inside recovery duplicating an episode, re-executing, or reusing a token; each run ends with three increasing tokens and the third runtime as owner |
+| M19 | an UNKNOWN step is probed, never called blindly | the UNKNOWN gap above |
+| M19 | a RECONCILING run is resolved and consolidated (executed; not executed) | the RECONCILING gap above; CONF-047 |
+| M19 | the in-flight step of a tampered plan is dead-lettered, never probed | CONF-043's actual path: DEAD_LETTER, budget LOCKED, a `unknown_unresolved` / PROBE dead letter, rest `run_dead_lettered` |
+| M19 | every revocation found in recovery resolves, then cancels (credential invalid while LOCKED, authorization revoked after the call, binding invalid after the commit) | §13 1a only for the kill switch; an unexecuted step retried after a revocation; the reason lost |
+| M19 | a cancellation requested while crashed is honoured | C16 across a crash (the flag is read from the database) |
+| M19 | one run that cannot be recovered does not stop the sweep | the sweep-isolation gap above |
+| M19 | a sweep takes at most its batch; a later sweep takes the rest; `batch=0` refused | an unbounded or repeating sweep |
+| M19 | a run never leased is orphaned only after a lease TTL | CONF-046 |
+| M19 | a live run between steps is not taken; a silent one is (a TTL after its release) | the between-steps takeover above |
+| M19 | a run is judged by its latest lease only (an expired latest lease → at once; an old expired lease under a live new one → never) | judging by any lease, or the oldest |
+| M19 | the discovery function is hardened | the `search_path` hijack; a second `SECURITY DEFINER` function; a volatile or wider result |
+| M19 | the sweeper runs with the runtime until stopped, at an interval under 30 s, and survives a failed sweep | §13's sweeper lifecycle; the error text in the log |
+| M20 | a runtime for one tenant can neither forge rows for another nor claim its runs | RLS that checks rows read but not rows written (`WITH CHECK`); the ledger, transition log, manifests and checkpoints visible across tenants; a claim under the wrong tenant |
+| M21 | settings: `recovery_sweep_interval_s` defaults under 30 s; 30, 0 and a non-number refused | an unvalidated sweep interval |
+
+Sabotage patch added: `M20_rls_write_unchecked.sql` (the tenant policies stop checking written rows; caught by the new M20 case).
+`M19_sweeper_takes_its_own.py` follows the function's new signature.
+
+### Mutation checks (by hand on the reference; each turned the named case red)
+
+UNKNOWN removed from the in-flight set; UNKNOWN not moved to PENDING_PROBE; RECONCILING not consolidated; the
+`not_executed_no_retry` cancel removed; the dead letter's operation read from the plan again; the per-run `except`
+narrowed; the per-sweep `except` narrowed; the error text logged instead of its type; the never-leased grace inverted; a released lease orphaned at once; an expired latest lease not orphaned; the oldest
+lease judged instead of the latest; `pg_temp` dropped from the pinned `search_path`; the candidate `LIMIT` removed.
+
+### Validation after the pass
+
+| File | Cases | Red on `s12-work` | Reference | Sabotage caught |
+|---|---|---|---|---|
+| `s12/M19_recovery.py` | 40 | 39 fail, 1 passes (invariants) | 40 / 40 | 4 / 4 |
+| `s12/M20_multiprocess.py` | 10 | 9 fail, 1 passes (portability scan) | 10 / 10 | 4 / 4 |
+| `s12/M21_journeys.py` | 18 | 13 fail, 5 pass (four architecture scans, invariants; settings is now red) | 18 / 18 | 2 / 2 |
+
+- All 877 cases of M01–M21 pass together on the reference (970 with `tests_agent`); `tests/` 836.
+- The three B5 files passed 20 consecutive runs after the CONF-046 fix (68 / 68 each time).
+- Every M10–M21 sabotage patch is caught (61 / 61: 51 for M10–M18, 10 for B5), none as an error.
+- M01–M09 and `tests_agent` stay green on `s12-work` (583).
+
+### Checked and left as they are
+
+| Point | Reason |
+|---|---|
+| `EXECUTE` on the discovery function is not revoked from `PUBLIC` | it returns ids only and writes nothing; revoking needs the deployment's role name, which the migrations do not know. Recorded with CONF-046 for the owner to decide at deployment |
+| the runtime process builds its dependencies from M17's `_dl_deps` | deliberate: the killed and the recovering processes are the same Worker Runtime the in-process goldens certify, not a second wiring that could drift |
+| M21's host scan also reads docstrings | a URL or host in S12 code is a finding even in prose; the scan found none |
+| a plan both tampered and revoked | CONF-043 wins (the in-flight step is never probed from an untrusted plan); the safety properties are pinned, the precedence of reasons is not |
+| lease renewal during a step (CONF-045), checkpoint contents (CONF-044) | still pending rulings |

@@ -3,7 +3,8 @@
 Run as ``python -m tests_golden.fixtures.runtime_process --url ... --schema ... --runtime ... --effects FILE
 (--run TENANT EXECUTION | --sweep SECONDS) [--hang POINT]``. It builds the same Worker Runtime the in-process goldens
 use (M17's dependencies: guard, verification, consolidation, dead letters), connected as the non-superuser role
-``golden_app`` to one golden schema, and either runs one execution or sweeps for orphaned runs until the time is up.
+``golden_app`` to one golden schema, and either runs one execution or runs the product's recovery sweeper
+(``RecoverySweeper.run``) until the time is up.
 
 The provider is ``FileProvider``: a ``BaseAdapter`` whose side-effect ledger is an append-only file shared by every
 process, so a side effect survives the process that caused it (a real provider's state survives a crashed client), and
@@ -22,6 +23,7 @@ import time
 from pathlib import Path
 
 HANG_S = 3600.0
+SWEEP_INTERVAL_S = 0.2
 
 
 def executions(path: Path) -> list[str]:
@@ -112,11 +114,10 @@ async def _main(args) -> int:
             print(f"RESULT {result.run_status} {result.reason}", flush=True)
             return 0
         from engine.stages.s12_execute.recovery import RecoverySweeper
-        sweeper, deadline = RecoverySweeper(database, deps), time.monotonic() + args.sweep
-        while time.monotonic() < deadline:
-            for _tenant_id, execution_id, result in await sweeper.sweep():
-                print(f"SWEPT {execution_id} {result.run_status} {result.reason}", flush=True)
-            await asyncio.sleep(0.2)
+        stop = asyncio.Event()                                     # the product's sweeper loop (§13), until the time is up
+        asyncio.get_running_loop().call_later(args.sweep, stop.set)
+        sweeps = await RecoverySweeper(database, deps).run(stop, interval_s=SWEEP_INTERVAL_S)
+        print(f"SWEPT {sweeps}", flush=True)
         return 0
     finally:
         await pool.close()

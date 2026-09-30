@@ -16,6 +16,7 @@ append-only file shared by every process).
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import queue
 import subprocess
@@ -203,7 +204,6 @@ def test_two_sweeping_processes_claim_every_orphaned_run_exactly_once(db_schema,
 
 def test_a_sweeper_skips_an_execution_another_sweeper_holds(db_schema, run):
     import asyncio
-    import dataclasses
     from engine.stages.s12_execute.loop import recover_execution
     from tests_golden.s12.M17_dead_letter import _dl_deps
     from tests_golden.s12.M12_loop import _mock
@@ -274,6 +274,58 @@ def test_a_runtime_for_one_tenant_can_neither_read_nor_change_another_tenants_ro
     assert run(PostgresRunSummaries(db).load(a_tenant, b_execution)) is None
     assert _steps(db_schema, run, b_execution)[b_first]["status"] == "failed"
     run(assert_system_invariants(db_schema))                                       # includes I15
+
+
+def test_a_runtime_for_one_tenant_can_neither_forge_rows_for_another_nor_claim_its_runs(db_schema, run):
+    """Suite 18, writes: RLS checks the row written, not only the rows read (42501 on a forged tenant); the ledger,
+    the transition log and the manifests are hidden as well; and a run is claimed only under its own tenant (the
+    discovery function's ids are data, never a licence: recovery under the wrong tenant finds no run)."""
+    import asyncpg
+    from engine.stages.s12_execute.loop import recover_execution
+    from tests_golden.s12.M12_loop import _mock
+    from tests_golden.s12.M17_dead_letter import _dl_deps
+    from engine.stages.s12_execute.loop import run_execution
+    a_state, b_state = _state("golden-proc-forge-a", "procforgea"), _state("golden-proc-forge-b", "procforgeb")
+    a_tenant, a_execution = _admit(db_schema, run, a_state)
+    b_tenant, b_execution = _admit(db_schema, run, b_state)
+    run(run_execution(_dl_deps(db_schema, _mock()), b_tenant, b_execution))
+    db = db_schema.database()
+    b_request = b_state.execution_context.request_id
+
+    async def hidden():
+        async with db.tenant_transaction(a_tenant) as c:
+            return {
+                "state_transitions": await c.fetchval("SELECT count(*) FROM state_transitions WHERE execution_id = $1",
+                                                      b_execution),
+                "execution_manifests": await c.fetchval(
+                    "SELECT count(*) FROM execution_manifests WHERE execution_id = $1", b_execution),
+                "checkpoints": await c.fetchval("SELECT count(*) FROM checkpoints WHERE execution_id = $1",
+                                                b_execution),
+                "idempotency_ledger": await c.fetchval(
+                    "SELECT count(*) FROM idempotency_ledger WHERE idempotency_key LIKE $1", b_request + ":%"),
+            }
+    assert set(run(hidden()).values()) == {0}
+    assert run(db_schema.fetchval("SELECT count(*) FROM idempotency_ledger WHERE idempotency_key LIKE $1",
+                                  b_request + ":%")) > 0                          # they exist; A cannot see them
+
+    async def forge(sql, *args):
+        async with db.tenant_transaction(a_tenant) as c:
+            await c.execute(sql, *args)
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):                    # moving a row into B's tenant
+        run(forge("UPDATE execution_runs SET tenant_id = $1 WHERE execution_id = $2", b_tenant, a_execution))
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):                    # writing a row for B
+        run(forge("INSERT INTO state_transitions (tenant_id, execution_id, entity_type, entity_id, from_state,"
+                  " to_state, reason, runtime_instance_id) VALUES ($1, $2, 'run', $2, 'completed', 'running',"
+                  " 'forged', 'runtime-X')", b_tenant, b_execution))
+    before = run(db_schema.fetchval("SELECT count(*) FROM state_transitions WHERE execution_id = $1", b_execution))
+    with pytest.raises(LookupError):
+        run(recover_execution(dataclasses.replace(_dl_deps(db_schema, _mock()), runtime_instance_id="runtime-X"),
+                              a_tenant, b_execution))
+    assert run(db_schema.fetchval("SELECT count(*) FROM state_transitions WHERE execution_id = $1",
+                                  b_execution)) == before
+    assert run(db_schema.fetchval("SELECT tenant_id FROM execution_runs WHERE execution_id = $1",
+                                  a_execution)) == a_tenant
+    run(assert_system_invariants(db_schema))
 
 
 def test_every_s12_table_forces_row_level_security_on_its_tenant(db_schema, run):
