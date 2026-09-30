@@ -38,7 +38,7 @@ Order matters: A → B → (C, D in parallel) → tag → E → F. Blocking item
 ### Phase B — S0–S11 production readiness and proof
 | # | Item | Status |
 |---|---|---|
-| B1 **[B]** | Re-run the live DeepSeek test on the latest commits, including an answer with `steps` (only the owner's key can) | open |
+| B1 **[B]** | Re-run the live DeepSeek test on the latest commits, including an answer with `steps` | **done 2026-09-30** at `3acd481`: `test_live_full_stack.py` 6/6 (77 s) and `test_live_chain.py` 6/6 (21 s), real `deepseek-flash`, owner's machine |
 | B2 | Observe real empty / truncated / content-filtered provider replies (unit-tested only) | open |
 | B3 | CI: a workflow that runs `pytest tests`, `tests_postgres` (PostgreSQL service) and `owner_certify.py`; the repo has none | open |
 | B4 | Admin API or CLI to issue/revoke API keys and to issue/rotate webhook secrets (`issue`/`rotate` exist, no route) | open |
