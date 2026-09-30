@@ -13,9 +13,9 @@ HIGH = dict(mutation="D", risk=0.9, steps=2, graph="chain", confidence=0.8)
 def test_the_stored_run_holds_no_request_text_and_can_still_be_answered():
     deps = make_pipeline_deps(make_scenario(**HIGH))
     runner = build_pipeline(deps)
-    paused = asyncio.run(runner.run(make_entry({"message": "delete Secret Person 555", "connection_id": "c"})))
+    paused = asyncio.run(runner.run(make_entry({"message": "delete Secret Person qzqz", "connection_id": "c"})))
     ((key, stored),) = deps.suspended.rows.items()
-    assert "Secret Person" not in stored and "555" not in stored
+    assert "Secret Person" not in stored and "qzqz" not in stored
     state = json.loads(stored)
     assert state["entry_request"]["raw_payload"] == {} and state["normalized_input"]["sanitized_input"] == {}
     n = state["normalized_input"]
