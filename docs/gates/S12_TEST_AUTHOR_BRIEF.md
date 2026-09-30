@@ -10,6 +10,23 @@ Two sessions work on branch `s12-work`, on disjoint files, so the golden tests c
 The owner pins between the two (`tools/owner_pin_s12.ps1`) and runs the checkpoints (`tools/owner_verify_s12.ps1 Mxx`).
 A changed golden file fails S12-PIN for the implementation session until the owner re-pins; that is intended.
 
+## Set up the second folder (same machine, second Claude account)
+
+The second session gets its **own clone**; two sessions must never share one working folder. From PowerShell:
+
+```powershell
+# first time (the script is in the master folder already)
+powershell -ExecutionPolicy Bypass -File C:\Users\Administrator\Documents\1SuperAgents\tools\sync_s12_workspace.ps1
+# before every session afterwards (fetch + pull everything, reinstall if needed, re-check)
+powershell -ExecutionPolicy Bypass -File C:\Users\Administrator\Documents\1SuperAgents-tests\tools\sync_s12_workspace.ps1 -RunGolden
+```
+
+It clones `s12-work` into `C:\Users\Administrator\Documents\1SuperAgents-tests`, refuses to touch local changes or
+unpushed commits, creates that folder's own `.venv` (so code is imported from that folder), writes a `.env` holding only
+`TEST_DATABASE_URL` (copied from the master `.env`, value never shown), checks the database, and runs the S12 tooling
+self-tests. Sharing the master's `_test` database is safe: every golden module works in its own schema. Use
+`-TestDatabase suprpg_golden_test` for a separate one (create it first). Then open that folder in the second account.
+
 ## Paste this as the first message of the test-author session
 
 ```text

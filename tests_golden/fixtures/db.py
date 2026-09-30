@@ -1,6 +1,7 @@
 """Golden database harness (owner-pinned, gate §15.1).
 
-Every golden module gets its own PostgreSQL schema in the database named by ``TEST_DATABASE_URL`` (name must end in
+Every golden module gets its own PostgreSQL schema in the database named by ``TEST_DATABASE_URL`` (environment, else the
+repository ``.env``; name must end in
 ``_test``). The schema is created empty, the project's migrations are applied into it through
 ``adapters.postgres.migrate.apply_migrations``, and it is dropped when the module finishes.
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from pathlib import Path
 from urllib.parse import urlparse
 
 import asyncpg
@@ -26,8 +28,19 @@ from adapters.postgres.database import Database, normalize_url
 from adapters.postgres.migrate import apply_migrations
 
 
+def _from_dotenv() -> str | None:
+    """TEST_DATABASE_URL from the repository .env (only that key is read; nothing is printed)."""
+    env = Path(__file__).resolve().parents[2] / ".env"
+    if env.exists():
+        for line in env.read_text(encoding="utf-8-sig").splitlines():
+            key, _, value = line.strip().removeprefix("export ").partition("=")
+            if key.strip() == "TEST_DATABASE_URL" and value.strip():
+                return value.strip().strip("\"'")
+    return None
+
+
 def golden_database_url() -> str:
-    raw = os.environ.get("TEST_DATABASE_URL")
+    raw = os.environ.get("TEST_DATABASE_URL") or _from_dotenv()
     if not raw:
         raise RuntimeError("TEST_DATABASE_URL is not set: golden tests need real PostgreSQL (gate §15.1)")
     url = normalize_url(raw)
