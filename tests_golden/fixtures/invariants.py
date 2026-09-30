@@ -5,6 +5,11 @@ It grows milestone by milestone. Active now:
     ``none`` for an episode) goes to the machine's initial state with its creation reason; every other row is an
     Appendix A edge whose reason is allowed on that edge.
   * I9 (M6): every persisted plan's canonical digest equals its ``plan_hash``.
+  * I7 (M7): no ``active`` lease for a terminal run; no lease left ``expired`` and later became ``active`` (log).
+  * I8 (M7): fence tokens strictly increase per worker and per execution, in issue order (the lease log rows that issue
+    a token carry it in ``fence_token``); usable leases per
+    worker (``active`` and ``expires_at > now()``) never exceed ``capacity`` and equal ``current_load`` once stale leases
+    have been expired (checked on the stored rows: ``active`` leases per worker equal ``current_load`` and <= capacity).
   * I10 (M6): every step's ``resolved_binding_id``, ``effective_risk`` and ``effective_mutation`` equal that step's binding
     in the persisted ``frozen_bindings`` (through ``step_binding_index``).
 """
@@ -70,6 +75,49 @@ async def plan_problems(schema) -> list[str]:
     return problems
 
 
+async def lease_problems(schema) -> list[str]:
+    tables = {r["t"] for r in await schema.fetch(
+        "SELECT table_name AS t FROM information_schema.tables WHERE table_schema = $1", schema.name)}
+    if "worker_leases" not in tables:
+        return []
+    problems = []
+    for r in await schema.fetch(
+            "SELECT l.lease_id FROM worker_leases l JOIN execution_runs e ON e.execution_id = l.execution_id"
+            " WHERE l.status = 'active' AND e.status IN ('completed','partial','failed','cancelled','dead_letter')"):
+        problems.append(f"I7 lease {r['lease_id']}: active for a terminal run")
+    for r in await schema.fetch(
+            "SELECT a.entity_id FROM state_transitions a JOIN state_transitions b ON b.entity_id = a.entity_id"
+            " AND b.entity_type = 'lease' AND b.transition_id > a.transition_id AND b.to_state = 'active'"
+            " WHERE a.entity_type = 'lease' AND a.to_state = 'expired'"):
+        problems.append(f"I7 lease {r['entity_id']}: reactivated after expiry")
+    # I8 tokens: the lease log rows that issue a token (None -> active, active -> active) carry it in fence_token and
+    # are numbered (transition_id) inside the locked acquisition, so their order is the issue order.
+    issued = await schema.fetch(
+        "SELECT t.transition_id, t.fence_token, l.worker_id, l.execution_id, l.lease_id FROM state_transitions t"
+        " JOIN worker_leases l ON l.lease_id = t.entity_id WHERE t.entity_type = 'lease' AND t.to_state = 'active'"
+        " ORDER BY t.transition_id")
+    for r in issued:
+        if r["fence_token"] is None:
+            problems.append(f"I8 lease {r['lease_id']}: token-issuing log row without fence_token")
+    for key in ("worker_id", "execution_id"):
+        last: dict = {}
+        for r in issued:
+            k = r[key]
+            if k is None or r["fence_token"] is None:
+                continue
+            if k in last and r["fence_token"] <= last[k]:
+                problems.append(f"I8 {key} {k}: fence token {r['fence_token']} not above {last[k]}")
+            last[k] = r["fence_token"]
+    for r in await schema.fetch(
+            "SELECT w.worker_id, w.capacity, w.current_load,"
+            "       (SELECT count(*) FROM worker_leases l WHERE l.worker_id = w.worker_id AND l.status = 'active') AS n"
+            "  FROM workers w"):
+        if r["n"] > r["capacity"] or r["n"] != r["current_load"]:
+            problems.append(f"I8 worker {r['worker_id']}: {r['n']} active leases, current_load {r['current_load']},"
+                            f" capacity {r['capacity']}")
+    return problems
+
+
 async def assert_system_invariants(schema) -> None:
     columns = {r["column_name"] for r in await schema.fetch(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'state_transitions'",
@@ -77,5 +125,6 @@ async def assert_system_invariants(schema) -> None:
     machine = "machine" if "machine" in columns else "entity_type"
     rows = await schema.fetch(f"SELECT {machine} AS machine, entity_id, from_state, to_state, reason"
                               " FROM state_transitions ORDER BY transition_id")
-    problems = [f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
+    problems = ([f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
+                + await lease_problems(schema))
     assert not problems, "invariants violated:\n" + "\n".join(problems)

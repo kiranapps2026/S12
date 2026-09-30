@@ -53,9 +53,9 @@ APP_ROLE = "golden_app"
 
 
 class GoldenSchema:
-    """``fetch``/``execute`` run as the connecting role (test setup and catalog checks). ``database()`` — the code under
-    test — runs as the non-superuser role ``golden_app`` when the connecting role is a superuser, so row-level security
-    is enforced whatever role TEST_DATABASE_URL names (as in tests_postgres)."""
+    """``fetch``/``execute`` run as the connecting role, which must be a superuser (test setup, catalog checks, and the
+    invariant checker, which must see every tenant). ``database()`` — the code under test — runs as the non-superuser
+    role ``golden_app``, so row-level security is always enforced on it (as in tests_postgres)."""
 
     def __init__(self, url: str, name: str) -> None:
         self.url = url
@@ -67,22 +67,25 @@ class GoldenSchema:
     async def create(self) -> None:
         admin = await asyncpg.connect(self.url)
         try:
-            await admin.execute(f'CREATE SCHEMA "{self.name}"')
             self._superuser = bool(await admin.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user"))
-            if self._superuser and not await admin.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", APP_ROLE):
+            if not self._superuser:
+                raise RuntimeError(
+                    "golden tests need TEST_DATABASE_URL to connect as a superuser: the invariant checker must see every"
+                    " tenant's rows, and code under test is then run as the non-superuser role golden_app")
+            await admin.execute(f'CREATE SCHEMA "{self.name}"')
+            if not await admin.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", APP_ROLE):
                 await admin.execute(f"CREATE ROLE {APP_ROLE} NOLOGIN NOSUPERUSER NOBYPASSRLS")
         finally:
             await admin.close()
         self._pool = await asyncpg.create_pool(self.url, min_size=1, max_size=4,
                                                server_settings={"search_path": self.name})
-        app_settings = {"search_path": self.name, **({"role": APP_ROLE} if self._superuser else {})}
+        app_settings = {"search_path": self.name, "role": APP_ROLE}
         self._app_pool = await asyncpg.create_pool(self.url, min_size=1, max_size=8, server_settings=app_settings)
 
     async def grant(self) -> None:
-        if self._superuser:
-            await self.execute(f'GRANT USAGE ON SCHEMA "{self.name}" TO {APP_ROLE};'
-                               f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "{self.name}" TO {APP_ROLE};'
-                               f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "{self.name}" TO {APP_ROLE}')
+        await self.execute(f'GRANT USAGE ON SCHEMA "{self.name}" TO {APP_ROLE};'
+                           f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "{self.name}" TO {APP_ROLE};'
+                           f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "{self.name}" TO {APP_ROLE}')
 
     async def drop(self) -> None:
         for pool in (self._app_pool, self._pool):
