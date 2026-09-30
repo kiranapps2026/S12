@@ -8,3 +8,5 @@ MILESTONE M1 REACHED at 4fa314c except owner-only rows S12-PIN, S12-REC (unpinne
 690e6ad | M1 | full | 6/7 | after owner pin abfff2f: S12-PIN PASS; only S12-REC (STOP-001 awaiting owner "applied") remains
 838ebcf | M2 | full | 8/9 | fenced_write + transition log + settings; golden M2 18/18, x5, sabotage 3/3; tests 836, tests_postgres 330
 MILESTONE M2 REACHED at 838ebcf except S12-REC (STOP-001 awaits owner "applied")
+b9e6123 | M3 | full | 9/10 | validator with reasons for run/step/reservation; golden M3 130/130, sabotage 3/3; tests 836, tests_postgres 330
+MILESTONE M3 REACHED at b9e6123 except S12-REC (STOP-001)
