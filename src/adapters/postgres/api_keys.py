@@ -28,14 +28,25 @@ class PostgresApiKeyAuthenticator:
                 "  FROM api_keys WHERE key_hash = $1 AND is_active", hash_key(credential))
         return None if row is None else Principal(**dict(row))
 
-    async def issue(self, principal: Principal) -> str:
-        """Create a key for ``principal`` and return it. It cannot be shown again."""
+    async def issue(self, principal: Principal, *, label: str | None = None, created_by: str | None = None,
+                    connection=None) -> str:
+        """Create a key for ``principal`` and return it. It cannot be shown again. With ``connection``
+        the insert joins the caller's transaction."""
+        return (await self.issue_with_id(principal, label=label, created_by=created_by, connection=connection))[1]
+
+    async def issue_with_id(self, principal: Principal, *, label: str | None = None,
+                            created_by: str | None = None, connection=None) -> tuple[str, str]:
+        """(key_id, key): like ``issue``, also returning the id under which the key is listed and revoked."""
         key = KEY_PREFIX + secrets.token_urlsafe(32)
-        async with self._db.transaction() as connection:
-            await connection.execute(
-                "INSERT INTO api_keys (key_id, key_hash, tenant_id, workspace_id, user_id, membership_id,"
-                " connection_id, resource_scope) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                str(uuid.uuid4()), hash_key(key), principal.tenant_id, principal.workspace_id,
+        key_id = str(uuid.uuid4())
+        sql = ("INSERT INTO api_keys (key_id, key_hash, tenant_id, workspace_id, user_id, membership_id,"
+               " connection_id, resource_scope, label, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+        args = (key_id, hash_key(key), principal.tenant_id, principal.workspace_id,
                 principal.user_id, principal.membership_id, principal.connection_id,
-                principal.resource_scope)
-        return key
+                principal.resource_scope, label, created_by)
+        if connection is not None:
+            await connection.execute(sql, *args)
+        else:
+            async with self._db.transaction() as own:
+                await own.execute(sql, *args)
+        return key_id, key

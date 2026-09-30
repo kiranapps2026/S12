@@ -5,6 +5,7 @@ from adapters.postgres.activation import PostgresActivationReader
 from adapters.postgres.api_keys import PostgresApiKeyAuthenticator
 from adapters.postgres.confirmations import PostgresConfirmationStore
 from adapters.postgres.database import Database
+from adapters.postgres.admin import AdminService
 from adapters.postgres.event_log import PostgresEventLog
 from adapters.postgres.events import PostgresEventSink
 from adapters.postgres.references import PostgresReferenceSource
@@ -38,6 +39,15 @@ def build_webhook_gateway(database: Database, settings: Settings) -> EventGatewa
         credentials = PostgresWebhookCredentials(
             database, Kek.from_base64(settings.webhook_kek, settings.webhook_kek_version))
     return EventGateway(credentials, PostgresEventLog(database), PostgresEventSchemas(database))
+
+
+def build_admin(database: Database, settings: Settings) -> AdminService:
+    """The administration service. Endpoint (webhook/MCP) operations need WEBHOOK_KEK and answer 503 without it."""
+    credentials = None
+    if settings.webhook_kek:
+        credentials = PostgresWebhookCredentials(
+            database, Kek.from_base64(settings.webhook_kek, settings.webhook_kek_version))
+    return AdminService(database, credentials)
 
 
 def build_scheduler(database: Database, gateway: EventGateway, pipeline) -> EventScheduler:

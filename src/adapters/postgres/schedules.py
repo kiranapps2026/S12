@@ -35,18 +35,27 @@ class PostgresScheduleStore:
                 "UPDATE event_schedules SET last_planned = $2 WHERE schedule_id = $1"
                 " AND (last_planned IS NULL OR last_planned < $2)", schedule_id, planned)
 
-    async def create(self, schedule: Schedule) -> None:
+    async def create(self, schedule: Schedule, *, label: str | None = None, created_by: str | None = None,
+                     connection=None) -> None:
         """Store a schedule. Its history starts now: the newest planned time already in the past is
-        marked handled, so creating a schedule never fires an old planned time."""
+        marked handled, so creating a schedule never fires an old planned time. With ``connection``
+        the insert joins the caller's transaction."""
         check_schedule(schedule)
         p = schedule.principal
-        now = await self.now()
-        handled = latest_planned(schedule, now)
-        async with self._db.transaction() as c:
-            await c.execute(
-                "INSERT INTO event_schedules (schedule_id, tenant_id, workspace_id, user_id, membership_id,"
-                " connection_id, resource_scope, event_type, payload, kind, anchor, interval_seconds, at_seconds,"
-                " weekday, last_planned) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15)",
-                schedule.schedule_id, p.tenant_id, p.workspace_id, p.user_id, p.membership_id, p.connection_id,
-                p.resource_scope, schedule.event_type, json.dumps(schedule.payload), schedule.kind,
-                schedule.anchor, schedule.interval_seconds, schedule.at_seconds, schedule.weekday, handled)
+        sql = ("INSERT INTO event_schedules (schedule_id, tenant_id, workspace_id, user_id, membership_id,"
+               " connection_id, resource_scope, event_type, payload, kind, anchor, interval_seconds, at_seconds,"
+               " weekday, last_planned, label, created_by)"
+               " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17)")
+
+        async def insert(c) -> None:
+            now = await c.fetchval("SELECT now()")
+            handled = latest_planned(schedule, now)
+            await c.execute(sql, schedule.schedule_id, p.tenant_id, p.workspace_id, p.user_id, p.membership_id,
+                            p.connection_id, p.resource_scope, schedule.event_type, json.dumps(schedule.payload),
+                            schedule.kind, schedule.anchor, schedule.interval_seconds, schedule.at_seconds,
+                            schedule.weekday, handled, label, created_by)
+        if connection is not None:
+            await insert(connection)
+        else:
+            async with self._db.transaction() as own:
+                await insert(own)

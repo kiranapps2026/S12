@@ -99,44 +99,55 @@ class PostgresWebhookCredentials:
                 "UPDATE webhook_credentials SET last_verified_at = now() WHERE credential_id = $1",
                 credential_id)
 
-    async def issue(self, principal: Principal, source_system: str) -> tuple[str, str]:
+    async def issue(self, principal: Principal, source_system: str, *, label: str | None = None,
+                    created_by: str | None = None, connection=None) -> tuple[str, str]:
         """Create an endpoint for ``principal``. Returns (endpoint_id, secret); the secret cannot
-        be shown again."""
+        be shown again. With ``connection`` the insert joins the caller's transaction."""
         endpoint_id = uuid.uuid4().hex
-        return endpoint_id, await self._insert(endpoint_id, principal, source_system)
+        return endpoint_id, await self._insert(endpoint_id, principal, source_system, connection,
+                                               label=label, created_by=created_by)
 
-    async def rotate(self, endpoint_id: str, source_system: str, grace: str = DEFAULT_GRACE) -> str:
+    async def rotate(self, endpoint_id: str, source_system: str, grace: str = DEFAULT_GRACE, *,
+                     created_by: str | None = None, connection=None) -> str:
         """The current secret keeps working for ``grace``; the new secret is returned once."""
-        async with self._db.transaction() as connection:
-            current = await connection.fetchrow(
-                "SELECT tenant_id, workspace_id, user_id, membership_id, connection_id, resource_scope"
-                "  FROM webhook_credentials WHERE endpoint_id = $1 AND source_system = $2"
-                "   AND status = 'active' FOR UPDATE", endpoint_id, source_system)
-            if current is None:
-                raise KeyError("unknown endpoint")
-            await connection.execute(
-                "UPDATE webhook_credentials SET status = 'retired', retiring_until = NULL"
-                " WHERE endpoint_id = $1 AND source_system = $2 AND status = 'retiring'",
-                endpoint_id, source_system)
-            await connection.execute(
-                "UPDATE webhook_credentials SET status = 'retiring',"
-                "       retiring_until = now() + $3::interval"
-                " WHERE endpoint_id = $1 AND source_system = $2 AND status = 'active'",
-                endpoint_id, source_system, _interval(grace))
-            return await self._insert(endpoint_id, Principal(**dict(current)), source_system, connection)
+        if connection is None:
+            async with self._db.transaction() as own:
+                return await self._rotate(own, endpoint_id, source_system, grace, created_by)
+        return await self._rotate(connection, endpoint_id, source_system, grace, created_by)
+
+    async def _rotate(self, connection, endpoint_id, source_system, grace, created_by) -> str:
+        current = await connection.fetchrow(
+            "SELECT tenant_id, workspace_id, user_id, membership_id, connection_id, resource_scope, label"
+            "  FROM webhook_credentials WHERE endpoint_id = $1 AND source_system = $2"
+            "   AND status = 'active' FOR UPDATE", endpoint_id, source_system)
+        if current is None:
+            raise KeyError("unknown endpoint")
+        row = dict(current)
+        label = row.pop("label")
+        await connection.execute(
+            "UPDATE webhook_credentials SET status = 'retired', retiring_until = NULL"
+            " WHERE endpoint_id = $1 AND source_system = $2 AND status = 'retiring'",
+            endpoint_id, source_system)
+        await connection.execute(
+            "UPDATE webhook_credentials SET status = 'retiring',"
+            "       retiring_until = now() + $3::interval"
+            " WHERE endpoint_id = $1 AND source_system = $2 AND status = 'active'",
+            endpoint_id, source_system, _interval(grace))
+        return await self._insert(endpoint_id, Principal(**row), source_system, connection,
+                                  label=label, created_by=created_by)
 
     async def _insert(self, endpoint_id: str, principal: Principal, source_system: str,
-                      connection=None) -> str:
+                      connection=None, *, label: str | None = None, created_by: str | None = None) -> str:
         secret = "whsec_" + secrets.token_urlsafe(32)
         credential_id = str(uuid.uuid4())
         ciphertext, nonce, wrapped = _seal(self._kek, secret.encode(), credential_id)
         sql = ("INSERT INTO webhook_credentials (credential_id, endpoint_id, tenant_id, workspace_id,"
                " user_id, membership_id, connection_id, resource_scope, source_system,"
-               " secret_ciphertext, secret_nonce, wrapped_dek, kek_version)"
-               " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
+               " secret_ciphertext, secret_nonce, wrapped_dek, kek_version, label, created_by)"
+               " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
         args = (credential_id, endpoint_id, principal.tenant_id, principal.workspace_id, principal.user_id,
                 principal.membership_id, principal.connection_id, principal.resource_scope, source_system,
-                ciphertext, nonce, wrapped, self._kek.version)
+                ciphertext, nonce, wrapped, self._kek.version, label, created_by)
         if connection is not None:
             await connection.execute(sql, *args)
         else:
