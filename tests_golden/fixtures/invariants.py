@@ -21,6 +21,8 @@ It grows milestone by milestone. Active now:
   * I16 (M12): every ``ProviderCalled`` ledger event follows the ``step_attempt`` event of the same attempt.
   * I6 (M13): a step with an episode passed through ``pending_probe``; every ``timeout`` is followed by
     ``pending_probe``. C13 (M13): when a run moved to ``reconciling``, every other step was terminal.
+  * I14 (M14): no ``ProviderCalled`` event after the run's ``authorization_revoked`` event; a terminal run with that
+    event ended ``cancelled`` or ``dead_letter``.
 """
 from __future__ import annotations
 
@@ -158,6 +160,22 @@ async def budget_problems(schema) -> list[str]:
     return problems
 
 
+async def revocation_problems(schema) -> list[str]:
+    tables = {r["t"] for r in await schema.fetch(
+        "SELECT table_name AS t FROM information_schema.tables WHERE table_schema = $1", schema.name)}
+    if "execution_events" not in tables:
+        return []
+    problems = [f"I14 {r['execution_id']}: ProviderCalled after authorization_revoked" for r in await schema.fetch(
+        "SELECT DISTINCT c.execution_id FROM execution_events c JOIN execution_events r ON r.execution_id ="
+        " c.execution_id AND r.event_type = 'authorization_revoked' AND r.seq < c.seq WHERE c.event_type ="
+        " 'ProviderCalled'")]
+    problems += [f"I14 {r['execution_id']}: revoked run ended {r['status']}" for r in await schema.fetch(
+        "SELECT DISTINCT e.execution_id, e.status FROM execution_runs e JOIN execution_events r ON r.execution_id ="
+        " e.execution_id AND r.event_type = 'authorization_revoked' WHERE e.status IN ('completed', 'partial',"
+        " 'failed')")]
+    return problems
+
+
 async def dispatch_problems(schema) -> list[str]:
     """I16 (M12): every ``ProviderCalled`` event of an attempt follows a ``step_attempt`` event of that attempt, which
     is written only after the attempt's dispatch marker committed (C24, C35)."""
@@ -217,5 +235,5 @@ async def assert_system_invariants(schema) -> None:
                               " FROM state_transitions ORDER BY transition_id")
     problems = ([f"I5 {p}" for p in transition_problems(rows)] + await plan_problems(schema)
                 + await lease_problems(schema) + await budget_problems(schema) + await dispatch_problems(schema)
-                + await uncertainty_problems(schema))
+                + await uncertainty_problems(schema) + await revocation_problems(schema))
     assert not problems, "invariants violated:\n" + "\n".join(problems)
