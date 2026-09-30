@@ -15,3 +15,5 @@ MILESTONE M4 REACHED at 8f38edb except S12-REC (STOP-001)
 8f38edb | M5 | G-M5 | - | STOP-002: no B2 golden file for M5
 77c26e2 | M5 | full | 11/13 | C20 entry check; golden M5 30/30, x5, sabotage 3/3; tests 836, tests_postgres 330 (after supplying the reader in the tests_postgres _admit helper: 2 confirmed-run tests had been denied, correctly, without one)
 MILESTONE M5 REACHED at 77c26e2 except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
+6091a87 | M6 | full | 12/14 | DEF-001 fixed; golden M6 23/23, sabotage 3/3; tests 836, tests_postgres 330 (prototype log-order expectation updated)
+MILESTONE M6 REACHED at 6091a87 except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
