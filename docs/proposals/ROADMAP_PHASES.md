@@ -9,7 +9,7 @@ not a pinned document. It answers: "is this sufficient to pass the S12 gate?"
 
 | Gate | What it needs | Where we are |
 |---|---|---|
-| **S0–S11 certification** (`owner_verify.ps1`, then `git tag s0-s11-certified`) | certifier N/N, self-test, clean tree, the certifier's hash equal to the one inside `owner_verify.ps1` | Certifier passes 19/19 here, **but `owner_verify.ps1` line 6 still holds the old certifier hash (`E5D5AB0D…`)**. The certifier changed on the owner's instructions (now `6B9D1C30…`), so the owner's script will report "certifier was modified. Certification void" until its `$expected` is updated (an owner-integrity edit; I have not made it). Not yet run on the owner's machine. |
+| **S0–S11 certification** (`owner_verify.ps1`, then `git tag s0-s11-certified`) | certifier N/N, self-test, clean tree, the certifier's hash equal to the one inside `owner_verify.ps1` | Certifier passes 19/19 and its hash (`6B9D1C30…`) equals `owner_verify.ps1` and `docs/gates/owner_certify.sha256`. **Not yet run on the owner's machine; hold the tag until the real registry's observation methods are filled (D1d).** `tools/sync_and_check.ps1` pulls, certifies and runs the readiness check in one go. |
 | **S12–S15 preconditions** (plan §1) | tag exists; v9/v10 docs pinned after the tag; D1–D6 and C24–C38 confirmed; R-Z and R-P in code | R-Z and R-P are in code. Tag does not exist. D/C confirmations and the doc re-pin are the owner's. |
 | **S12–S15 certification** (`owner_certify_s12.py`, tag `s12-s15-certified`) | milestones M0–M21 each passing owner-drafted *red-first* golden tests, sabotage patches, invariants I1–I18, 8 journeys, S0–S11 code unchanged since the tag | Not started as a certified process. What exists is pre-gate prototype code (§4). |
 
@@ -40,8 +40,8 @@ Order matters: A → B → (C, D in parallel) → tag → E → F. Blocking item
 |---|---|---|
 | B1 **[B]** | Re-run the live DeepSeek test on the latest commits, including an answer with `steps` | **done 2026-09-30** at `3acd481`: `test_live_full_stack.py` 6/6 (77 s) and `test_live_chain.py` 6/6 (21 s), real `deepseek-flash`, owner's machine |
 | B2 | Observe real empty / truncated / content-filtered provider replies (unit-tested only) | open |
-| B3 | CI: a workflow that runs `pytest tests`, `tests_postgres` (PostgreSQL service) and `owner_certify.py`; the repo has none | open |
-| B4 | Admin API or CLI to issue/revoke API keys and to issue/rotate webhook secrets (`issue`/`rotate` exist, no route) | open | **done 2026-09-30** (`ADMIN_API.md`): keys, endpoint secrets, schemas, schedules, audit; user/grant management still missing |
+| B3 | CI: a workflow that runs `pytest tests`, `tests_postgres` (PostgreSQL service) and `owner_certify.py` | **done 2026-09-30**: `.github/workflows/tests.yml` (PostgreSQL 16 service), green on the PR head |
+| B4 | Admin API to issue/revoke API keys and webhook/MCP secrets, manage schemas and schedules, users, memberships, connections and grants | **done 2026-09-30** (`ADMIN_API.md`, R-BH…R-BP): keys, endpoint secrets, schemas, schedules, audit, users, memberships, connections, grants, service users enforced. Not built: tenant creation, invitations, IdP linking |
 | B5 | KEK rotation tool (re-wrap `wrapped_dek`), `event_log` retention, rate limiting on `/execute`, `/confirmations`, webhooks | open |
 | B6 | LLM usage billing (`llm.token`) not ported | open |
 | B7 | Writers for `conversation_results` and `files` (nothing populates them, so no real `$ref`/`$file` resolves) | open |
@@ -66,7 +66,7 @@ Everything about plans that combine capabilities, in one place.
 | D1a | Live proof: a real model answering with `steps`; prompt tuning; ordering errors ("email before create") | **done 2026-09-30**: `test_live_chain.py` 6/6 on the owner's machine (real `deepseek-flash`, 21 s). Chains used `steps` in the asked order (both orders), a delete chain paused for confirmation, an unoffered operation came back `unknown` (CLARIFY `intent_unclear`), 6 items + 1 hit `too_many_steps`, confidence 0.5 hit the 0.85 floor. Not yet observed: real ordering mistakes on ambiguous phrasing, the model keeping an unrequested step out |
 | D1b | Ratified M2 rulings; R-AF inverse verified with registry data | inverse path proven end to end on seed data; rulings still yours (A4) |
 | D1c | S12 per-step contract accepted: G1–G8; S12 entry, admission and loop already work per step (prototype) | **yes** (decision, A5) |
-| D1d | Observation metadata for real operations | mechanism, template and readiness query in `D1_CHAIN_CATALOG.md`; **the owner's real catalog still has to be filled** |
+| D1d | Observation metadata for real operations | mechanism, template and `tools/registry_readiness.py` (exit 1 while any production W/D operation lacks a method) in `D1_CHAIN_CATALOG.md`; **the owner's real catalog still has to be filled** |
 | D1e | Pre-flight parameter validation against a kernel input schema (none exists; R-AE accepted unvalidated parameters for M2a) | no (M2b prerequisite) |
 | D1f | Compensation policy for a failed step after earlier ones succeeded (S13 rollback, D2/M17) | no (S13) |
 | **D2 — M2b step-to-step data flow** | | |
