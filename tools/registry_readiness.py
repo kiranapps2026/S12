@@ -18,6 +18,9 @@ import sys
 
 import asyncpg
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from adapters.postgres.database import normalize_url  # noqa: E402
+
 QUERY = ("SELECT kernel_op_id, mutation FROM kernel_ops WHERE truth_state = 'PRODUCTION_ENABLED' AND mutation <> 'R'"
          " AND (observation_method IS NULL OR observation_method = '') ORDER BY kernel_op_id")
 INCOMPLETE = ("SELECT kernel_op_id FROM kernel_ops WHERE truth_state = 'PRODUCTION_ENABLED' AND mutation <> 'R'"
@@ -26,7 +29,7 @@ INCOMPLETE = ("SELECT kernel_op_id FROM kernel_ops WHERE truth_state = 'PRODUCTI
 
 
 async def main(url: str) -> int:
-    connection = await asyncpg.connect(url)
+    connection = await asyncpg.connect(normalize_url(url))
     try:
         blocked = await connection.fetch(QUERY)
         no_identifier = await connection.fetch(INCOMPLETE)
