@@ -92,6 +92,11 @@ def make_s8_deps(*, kill_switch=False, auth=None, breaker=None,
     return S8Dependencies(**deps)
 
 
+def make_s8_deps_with_ks(kill_switch, **kwargs):
+    """make_s8_deps with the kill switch as a required positional value."""
+    return make_s8_deps(kill_switch=kill_switch, **kwargs)
+
+
 # Compatibility aliases used by test_s7_to_s11.py
 InMemoryCircuitBreaker = ConfigurableCircuitBreaker
 AllowAllMutationPolicy = ConfigurableMutationPolicy

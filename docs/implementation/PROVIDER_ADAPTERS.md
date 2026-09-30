@@ -14,6 +14,7 @@
 6. [Airtable Adapter](#6-airtable-adapter)
 7. [Adapter Testing](#7-adapter-testing)
 8. [Adding a New Provider](#8-adding-a-new-provider)
+9. [Browser and RPA Adapters (post-S15)](#9-browser-and-rpa-adapters-post-s15)
 
 ---
 
@@ -549,6 +550,20 @@ make scaffold-adapter NAME=newprovider
 ```
 
 This creates all 8 files with templates.
+
+---
+
+## 9. Browser and RPA Adapters (post-S15)
+
+> **Worker-management repair (RD-8, RD-9):** replaces the spec's B0–B7 path and adapter-internal provider routing. Status DEFERRED: nothing here is implemented in S12–S15.
+
+1. **One adapter per provider, all behind `BaseAdapter`** (`call`, `probe`, `observe`, §1): `PlaywrightAdapter`, `ApifyAdapter`, `BrowserUseAdapter`. They never raise; they return `KernelResult`.
+2. **Provider choice is a binding, not adapter logic.** Each provider has its own bindings. S5 resolves and freezes one (I-002, I-010); S12 never switches provider. A "facade" that picks Playwright, Apify or BrowserUse at call time is not allowed.
+3. **Mutation levels** per MUTATION_SAFETY §1 "Browser and RPA Actions"; an undeclared external-effect action is `IRREVERSIBLE`.
+4. **Probe and observe.** `probe()` answers whether a submitting action took effect (e.g. by reading the resulting page or record); default `INCONCLUSIVE`. `observe()` supports verification: DOM state, extracted-data schema, file existence, screenshot comparison. Screenshots are artifacts, never stored in context.
+5. **Credentials and sessions.** Cookies, logins and proxies come from `CredentialProvider` keyed by tenant and connection (gate §21 S6); a browser session pool is per tenant and never shared across tenants.
+6. **Recorded sequences** are skill compositions (DATA_CONTRACTS §53) planned at S9; the adapter executes one kernel operation per step.
+7. **Worker eligibility.** Steps bound to a browser adapter can only be leased to workers whose `runtime_type` is `browser` or `rpa` (gate v10 C39 filter 17).
 
 ---
 

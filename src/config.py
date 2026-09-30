@@ -6,15 +6,21 @@ Source: Based on IDENTITY_AND_TENANCY.md, SECURITY.md
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The repo-root .env is found from any working directory; a .env in the current directory
+# (listed last) overrides it. Real environment variables override both.
+_ROOT_ENV = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
+        env_file=(str(_ROOT_ENV), ".env"),
+        env_file_encoding="utf-8-sig",  # tolerate the BOM Windows editors add
         extra="ignore",
     )
 
@@ -71,6 +77,23 @@ class Settings(BaseSettings):
     # === Memory ===
     memory_backend: str = "postgres"     # postgres, lancedb, memory
     lance_db_path: str = "./data/lancedb"
+
+    # === Secrets ===
+    deepseek_api_key: str = ""
+    # Key-encryption key for webhook signing secrets: 32 random bytes, base64 (never in the database)
+    webhook_kek: str = ""
+    webhook_kek_version: int = 1
+    # Seconds between scheduler ticks; 0 disables the event scheduler (schedules then never fire)
+    scheduler_interval_seconds: int = 0
+
+    # === Rate limits (per fixed one-minute window, counted in PostgreSQL; 0 or less refuses everything) ===
+    rate_limit_user_per_minute: int = 60
+    rate_limit_tenant_per_minute: int = 600
+    rate_limit_invite_per_minute: int = 10      # per client address, for the unauthenticated invitation redemption
+    llm_price_per_million_tokens: float = 0.0   # 0: usage is reported in tokens only
+
+    # === HTTP ===
+    cors_origins: str = ""  # comma-separated allowed origins; empty = no CORS
 
     # === Feature Flags ===
     feature_kill_switch: bool = True

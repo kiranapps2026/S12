@@ -232,3 +232,23 @@ class TestValidateContextChanges:
         new = replace(ctx, task_id="different")
         with pytest.raises(AssertionError, match="unauthorized"):
             validate_context_changes("S1", ctx, new)
+
+
+# ---------------------------------------------------------------------------
+# S5 whitelist through the real handler (R-E)
+# ---------------------------------------------------------------------------
+
+def test_s5_writes_only_policy_version_fields():
+    """Running the real S5 changes exactly the three whitelisted policy version fields on the ExecutionContext."""
+    from tests.fixtures.scenarios import make_scenario
+    from tests.fixtures.states import run_stage, state_ready_for
+
+    sc = make_scenario(mutation="W", risk=0.3)
+    before = state_ready_for("S5", sc)
+    after = run_stage("S5", before, sc)
+    changed = {
+        f for f in ExecutionContext.__dataclass_fields__
+        if getattr(before.execution_context, f) != getattr(after.execution_context, f)
+    }
+    assert changed == {"tenant_policy_version_id", "workspace_policy_version_id", "policy_version_id"}
+    assert after.execution_context.policy_version_id == "policy-1"

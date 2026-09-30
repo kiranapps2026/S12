@@ -150,7 +150,7 @@ def check_capability_granted(
     if not isinstance(granted, bool):
         return CheckResult(name, False, "capability_granted_invalid")
     if granted is not True:
-        return CheckResult(name, False, "capability_denied")
+        return CheckResult(name, False, "capability_granted_denied")
     return CheckResult(name, True, None)
 
 
@@ -221,7 +221,7 @@ def check_budget_available(
     name = "budget_available"
     estimated_cost = getattr(task_profile, "cost", None)
     if estimated_cost is None or estimated_cost <= 0:
-        return CheckResult(name, False, f"budget_unavailable: invalid estimated_cost={estimated_cost}")
+        return CheckResult(name, False, "budget_available_invalid")
     if deps is None or deps.auth_state is None:
         return CheckResult(name, False, "budget_available_unavailable")
     try:
@@ -233,7 +233,7 @@ def check_budget_available(
     if not isinstance(ok, bool):
         return CheckResult(name, False, "budget_available_invalid")
     if ok is not True:
-        return CheckResult(name, False, "budget_unavailable")
+        return CheckResult(name, False, "budget_available_denied")
     return CheckResult(name, True, None)
 
 
@@ -260,7 +260,7 @@ def check_mutation_safety(
     if not isinstance(permitted, bool):
         return CheckResult(name, False, "mutation_safety_invalid")
     if permitted is not True:
-        return CheckResult(name, False, "mutation_invalid")
+        return CheckResult(name, False, "mutation_safety_denied")
     return CheckResult(name, True, None)
 
 

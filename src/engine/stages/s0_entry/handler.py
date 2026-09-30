@@ -19,41 +19,30 @@ import logging
 import uuid
 
 from contracts.pipeline_state import PipelineState
+from contracts.entry import EntryRequest
 from contracts.execution_context import ExecutionContext
+from contracts.stage_registry import StageStatus
 
 logger = logging.getLogger(__name__)
 
 
-class EntryRequest:
-    """Incoming request at the entry point."""
-    def __init__(
-        self,
-        raw_payload: dict,
-        entry_channel: str,
-        tenant_id: str,
-        conversation_id: str | None = None,
-        connection_id: str | None = None,
-        user_id: str | None = None,
-        request_id: str | None = None,
-    ):
-        self.raw_payload = raw_payload
-        self.entry_channel = entry_channel
-        self.tenant_id = tenant_id
-        self.conversation_id = conversation_id
-        self.connection_id = connection_id
-        self.user_id = user_id
-        self.request_id = request_id
+#: Identity values S0 must find on the entry request; absent -> DENY missing_<field>.
+_REQUIRED_IDENTITY = ("tenant_id", "workspace_id", "user_id")
 
 
-async def handle(entry: EntryRequest) -> ExecutionContext:
+async def handle(entry: EntryRequest) -> PipelineState:
     """
     S0 handler: parse entry request, create ExecutionContext.
 
-    This is the ONLY place ExecutionContext is created.
-    After this, ExecutionContext is frozen — never mutated again.
-
-    Returns a NEW ExecutionContext instance.
+    This is the ONLY place ExecutionContext is created. Nothing is defaulted: a missing
+    tenant, workspace or user is a DENY (`missing_<field>`) and no context is created.
     """
+    for name in _REQUIRED_IDENTITY:
+        if not getattr(entry, name, None):
+            logger.warning("S0: DENY missing_%s", name)
+            return PipelineState(entry_request=entry).with_status(
+                StageStatus.DENY, f"missing_{name}")
+
     request_id = entry.request_id or str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
 
@@ -61,10 +50,15 @@ async def handle(entry: EntryRequest) -> ExecutionContext:
         trace_id=trace_id,
         request_id=request_id,
         tenant_id=entry.tenant_id,
-        workspace_id=entry.tenant_id,
-        user_id=entry.user_id or "system",
-        conversation_id=entry.conversation_id,
+        workspace_id=entry.workspace_id,
+        user_id=entry.user_id,
+        membership_id=entry.membership_id,
+        conversation_id=entry.conversation_id or str(uuid.uuid4()),   # R-BA: never empty (S12 entry needs one)
         connection_id=entry.connection_id,
+        idempotency_key=entry.idempotency_key,
+        task_id=entry.event_id,          # EVENT_DRIVEN: the gateway's event id; else assigned at S2
+        resource_scope=entry.resource_scope,
+        tags=frozenset(entry.tags),
     )
 
     logger.info(
@@ -72,9 +66,8 @@ async def handle(entry: EntryRequest) -> ExecutionContext:
         trace_id, request_id, entry.entry_channel,
     )
 
-    state = PipelineState(
+    return PipelineState(
         execution_context=context,
         entry_request=entry,
+        stage_status=StageStatus.NORMAL,
     )
-
-    return state

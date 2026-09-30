@@ -1,12 +1,14 @@
-# S12–S15 IMPLEMENTATION PLAN — v2
+# S12–S15 IMPLEMENTATION PLAN — v3
 
 Status: PLAN — owner approval required before M0 starts
-Governing rules: `S12_S15_EXECUTION_GATE.md` **v9** (rulings C1–C38, Appendix A tables)
-Master document: `FINAL_ARCHITECTURE.md` **v4.4.0** (I-015: nothing may contradict it)
+Governing rules: `S12_S15_EXECUTION_GATE.md` **v10** (rulings C1–C41, Appendix A tables)
+Master document: `FINAL_ARCHITECTURE.md` **v4.5.0** (I-015: nothing may contradict it)
 Repository (VPS): `C:\Users\Administrator\Documents\1SuperAgents`
 Specification folder (VPS): `C:\Users\Administrator\Documents\1SuperAgents\docs\implementation`
 Gate tracking folder (VPS): `C:\Users\Administrator\Documents\1SuperAgents\docs\gates`
-Previous revision: v1 (9 milestones, M0–M8); kept in git history.
+Previous revisions: v2 (22 milestones on gate v9); v1 (9 milestones, M0–M8); kept in git history.
+
+**v3 (2026-09-29, worker management):** gate v10 C39 adds milestone **M8a** (worker-management admission, eligibility and operation quota) and extends M1. Batch, replanning and sub-agent spawning are **not** milestones of this plan (C40, C41, gate §14); the spec's proposed "M9.5", "M12.5" and "W7" are withdrawn (W-numbers belong to EXECUTION_PLAN.md). Rulings: `WORKER_MGMT_SPEC_REVIEW.md` Part E, RD-1…RD-18.
 
 ---
 
@@ -38,6 +40,11 @@ Previous revision: v1 (9 milestones, M0–M8); kept in git history.
 4. PostgreSQL 16 restricted to localhost; `TEST_DATABASE_URL` points at `suprpg_test`.
 5. Owner confirmations: D1–D6 as written (confirmed); rulings C24–C38 read and accepted at
    the M0 review (§6).
+6. Worker-management rulings RD-1…RD-18 confirmed and gate v10 (C39–C41) installed and
+   pinned together with the other v10 documents.
+7. **S0–S11 ruling R-P** (`s0_s11_autopilot/RULING_R-P_pause_check.md`: tenant/workspace
+   pause and activation checked at S0.1) implemented and S0–S11 re-certified with its six
+   tests. Gate v10 preflight item 17 stops otherwise.
 
 ---
 
@@ -45,14 +52,15 @@ Previous revision: v1 (9 milestones, M0–M8); kept in git history.
 
 | Document | Role in S12–S15 | When Fable reads it |
 |---|---|---|
-| `S12_S15_EXECUTION_GATE.md` v9 | **Binding.** Rulings C1–C38, D1–D6, normative sequence §7–§13, suites §16, invariants §17, Appendix A | Every session; the milestone card names the sections |
-| `FINAL_ARCHITECTURE.md` v4.4.0 | **Master.** Principles §3, planes §7, invariants §41 (I-001…I-028), ledger §40, verification §43 | M0, and whenever a card cites it |
+| `S12_S15_EXECUTION_GATE.md` v10 | **Binding.** Rulings C1–C41, D1–D6, normative sequence §7–§13, suites §16, invariants §17, Appendix A | Every session; the milestone card names the sections |
+| `FINAL_ARCHITECTURE.md` v4.5.0 | **Master.** Principles §3, planes §7, invariants §50 (I-001…I-029; formerly the duplicate "§41"), ledger §40, verification §43 | M0, and whenever a card cites it |
 | `STATE_TRANSITIONS.md` | Canonical machines (repaired to match gate Appendix A) | M3, M4 |
 | `DATA_CONTRACTS.md` | Enums and contracts (StepState, ReservationState, ReconciliationStatus, DeadLetter, VerificationResult, AdmissionDecision, StepTerminalReason, ProbeOutcome) | M2–M4 and per card |
 | `DATABASE.md` | Tables, additive columns, §3 "S12–S15 Additive Tables" | M1 |
 | `MUTATION_SAFETY.md` | Retry ceilings, idempotency identifiers, checkpoints, dead-letter retry | M11, M12, M17 |
 | `RELIABILITY.md` | Guard components, circuit breaker, bulkhead, timeouts, probe table | M10, M11, M13 |
-| `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | Workers, admission gates, verifier, ownership, re-entry revalidation | M7, M8, M14, M15 |
+| `WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md` | Workers, admission gates, verifier, ownership, re-entry revalidation; §16 worker management | M7, M8, M8a, M14, M15 |
+| `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` | **Reference only.** Gate C39–C41 and WORKER_LIFECYCLE §16 govern; everything outside C39 is deferred | M8a, to confirm nothing deferred exists in `src/` |
 | `PROVIDER_ADAPTERS.md` | `BaseAdapter`, `call_meta`, `probe`, `observe`, error classes | M10 |
 | `PIPELINE_STAGES.md` | Stage purpose and ordering (S12–S15 sections point to the gate) | Orientation only |
 | `SECURITY.md` §7, §8, §10 | Credentials, audit, guardrail precedence | M18, M19 |
@@ -107,12 +115,14 @@ Every milestone's exit also requires, without exception:
 
 ### M0 — Preflight (gate commit A) ★
 
-- **Gate:** §2 items 1–14; §0; §3; Appendix A (read only).
+- **Gate:** §2 items 1–17; §0; §3; Appendix A (read only).
 - **Build:** nothing. Preflight report only, every answer with `file:line` or "not present
   in code" (evidence rule §2).
 - **Special attention:** item 10 (R-Z in code), item 11 (which tables exist and their
   columns — decides C34 NOT NULL vs backfill), item 12 (adapter base class), item 5
-  (does S9 emit step-output references? — C36), item 6 (AutonomyLevel source — D6 STOP).
+  (does S9 emit step-output references? — C36), item 6 (AutonomyLevel source — D6 STOP),
+  items 15–16 (worker-management columns, tables and key types — RD-1), item 17 (R-P in
+  code — STOP if absent).
 - **Traps:** answering from documents instead of code; "fixing" anything.
 - **Exit:** report complete; no invalid answer.
 - **★ Review:** Claude rules on every "Conflicts found" line; owner records rulings.
@@ -124,12 +134,17 @@ Every milestone's exit also requires, without exception:
 - **Build:** Alembic migrations (tool per preflight 11): `fence_token_seq`,
   `execution_plans`, `step_reconciliations`, `state_transitions`; additive columns on
   execution tables; CHECK constraints generated from enums; `terminal_reason` trigger;
-  partial unique index (one open episode per step); `tenant_id` per C34; RLS per C34.
+  partial unique index (one open episode per step); `tenant_id` per C34; RLS per C34;
+  v10 C39 columns on `workers`, `tenants`, `workspaces` and the `operation_quotas` table
+  (`TEXT` keys, `TIMESTAMPTZ` times, RLS, unique and check constraints).
 - **Golden `M01_schema.py`:** migrations apply to an empty schema and are idempotent;
   every CHECK set equals its enum (C28); `cancelled`/`skipped` without reason rejected;
   second write to `terminal_reason` rejected by the trigger; two open episodes on one
   step rejected; every S12–S15 table has `tenant_id NOT NULL` (or the recorded backfill
-  path); no `ON DELETE CASCADE` on execution tables.
+  path); no `ON DELETE CASCADE` on execution tables; every C39 foreign key has the
+  referenced key's type; `operation_quotas` rejects a duplicate scope/period and a
+  negative count; `workers.runtime_type` CHECK equals its enum; no deferred table
+  (`worker_spawn_audit`, `execution_batches`, …) and no `parent_execution_id` exist.
 - **Traps:** editing an S0–S11 migration; changing column types beyond C33/§7.3; TEXT
   timestamps in new tables.
 - **★ Review:** schema diff (`\d+` of every touched table) reviewed before M2.
@@ -207,6 +222,37 @@ Every milestone's exit also requires, without exception:
   locality scoring deterministic; `no_worker`, `lease_unavailable` reasons; every
   decision recorded as a ledger event.
 
+### M8a — Worker management: entry checks, eligibility, operation quota (gate commit E, part 3) ★
+
+- **Gate:** C39 (revised in audit round 2), §7.1 item 7, §7.2, §7.3, §8 step 2, suite 20;
+  I17, I18; WORKER_LIFECYCLE §13 (filters), §16.
+- **Build:** the S12-entry pause safety net (§7.1 item 7); quota consumption in the
+  durable-admission transaction with the soft-quota bounded retry (§7.2); the
+  eligibility filters 4b, 12b, 13b, 14, 17(a–d) in worker selection with the admin
+  bypass; filter reasons in the `no_worker` ledger event; `required_runtime_types`
+  read from the binding row at entry.
+- **Golden `M08a_worker_mgmt.py`:** entry safety net denies a paused / not-yet-active
+  tenant or workspace and writes zero rows; each filter removes exactly the ineligible
+  worker (other workspace or NULL workspace, paused, not yet active, not assigned,
+  capability not in profile, capability restricted, runtime not in the binding's list,
+  `max_mutation` below the step) and I18 holds; empty `required_runtime_types` accepts
+  any runtime; admin bypass only via the original principal's live `owner`/`admin`
+  membership in the run's workspace and only for 12b, 13b, 14; assignment skipped for
+  event-driven and system runs, kept for worker-delegated runs; 20 concurrent entries
+  against `limit_value = 5` → exactly 5 admitted (5 runs, I17); an admitted run's later
+  steps are never rejected by quota; soft quota → bounded retry then DENY with
+  `retry_after_ms`, zero rows; duplicate `request_id` consumes nothing; `UPDATE` of
+  `limit_value` below `used_count` fails; `operation_quotas` rejects a non-NULL
+  `worker_id`.
+- **Sabotage:** "re-check quota before every step" (admitted runs get cancelled),
+  "filter after locality scoring", "compare assignment with `user_id`", "apply
+  assignment to event-driven runs", "treat NULL `workspace_id` as a match".
+- **Traps:** choosing an adapter from `runtime_type`; checking pause per step; charging a
+  worker-level quota; reading `settings` in S0–S11 code; implementing groups or any
+  other deferred table.
+- **Moved out (audit A6):** "a pause set mid-run cancels nothing" → M14; "refund only for
+  CANCELLED runs with no COMPLETED step" → M16. Both need milestones that come later.
+
 ### M9 — BudgetReserver (gate commit F) ⚙
 
 - **Gate:** C3, C14, C31, C33, suite 4; I1, I2, I12 (non-dead-letter parts).
@@ -264,7 +310,9 @@ Every milestone's exit also requires, without exception:
   no further adapter call, probe still resolves the step, remaining steps CANCELLED with
   the exact reason, run CANCELLED; provider unavailable → QUEUE, not cancellation;
   `LiveAuthorizationCheck` writes nothing; cancellation before start / between steps /
-  in flight / during RECONCILING; another user's cancel rejected.
+  in flight / during RECONCILING; another user's cancel rejected; a tenant, workspace or
+  worker pause set while a run is RUNNING cancels no step and revokes no held lease
+  (C39, moved from M8a).
 - **★ Review (gate §18 session boundary):** Claude reviews the milestone summary and a
   sample of transition logs before M15. This is the riskiest point: the execution loop is
   complete.
@@ -283,7 +331,9 @@ Every milestone's exit also requires, without exception:
 - **Gate:** §10, C8, C13; suite 10.
 - **Golden `M16_consolidation.py`:** every row of the §10 table, including CANCELLED
   required step never → COMPLETED (I13); no RESERVED reservation after consolidation;
-  VERIFICATION_STARTED/COMPLETED ledger events.
+  VERIFICATION_STARTED/COMPLETED ledger events; the quota refund happens exactly when
+  the run ends CANCELLED with no step COMPLETED, in the consolidation transaction, with
+  a ledger event (C39, moved from M8a).
 
 ### M17 — Dead letter and explicit rollback (gate commit J) ⚙
 
@@ -335,7 +385,7 @@ Every milestone's exit also requires, without exception:
 
 1. **Just in time, in batches.** Claude drafts golden files from the gate text a batch at a
    time, so each batch reflects what earlier milestones built:
-   B1 = M1–M4, B2 = M5–M9, B3 = M10–M14, B4 = M15–M18, B5 = M19–M21.
+   B1 = M1–M4, B2 = M5–M9 (including M8a), B3 = M10–M14, B4 = M15–M18, B5 = M19–M21.
 2. **Red first.** Before Fable starts milestone *n*, the owner script runs its golden tests
    on the current code: they must **fail** (or error on missing symbols). A golden test that
    already passes is rejected and rewritten.
@@ -344,10 +394,14 @@ Every milestone's exit also requires, without exception:
    verify script applies each in a throw-away worktree; its golden test must fail with an
    assertion.
 4. **Invariant checker grows.** `assert_system_invariants(db)` starts in M2 with I5 and
-   gains invariants as their subject is built (I7/I8 in M7, I1/I2/I12 in M9, I4 in M11, I6
+   gains invariants as their subject is built (I7/I8 in M7, I17/I18 in M8a, I1/I2/I12 in M9, I4 in M11, I6
    in M13, I14 in M14, I3/I11/I13 in M16–M17, I15/I16 from M12); from M19 it checks
-   I1–I16.
-5. **Fable never edits a golden file.** If it believes one is wrong, it STOPs with the test
+   I1–I18.
+5. **Standing guards.** None at present. The vector-code guard was removed when MR-1 was
+   decided (2026-09-29, deletion contract in `s12_s15_golden/README.md`). A standing guard,
+   when one is added, is not a milestone test: it must pass from M1 onward, so "red first"
+   does not apply to it, and its own sabotage self-tests prove it can fail.
+6. **Fable never edits a golden file.** If it believes one is wrong, it STOPs with the test
    name, the gate section and its reasoning (gate §19.1); Claude rules; the owner re-pins.
 
 ---
@@ -375,7 +429,7 @@ invariants active, and the commit. Fable's log is evidence; the progress file is
 | Checkpoint | When | Owner time |
 |---|---|---|
 | ⚙ automatic | every milestone end (script) | ~1 min |
-| ★ review | M0, M1, M14, M21 | 10–20 min each |
+| ★ review | M0, M1, M8a, M14, M21 | 10–20 min each |
 | STOP | whenever Fable stops | forward to Claude, paste ruling back |
 
 ---
@@ -394,6 +448,8 @@ invariants active, and the commit. Fable's log is evidence; the progress file is
 | Step data flow needed by a real plan | C36 denies at entry with a clear reason; P0-B tracked in the register for the planning phase |
 | Laya creeping in | Architecture test in M21; Laya note reference-only |
 | Context loss in long runs | Milestone card + log are the state; session-start routine |
+| Deferred worker-management features creeping in (spawning, batch, replan, browser path) | Gate §1 MUST NOT, M1 golden asserts the deferred tables are absent, M21 architecture test |
+| Quota overshoot under concurrency | Consumption only in the §7.2 transaction; golden M8a 20-way test ×5; I17 |
 
 ---
 
@@ -402,7 +458,7 @@ invariants active, and the commit. Fable's log is evidence; the progress file is
 1. Finish and tag S0–S11 (autopilot on the VPS).
 2. Copy the v9 documents from this repository into `docs\implementation\` on the VPS, re-pin,
    and confirm the S0–S11 certifier is still 19/19.
-3. Approve this plan (v2).
+3. Approve this plan (v3) and the worker-management rulings RD-1…RD-18.
 4. Claude then delivers, in one batch: `owner_certify_s12.py`, `S12_AUTOPILOT.md`, the
    S12 owner pin / checkpoint / verify scripts, the golden fixtures, batch B1 (M1–M4
    golden tests with their sabotage patches), and the M0 preflight prompt.

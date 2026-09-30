@@ -1,5 +1,8 @@
 """
-GOLDEN TEST FILE (OWNER). Pinned by hash; the agent must not edit it.
+GOLDEN TEST FILE (OWNER). Pinned by hash. The agent edits it only on the owner's explicit
+instruction; the amendments below were made on such an instruction.
+AMENDMENTS: R-V amended (every D/IRREVERSIBLE plan is confirmed; PIPELINE_STAGES §12 wins over
+DATA_CONTRACTS §7); missing capability metadata -> DENY capability_metadata_missing (R-V).
 Rulings: runbook R-V (S6 formula), R-O (TaskProfile fields).
 
 Fixture contract (implemented by the agent in tests/fixtures/, NOT here):
@@ -12,6 +15,7 @@ Fixture contract (implemented by the agent in tests/fixtures/, NOT here):
       handler of stage_id, called with dependencies built from the scenario. It must not
       do anything else.
   tamper(state, **fields) -> PipelineState (dataclasses.replace), negative tests only.
+  The state run_stage returns carries `stage_status` (StageStatus) and `deny_reason` (str | None).
 """
 import pytest
 
@@ -21,7 +25,8 @@ from tests.fixtures.states import run_stage, state_ready_for
 CASES = [  # id, mutation, risk, cost_per_step, steps, expected requires_confirmation
     ("irreversible",            "IRREVERSIBLE", 0.1, 1, 1, True),
     ("delete_cost_6",           "D",            0.3, 6, 1, True),
-    ("delete_cost_5_boundary",  "D",            0.3, 5, 1, False),
+    ("delete_cost_5_confirmed", "D",            0.3, 5, 1, True),    # R-V amended: D is always confirmed
+    ("delete_cost_1_low_risk", "D",            0.1, 1, 1, True),
     ("write_cost_6_not_delete", "W",            0.3, 6, 1, False),
     ("total_cost_21",           "W",            0.3, 7, 3, True),
     ("total_cost_20_boundary",  "W",            0.3, 5, 4, False),
@@ -53,3 +58,28 @@ def test_s6_copies_risk_and_mutations_from_frozen_binding():
     assert fb.effective_risk == 0.9          # the scenario really produces risk 0.9
     tp = run_stage("S6", state, sc).task_profile
     assert (tp.risk, tuple(tp.mutations)) == (0.9, ("D",))
+
+
+def test_s6_confirmation_is_strict_and_independent_of_cost_for_d():
+    """D and IRREVERSIBLE: confirmed at any cost and any risk; W/R only by cost or risk."""
+    for mutation, expected in (("R", False), ("W", False), ("D", True), ("IRREVERSIBLE", True)):
+        sc = make_scenario(mutation=mutation, risk=0.05, cost=1, steps=1)
+        assert run_stage("S6", state_ready_for("S6", sc), sc).task_profile.requires_confirmation is expected
+
+
+def test_s6_normal_result_status():
+    sc = make_scenario()
+    out = run_stage("S6", state_ready_for("S6", sc), sc)
+    assert (str(out.stage_status).lower(), out.deny_reason) == ("normal", None)
+
+
+def test_s6_missing_capability_metadata_denies_tampered():
+    from tests.fixtures.states import tamper
+    sc = make_scenario(mutation="W", risk=0.2, cost=3)
+    state = state_ready_for("S6", sc)
+    for bad in (tamper(state, capability_match=None),
+                tamper(state, capability_match=__import__("dataclasses").replace(
+                    state.capability_match, capability_id="some-other-capability"))):
+        out = run_stage("S6", bad, sc)
+        assert (str(out.stage_status).lower(), out.deny_reason) == ("deny", "capability_metadata_missing")
+        assert out.task_profile is None                    # nothing written; the cost is never guessed

@@ -1,109 +1,180 @@
 """
-Pipeline journey helper — run real handlers S0..stage_id in order.
+Pipeline journey helpers — the REAL runner, real handlers, fixture dependencies.
 
 Source: R-H (runbook): journeys use real handlers, not hand-built state.
+
+  make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies
+  run_pipeline(request, scenario=None, *, stop_after=None, ...) -> PipelineRunResult
+  run_through(stage_id, request, deps) -> PipelineState   (must end NORMAL)
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
-from contracts.pipeline_state import PipelineState, PRE_EXECUTION_SEQUENCE
+from contracts.kernel_policy import KernelPolicy
+from engine.control_plane.scope import RunScope
+from contracts.pipeline_state import PipelineState
+from engine.control_plane.pipeline_state_runner import (
+    PipelineDependencies, PipelineRunResult, build_pipeline,
+)
+from engine.stages.s0_entry.handler import EntryRequest
+from tests.fixtures.deps import make_s8_deps
+from tests.fixtures.scenarios import ScenarioRegistry, make_scenario
+from tests.fixtures.states import POLICY_VERSIONS, ScenarioIntentModel
 
 
-def run_through(
-    stage_id: str,
-    request: dict | None = None,
-    deps: dict | None = None,
-) -> PipelineState:
-    """
-    Run real handlers S0..stage_id and return the final PipelineState.
+class InMemorySuspendedRuns:
+    """Fixture SuspendedRunStore. Stores the JSON text, so every save/load goes through the
+    real codec exactly as the database adapter does. Tenant-scoped like RLS."""
 
-    Args:
-        stage_id: Target stage (e.g. "S2").
-        request: Raw request dict. Defaults to a minimal read request.
-        deps: Optional dependency dict (unused by S0–S7; S8+ use it).
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], str] = {}
+        self.fail_saves = False
 
-    Returns:
-        PipelineState as stage_id leaves it.
-    """
-    if request is None:
-        request = {"message": "test", "entry_channel": "api"}
+    async def save(self, state, *, tenant_id, execution_id, confirmation_id):
+        import json
+        from contracts.codec import encode_state
+        if self.fail_saves:
+            raise RuntimeError("store down")
+        self.rows[(tenant_id, confirmation_id)] = json.dumps(encode_state(state))
 
-    # S0: Entry -> ExecutionContext
-    from engine.stages.s0_entry.handler import EntryRequest, handle as s0_handle
-    entry = EntryRequest(
+    async def load(self, *, tenant_id, confirmation_id):
+        import json
+        from contracts.codec import decode_state
+        raw = self.rows.get((tenant_id, confirmation_id))
+        return None if raw is None else decode_state(json.loads(raw))
+
+
+class StaticActivation:
+    """Fixture ActivationStateReader: never paused unless a test sets a field."""
+
+    def __init__(self) -> None:
+        self.tenant_paused_until = self.tenant_activation_at = None
+        self.workspace_paused_until = self.workspace_activation_at = None
+        self.now = None
+        self.error: Exception | None = None
+
+    async def read(self, tenant_id, workspace_id):
+        import time
+        from contracts.activation import ActivationState
+        if self.error:
+            raise self.error
+        return ActivationState(
+            database_now=self.now if self.now is not None else time.time(),
+            tenant_paused_until=self.tenant_paused_until, tenant_activation_at=self.tenant_activation_at,
+            workspace_paused_until=self.workspace_paused_until,
+            workspace_activation_at=self.workspace_activation_at)
+
+
+class InMemoryEvents:
+    """Fixture EventSink: records every stage event; `fail` makes emit raise."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+        self.fail = False
+        self.fail_on_stage: str | None = None
+
+    async def emit(self, event):
+        if self.fail or event.stage == self.fail_on_stage:
+            raise RuntimeError("ledger down")
+        self.events.append(event)
+
+
+class StaticReferences:
+    """Fixture ReferenceSource: dictionaries per tenant/user/workspace; records every call."""
+
+    def __init__(self) -> None:
+        self.results: dict[tuple, list[str]] = {}         # (tenant, user, conversation) -> newest first
+        self.files: dict[tuple, object] = {}               # (tenant, workspace, name) -> FileInfo
+        self.variables: dict[tuple, str] = {}              # (tenant, workspace, name) -> value
+        self.time = 1_772_668_800.0                        # 2026-03-05T00:00:00Z
+        self.calls: list[tuple] = []
+        self.error: Exception | None = None
+
+    async def previous_result(self, *, tenant_id, user_id, conversation_id, index):
+        self.calls.append(("result", tenant_id, user_id, conversation_id, index))
+        if self.error:
+            raise self.error
+        items = self.results.get((tenant_id, user_id, conversation_id), [])
+        return items[index - 1] if 0 < index <= len(items) else None
+
+    async def file(self, *, tenant_id, workspace_id, name):
+        self.calls.append(("file", tenant_id, workspace_id, name))
+        if self.error:
+            raise self.error
+        return self.files.get((tenant_id, workspace_id, name))
+
+    async def variable(self, *, tenant_id, workspace_id, name):
+        self.calls.append(("variable", tenant_id, workspace_id, name))
+        if self.error:
+            raise self.error
+        return self.variables.get((tenant_id, workspace_id, name))
+
+    async def now(self):
+        if self.error:
+            raise self.error
+        return self.time
+
+
+class StaticScopes:
+    """Fixture RunScopeFactory: the same scope for every tenant."""
+
+    def __init__(self, scenario, s8=None) -> None:
+        self._scope = RunScope(
+            policy=KernelPolicy(kill_switch_engaged=False,
+                                risk_deny_threshold=scenario.risk_deny_threshold),
+            s8=s8 or make_s8_deps(kill_switch=False),
+            policy_versions=POLICY_VERSIONS,
+        )
+
+    async def for_run(self, tenant_id, workspace_id):
+        return self._scope
+
+
+def make_pipeline_deps(scenario, *, model=None, s8=None) -> PipelineDependencies:
+    return PipelineDependencies(
+        intent_model=model or ScenarioIntentModel(scenario),
+        registry=ScenarioRegistry(scenario),
+        scopes=StaticScopes(scenario, s8),
+        confirmation_store=scenario.confirmation_store,
+        suspended=InMemorySuspendedRuns(),
+        activation=StaticActivation(),
+        events=InMemoryEvents(),
+        references=StaticReferences(),
+    )
+
+
+def make_entry(request: dict | None = None) -> EntryRequest:
+    request = request or {"message": "test", "entry_channel": "api"}
+    return EntryRequest(
         raw_payload=request,
         entry_channel=request.get("entry_channel", "api"),
         tenant_id=request.get("tenant_id", "tenant-1"),
+        workspace_id=request.get("workspace_id", "ws-1"),
         user_id=request.get("user_id", "user-1"),
         conversation_id=request.get("conversation_id"),
         connection_id=request.get("connection_id"),
     )
-    state = asyncio.run(s0_handle(entry))
-    # S0 now returns PipelineState directly (R-X), with entry_request already set
 
-    target_idx = PRE_EXECUTION_SEQUENCE.index(stage_id)
 
-    # S1: Normalize — reads raw payload from state.entry_request (R-X)
-    if target_idx >= 1:
-        from engine.stages.s1_normalize.handler import handle as s1_handle
-        state = asyncio.run(s1_handle(state))
+def run_pipeline(request: dict | None = None, scenario=None, *, stop_after: str | None = None,
+                 model=None, s8=None, deps: PipelineDependencies | None = None) -> PipelineRunResult:
+    """Run the real S0..S11 runner over the request."""
+    scenario = scenario or make_scenario()
+    deps = deps or make_pipeline_deps(scenario, model=model, s8=s8)
+    return asyncio.run(build_pipeline(deps).run(make_entry(request), stop_after=stop_after))
 
-    # S2: Intent Analysis
-    if target_idx >= 2:
-        from engine.stages.s2_intent_analysis.handler import handle as s2_handle
-        from engine.stages.s2_intent_analysis.handler import MockLLMProvider
-        llm = MockLLMProvider()
-        state = asyncio.run(s2_handle(state, llm=llm))
 
-    # S3: Capability Discovery
-    if target_idx >= 3:
-        from engine.stages.s3_capability_discovery.handler import handle as s3_handle
-        state = asyncio.run(s3_handle(state))
+def run_through(stage_id: str, request: dict | None = None, deps=None,
+                scenario=None) -> PipelineState:
+    """Run real handlers S0..stage_id and return the PipelineState as stage_id leaves it.
 
-    # S4: Graph Classification
-    if target_idx >= 4:
-        from engine.stages.s4_graph_classification.handler import handle as s4_handle
-        state = asyncio.run(s4_handle(state))
-
-    # S5: Provider Resolution
-    if target_idx >= 5:
-        from engine.stages.s5_provider_resolution.handler import handle as s5_handle
-        state = asyncio.run(s5_handle(state))
-
-    # S6: Task Profile Assembly
-    if target_idx >= 6:
-        from engine.stages.s6_task_profile_assembly.handler import handle as s6_handle
-        state = asyncio.run(s6_handle(state))
-
-    # S7: Path Decision
-    if target_idx >= 7:
-        from engine.stages.s7_path_decision.handler import handle as s7_handle
-        state = asyncio.run(s7_handle(state))
-
-    # S8: Safety Gate (needs deps)
-    if target_idx >= 8:
-        from engine.stages.s8_safety_gate.handler import handle as s8_handle
-        from contracts.kernel_policy import KernelPolicy
-        from tests.fixtures.deps import make_s8_deps
-        policy = KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=0.95)
-        s8_deps = deps if deps is not None else make_s8_deps(kill_switch=False)
-        state = asyncio.run(s8_handle(state, s8_deps))
-
-    # S9: Plan Creation
-    if target_idx >= 9:
-        from engine.stages.s9_plan_creation.handler import handle as s9_handle
-        state = asyncio.run(s9_handle(state))
-
-    # S10: Confirmation
-    if target_idx >= 10:
-        from engine.stages.s10_confirmation.handler import handle as s10_handle
-        state = asyncio.run(s10_handle(state))
-
-    # S11: Plan Validation
-    if target_idx >= 11:
-        from engine.stages.s11_plan_validation.handler import handle as s11_handle
-        state = asyncio.run(s11_handle(state))
-
-    return state
+    `deps` is an optional S8Dependencies override. The run must end NORMAL; a stage that
+    stops it is reported with its stage and reason.
+    """
+    result = run_pipeline(request, scenario, stop_after=stage_id, s8=deps)
+    if result.final_stage != stage_id or result.status.value != "NORMAL":
+        raise AssertionError(
+            f"run_through({stage_id}): stopped at {result.final_stage}: "
+            f"{result.status} / {result.reason}")
+    return result.final_state

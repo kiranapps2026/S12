@@ -24,7 +24,7 @@ from contracts.kernel_policy import KernelPolicy
 from contracts.stage_outputs import CapabilityMatch
 from engine.stages.s0_entry.handler import EntryRequest, handle as s0_handle
 from engine.stages.s1_normalize.handler import handle as s1_handle
-from engine.stages.s2_intent_analysis.handler import handle as s2_handle, MockLLMProvider
+from engine.stages.s2_intent_analysis.handler import handle as s2_handle
 from engine.stages.s3_capability_discovery.handler import handle as s3_handle
 from engine.stages.s4_graph_classification.handler import handle as s4_handle
 from engine.stages.s5_provider_resolution.handler import handle as s5_handle
@@ -82,7 +82,7 @@ class TestCommitD_HandlerMigration:
             # S0 creates ExecutionContext from EntryRequest — special case
             if stage == "s0_entry":
                 assert "entry: EntryRequest" in text, f"{stage} handler doesn't accept EntryRequest"
-                assert "-> ExecutionContext" in text, f"{stage} handler should return ExecutionContext"
+                assert "-> PipelineState" in text, f"{stage} handler should return PipelineState"
             else:
                 assert "state: PipelineState" in text, f"{stage} handler doesn't accept PipelineState"
                 assert "-> PipelineState" in text, f"{stage} handler doesn't return PipelineState"
@@ -240,16 +240,15 @@ class TestDataFlowInvariants:
 
     def test_confirmation_plan_hash_integrity(self):
         """confirmation.plan_hash == plan_result.plan_hash (S9→S10 integrity)."""
-        # Build a minimal pipeline via real handlers
-        state = state_ready_for("S10", make_scenario(mutation="R", risk=0.3, steps=1))
+        from tests.fixtures.states import run_stage
+        sc = make_scenario(mutation="D", risk=0.9, steps=2, graph="chain", confidence=0.8)
+        state = state_ready_for("S10", sc)
         assert state.safety_result.allowed, f"S8 denied: {state.safety_result.reason}"
-        s9 = asyncio.run(s9_handle(state))
-        plan_result = s9.plan
+        plan_result = state.plan
         assert plan_result is not None
-        assert plan_result.plan_hash is not None
-        s10 = asyncio.run(s10_handle(s9))
-        conf = s10.confirmation
-        assert conf is not None
+        s10 = run_stage("S10", state, sc)
+        assert s10.confirmation.required is True
+        conf = s10.confirmation.confirmation
         assert conf.plan_hash == plan_result.plan_hash, (
             f"S10 confirmation plan_hash ({conf.plan_hash}) != "
             f"S9 plan_hash ({plan_result.plan_hash})"

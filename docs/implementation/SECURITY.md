@@ -1,7 +1,8 @@
 # Security
 
-**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §3 Security Model, §10 Execution Safety. [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, PrincipalChain, worker authorization. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §8 SafetyResult, §17 IdempotencyKey. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S1 (injection defense), S8 (safety gate). [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §3 (WorkerIdentity), §10 (admission control). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence).
+**Upstream contracts**: [FINAL_ARCHITECTURE.md](FINAL_ARCHITECTURE.md) — §25 Security Model, §18 Safety Model, §50 Architecture Invariants. *(section numbers corrected in audit round 2, D1)*  [IDENTITY_AND_TENANCY.md](IDENTITY_AND_TENANCY.md) — identity model, PrincipalChain, worker authorization. [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — §8 SafetyResult, §17 IdempotencyKey. [PIPELINE_STAGES.md](PIPELINE_STAGES.md) — S1 (injection defense), S8 (safety gate). [STATE_TRANSITIONS.md](STATE_TRANSITIONS.md) — all state machine definitions. [WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md](WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md) — §3 (WorkerIdentity), §10 (admission control). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence). [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) — §13 (security model). [ADAPTABILITY_PRINCIPLES.md](ADAPTABILITY_PRINCIPLES.md) — §8 (protocol independence).
 **Status**: DESIGN_LOCKED, IMPLEMENTATION_NOT_READY — inherits FINAL_ARCHITECTURE.md status
+**Worker-management update (2026-09-29)**: new §12a and checklist items, per gate v10 C39 and rulings RD-1…RD-18 (`WORKER_MGMT_SPEC_REVIEW.md` Part E).
 **Purpose**: Complete security model for the rebuild. Covers prompt injection defense, authorization, worker authorization, delegation and impersonation, data sanitization, credential management, audit logging, resource scoping, guardrail precedence, and secret lifecycle. Every security decision and its rationale.
 
 ---
@@ -20,6 +21,8 @@
 10. [Guardrail Precedence Order](#10-guardrail-precedence-order)
 11. [External Event Security](#11-external-event-security)
 12. [Secret Lifecycle Management](#12-secret-lifecycle-management)
+12a. [Worker Management Security](#12a-worker-management-security)
+12b. [Memory Security](#12b-memory-security)
 13. [Security Checklist](#13-security-checklist)
 
 ---
@@ -278,7 +281,9 @@ EffectivePermission =
 
 **Rule: A worker cannot have more permissions than its user, tenant, and capability policies allow.** If any layer restricts the permission, the effective permission is reduced accordingly.
 
-### Worker Authorization Rules
+## 4. Worker Authorization
+
+> **Repair (audit round 2 D9):** the table of contents listed §4, but its content sat under §3 as "Worker Authorization Rules".
 
 1. Every worker execution is bound to a specific user and tenant
 2. Worker capabilities are a subset of user capabilities
@@ -780,60 +785,7 @@ Level 10 ── EXECUTE ▶ SUCCESS
 
 ## 11. External Event Security
 
-### Webhook Authentication
-
-All external events entering through the Event Gateway must be authenticated:
-
-| Source Type | Authentication Method | Key Location |
-|-------------|----------------------|--------------|
-| Webhook | HMAC-SHA256 signature |  table |
-| Schedule | Internal cron auth | Service account token |
-| MCP | mTLS or API key | Connection credential |
-| API | Bearer token or mTLS |  table |
-
-**HMAC Validation**:
-
-
-### Replay Protection
-
-| Mechanism | Implementation |
-|-----------|----------------|
-| Timestamp window | Reject events with timestamp > 5 minutes from server time |
-| Nonce tracking |  column — reject duplicate nonces |
-| Sequence tracking |  — reject stale sequences |
-
-### Tenant Isolation (Critical)
-
-**I-023: TENANT FROM AUTH, NEVER PAYLOAD**
-
- comes from the Event Gateway authentication context (HMAC credential lookup). It is NEVER extracted from the event payload.
-
-
-
-### Injection Defense for Event Payloads
-
-Event payloads are UNTRUSTED input. They must pass through the same DataSanitizer as user input:
-
-| Boundary | Direction | Action |
-|----------|-----------|--------|
-| Event Gateway → S0 | Input | Scan + sanitize before LLM call |
-| Event payload → prompt | Output | Scan event data before including in prompt |
-| Event payload → system | Input | Scan before any processing |
-
-### Event Source Trust Levels
-
-| Source | Trust Level | Allowed Operations |
-|--------|------------|-------------------|
-| Internal cron | High | All operations within service scope |
-| Authenticated webhook | Medium | Operations scoped to the webhook's capability grants |
-| MCP server | Medium | Operations scoped to the MCP connection's grants |
-| External API | Low | Read-only unless explicitly granted write |
-
-**See**: [EVENT_GATEWAY_AND_ROUTER.md](EVENT_GATEWAY_AND_ROUTER.md) §13 for complete external event security model.
-
----
-
-## 11. External Event Security
+> **Repair (audit round 2 D9):** this section appeared twice; the first copy had lost its table cells and code and was removed. The invariant cited below was I-023; tenant-from-auth is **I-022** (FINAL_ARCHITECTURE §50). SEC-HMAC and SEC-NONCE (register §19.5) are decided and applied below.
 
 ### Webhook Authentication
 
@@ -841,7 +793,7 @@ All external events entering through the Event Gateway must be authenticated:
 
 | Source Type | Authentication Method | Key Location |
 |-------------|----------------------|--------------|
-| Webhook | HMAC-SHA256 signature | `webhook_credentials` table |
+| Webhook | HMAC-SHA256 signature | `webhook_credentials` table (encrypted secret, SEC-HMAC) |
 | Schedule | Internal cron auth | Service account token |
 | MCP | mTLS or API key | Connection credential |
 | API | Bearer token or mTLS | `connections` table |
@@ -849,22 +801,26 @@ All external events entering through the Event Gateway must be authenticated:
 ### HMAC Validation
 
 ```python
-def validate_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+def validate_webhook_signature(payload: bytes, signature: str, secret: bytearray) -> bool:
+    expected = hmac.new(bytes(secret), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 ```
+
+**Webhook secret storage (SEC-HMAC, decided 2026-09-29).** Secrets are **encrypted, never hashed**: verifying `HMAC(secret, payload)` needs the secret itself. Envelope encryption: AES-256-GCM under a per-record DEK, the DEK wrapped by a system-wide KEK held in the platform secret manager (never in the database). Decryption only through `CredentialProvider`, inside the signature check; the plaintext lives in a `bytearray` for the shortest possible time and is overwritten after use (best effort in Python); it is never logged or returned (I-018). Rotation keeps one `active` and at most one `retiring` secret per (tenant, source) until `retiring_until`, so in-flight webhooks never break. Full rules: DATABASE.md "Event Gateway Tables" and EVENT_GATEWAY_AND_ROUTER.md §10.3, §11.
 
 ### Replay Protection
 
 | Mechanism | Implementation |
 |-----------|----------------|
 | Timestamp window | Reject events with timestamp > 5 minutes from server time |
-| Nonce tracking | `event_subscriptions.nonce` column — reject duplicate nonces |
-| Sequence tracking | `event_subscriptions.last_sequence` — reject stale sequences |
+| Nonce (duplicate) | `event_log.idempotency_key` (`{source}:{source_system}:{discriminator}`, EVENT_GATEWAY §3.1), `UNIQUE (tenant_id, idempotency_key)`; the insert uses `ON CONFLICT DO NOTHING`, so a repeat delivery is `deduplicated` atomically |
+| Sequence tracking | Not used: most webhook providers send no per-source sequence number |
+
+> **Repair (SEC-NONCE, decided 2026-09-29):** the former rows cited `event_subscriptions.nonce` and `event_subscriptions.last_sequence`, which do not exist; nonces belong to events, not subscriptions. The existing idempotency key is the nonce, now enforced by a tenant-scoped unique index.
 
 ### Tenant Isolation (Critical)
 
-**I-023: TENANT FROM AUTH, NEVER PAYLOAD**
+**I-022: TENANT FROM AUTH, NEVER PAYLOAD**
 
 `EventEnvelope.tenant_id` comes from the Event Gateway authentication context (HMAC credential lookup). It is NEVER extracted from the event payload.
 
@@ -1017,7 +973,42 @@ CI pipeline runs secret scanning:
 
 ---
 
-## 12. Security Checklist
+## 12a. Worker Management Security
+
+> **Worker-management repair (RD-4…RD-9, RD-13; gate v10 C39):** security rules for worker-management features.
+
+1. **Settings are not authorization.** `workers.settings` can only restrict (`restricted_capabilities`, tighter `execution_policy`). No setting grants a capability, widens a scope or bypasses S8 (I-016). The settings content is never passed to an LLM as instructions for authorization.
+2. **Assignment.** `assigned_user_id` restricts which `PrincipalChain.original_principal_id` a worker may serve; it is compared with the original principal, never with a delegating worker's id, so delegation cannot launder an assignment.
+3. **Admin bypass.** Only when **the run's original principal** (`PrincipalChain.original_principal_id`) holds membership role `owner` or `admin` **in the run's workspace**, read live at worker selection (not from the run snapshot), and only for the worker pause, worker activation and assignment filters (12b, 13b, 14). There is no bypass for a tenant or workspace pause, the workspace boundary, capability restrictions, the kill switch, quotas or budget. Every bypass is written to the ledger with the membership id.
+4. **Pause vs kill switch.** A tenant or workspace pause is checked at S0.1 (S0–S11 ruling R-P), before any LLM call or confirmation, and again at S12 entry; it only blocks new work. An incident needing an immediate stop uses the kill switch (C23). Documentation and UI must not present a pause as an emergency stop.
+5. **Quota integrity.** Quota is consumed only inside the durable-admission transaction with a conditional UPDATE; `operation_quotas` has RLS; a request cannot choose which quota row is charged.
+6. **Time.** Pause, activation and quota periods are compared with database `NOW()` (I-019); client-supplied times are ignored.
+7. **One execution path.** No runtime type (browser, RPA, vision, rules, data, human) bypasses S8 (I-029). Browser providers are bindings frozen at S5 with credentials from `CredentialProvider`.
+8. **Deferred features, rules fixed now:** worker webhooks store a secret **reference** resolved through `CredentialProvider`, never the secret (I-018); webhook URLs are validated against SSRF (no private, loopback or link-local targets; https only) and dispatched through the outbox (I-020). Spawned child workers get capabilities and grants ⊆ the parent's.
+
+**Validation:** gate suite 20; `test_settings_cannot_grant_capability()`, `test_assignment_uses_original_principal()`, `test_admin_bypass_read_live_and_audited()`.
+
+---
+
+## 12b. Memory Security
+
+> **ADR-14 (DECIDED 2026-09-29):** rules for the memory phase (after S15); nothing here is implemented in S12–S15 (gate v10 §14).
+
+1. **Scope from context only.** `MemoryScope` is built from `ExecutionContext` / `PrincipalChain` (user = original principal), never from LLM output or request parameters. `MemoryFilter` can only narrow.
+2. **Isolation.** The tenant boundary is RLS (I-001). Workspace, worker, user and session boundaries are the backend's mandatory predicates. A worker reads only its own entries, the user's entries and the workspace-wide scope; it never reads another worker's memory.
+3. **Memory is not authorization.** No memory entry grants a capability, confirms an action or skips S8/S10 (FINAL_ARCHITECTURE §21, I-007).
+4. **S3 access.** Only the memory service reaches S3, with short-lived STS credentials from `CredentialProvider` (I-018) whose session policy allows only `tenants/{tenant_id}/*`. Object keys are built from the validated scope only. Block Public Access and a TLS-only bucket policy are on; the memory bucket never uses Object Lock.
+5. **Encryption.** Payloads in S3 use client-side envelope encryption with a per-tenant DEK wrapped by the KEK (`memory_tenant_keys`).
+6. **Erasure.** `delete` and `purge` remove rows and write their event in one transaction; a job deletes every S3 object version. Tenant erasure destroys the tenant DEK. `purge` is limited to owner/admin members or the off-boarding job and is audited. Every erasure is recorded in an erasure register kept outside the database backups; residual copies disappear within the 90-day erasure deadline (DATABASE §5).
+7. **Cache.** Every cache key contains the full `MemoryScope`; `purge` invalidates matching entries.
+
+**Validation:** VALIDATION.md "Memory (ADR-14)" tests.
+
+---
+
+## 13. Security Checklist
+
+> **Repair (audit round 2 D9):** was a second "§12"; the table of contents lists it as §13.
 
 ### Pre-Commit Security Checks
 
@@ -1040,6 +1031,8 @@ CI pipeline runs secret scanning:
 - [ ] Circuit breakers configured for all providers
 - [ ] Budget limits configured
 - [ ] Confirmation flow tested for D/IRREVERSIBLE
+- [ ] `operation_quotas` RLS enabled; quota consumed only at durable admission (§12a)
+- [ ] Worker settings cannot grant capabilities; admin bypass audited (§12a)
 
 ### Runtime Security Monitoring
 

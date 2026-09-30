@@ -580,9 +580,22 @@ These items have a design decision recorded. They are NOT evidence-closed (no im
 | **Status** | DECISION_REQUIRED |
 | **Affected** | DATABASE.md, RELIABILITY.md, DATA_CONTRACTS |
 
+### ADR-14 — Vector Memory Backend and Tenant Isolation
+
+| | |
+|---|---|
+| **Finding** | FINAL_ARCHITECTURE §36 `MemoryBackend.search(vector, limit)` has no tenant/workspace/worker scope; LanceDB (§20, §29) is embedded and file-based with no RLS, so vector isolation would rest on callers (I-001). Also: no atomic write with ledger/outbox (I-020), no sharing across nodes, no PITR (DATABASE §5) |
+| **Decision** | `ADR-14_VECTOR_MEMORY_BACKEND.md` — Part 1: mandatory `MemoryScope` on every async backend call, enforced by the backend, scope from context only; Part 2: **owner decision 2026-09-29 (Q1): Option A — pgvector only** (RLS, partition per tenant, HNSW per partition), no I-001 exception, LanceDB not chosen; Part 3 (owner choice 2026-09-29): **Amazon S3** as the tier-2 object store for payloads above 256 KiB — content-addressed keys under `tenants/{tenant_id}/…`, per-tenant STS session policies, client-side per-tenant envelope encryption with crypto-shredding for erasure, no Object Lock on the memory bucket, PostgreSQL stays the system of record; owner answers 2026-09-29: service in the bucket's AWS region (Q6), erasure covers backups (Q4) with a 90-day deadline (Q7) — PostgreSQL base backups and WAL archive kept ≤ 90 days, erasures replayed after every restore |
+| **Status** | **DECIDED** (owner, 2026-09-29): S3; Q1 = A; Q4, Q6, Q7; Part 1 = §3.3 accepted (MR-1). Deferred to the memory phase, non-blocking: Q3, Q5, Q8. Vector-code block lifted (Section 20); propagated to FINAL_ARCHITECTURE §20/§21/§29/§36/§37, DATABASE, DATA_CONTRACTS §54, SECURITY §12b, IDENTITY_AND_TENANCY §8.8, RELIABILITY §15, VALIDATION, MEMORY_ARCHITECTURE |
+| **Target phase** | Post-S15 (memory / LLM layer) |
+| **Affected** | FINAL_ARCHITECTURE §20, §21, §29, §36; DATABASE.md; DATA_CONTRACTS.md; SECURITY.md; IDENTITY_AND_TENANCY.md; VALIDATION.md |
+| **Tests** | test_memory_calls_require_scope(), test_cross_tenant_vector_search_impossible(), test_scope_from_context_not_llm(), test_memory_write_and_event_atomic() (full list in the ADR §6) |
+
 ---
 
 ## SECTION 14: W0-W6 READINESS STATUS
+
+> **Snapshot of 2026-09-26 — predates gate v9 (2026-09-28) and v10 (2026-09-29); counts not recomputed.** Current S12 readiness is decided by the S12_S15_IMPLEMENTATION_PLAN §1 preconditions (S0–S11 certified incl. rulings R-Z and R-P, gate v10 installed and pinned) and gate preflight items 1–17, not by this table. Items listed below that later rulings **decided** (design closed, implementation and evidence still required — Section 18.1): W2: MC-015 (for S12–S15 tables, C34), MC-021 and MC-022 (C33). W3: MC-005 (C13, C18), MC-037 (C6, C24), MC-061 (C20). W5/W6: MC-008 and MC-038 (C32), MC-009 (C35), MC-010 (C5), MC-011 (C25), MC-017 (single node, C37), MC-048 (C32), MC-052 and MC-062 (C37). The gate verdicts (FAIL) remain until implementation evidence exists.
 
 ### W0 — Architectural Decisions
 
@@ -648,6 +661,8 @@ These items have a design decision recorded. They are NOT evidence-closed (no im
 ---
 
 ## SECTION 15: CERTIFICATION GATE STATUS
+
+> **Snapshot of 2026-09-26 — predates gate v9 and v10.** Since then: P0-CRASH / ADR-7 recovery semantics are decided (C35); RLS gaps for S12–S15 tables are closed by C34; queue model is decided (in-process dispatch, C1); worker delegation persistence (ADR-6) is still open; tenant fairness and backpressure remain undefined (P1-C, deferred to the fleet phase); P0-B (step data flow) stays open with an interim rule (C36). The checklist and verdict below are **not** re-evaluated; re-run it at the S12–S15 certification (gate §20).
 
 VALIDATION.md Architecture Acceptance Gate criteria:
 
@@ -719,6 +734,8 @@ VALIDATION.md Architecture Acceptance Gate criteria:
 
 ## SECTION 16: FILES TO MODIFY
 
+> **Snapshot of 2026-09-26.** Rows since addressed by rulings (documents repaired, markers in place): DATABASE crash recovery (C35) and cascading rules (P1-H, C34); DATABASE checkpoint model for this phase (C10: PostgreSQL rows only; ADR-11 remains open beyond S12–S15); PIPELINE_STAGES re-entry (C23, C35); PROVIDER_ADAPTERS per-kernel probe interface (C32; per-kernel methods remain with real adapters); RELIABILITY breaker interface (C37; fleet persistence ADR-5 deferred). Still open: P0-B data flow (C36 interim), ADR-2 audit_reader scope, P1-E authorization algebra, P1-G kill-switch hierarchy, MC-058 credential tenancy, SQLite remnants. `CROSS_DOCUMENT_RECONCILIATION.md` is not in this directory (README "What's NOT Here").
+
 | File | Phases | Changes |
 |------|--------|---------|
 | DATABASE.md | 1, 2, 4 | Fix crash recovery (P0-CRASH); audit_reader RLS (ADR-2); cascading rules (P1-H); checkpoint model (ADR-11); remove SQLite remnants |
@@ -739,6 +756,8 @@ VALIDATION.md Architecture Acceptance Gate criteria:
 ---
 
 ## SECTION 17: APPROVAL REQUIRED
+
+> **Status 2026-09-29:** item 2 (ADR-7) is DECIDED by gate C35; item 3 (ADR-5) is DECIDED as an interface (C37), with fleet persistence deferred; item 4 (ADR-11) is ruled for the S12–S15 phase (C10: PostgreSQL rows only) and stays DECISION_REQUIRED beyond it. Items 1 (ADR-2) and 5 (implementation tracker) are still open. Newer decisions required: ADR-13, Laya LB1–LB11 (Section 18.2); ADR-14 (Section 20) was DECIDED on 2026-09-29.
 
 Before proceeding, the following decisions require human approval:
 
@@ -829,3 +848,110 @@ parallel step execution; real provider adapters and their per-kernel probe/obser
 methods (RES-5); step-to-step data flow (P0-B); alert delivery; circuit-breaker fleet
 consistency (P1-B); scheduler fairness (P1-C). Open question: no post-execution
 human-approval run state (D4).
+
+---
+
+## SECTION 19: S12–S15 GATE v10 — WORKER-MANAGEMENT RULINGS
+
+**Date**: 2026-09-29. **Source**: S12_S15_EXECUTION_GATE.md v10 C39–C41; `WORKER_MGMT_SPEC_REVIEW.md` Part E (RD-1…RD-18, owner-confirmed).
+**Rule**: as Section 18 — rulings DECIDED and PROPAGATED (markers `Worker-management repair (RD-n)`); status `IMPLEMENTATION_REQUIRED` until the certification report cites the passing tests.
+
+### 19.1 Gate rulings
+
+| ID | Subject | Owning document(s) repaired | Resolves / refines | Tests (gate §16) |
+|---|---|---|---|---|
+| C39 | Worker management: two-phase admission (12a, 13a, 16) + eligibility filters (12b, 13b, 14, 17); pause = new work only; quota consumed once per run at durable admission; `TEXT` worker keys | WORKER_LIFECYCLE §3, §10, §11, §13, §15, §16; DATABASE workers, tenants, workspaces, worker_leases, worker_assignments, `operation_quotas`, RLS, migration 018; DATA_CONTRACTS §50–§52; IDENTITY §5–§8.4; PIPELINE_STAGES §14, §19; STATE_TRANSITIONS §4, I-9, I-10; SECURITY §12a; MUTATION_SAFETY §3; EVENT_GATEWAY §14.7; VALIDATION; VOCABULARY_INDEX | Spec v1.1.0 §3 (worker gates before selection), §2 DDL (UUID FKs to TEXT keys, missing tenant_id), quota overshoot | 20; I17, I18 |
+| C40 | Batch processing out of phase; model = BATCH-strategy PlanSteps | FINAL_ARCHITECTURE §15; STATE_TRANSITIONS §16, §17; DATA_CONTRACTS §53 note | Spec v1.1.0 §4 (blind re-execution, shared idempotency key, parallelism, data flow) | — (architecture test: no batch tables) |
+| C41 | Replanning out of phase; model = child execution; `parent_execution_id` deferred | FINAL_ARCHITECTURE §29; PIPELINE_STAGES §14 | Spec v1.1.0 §6.1 (I-006, I-017, I9 conflicts) | — |
+
+### 19.2 Other rulings and repairs
+
+| ID | Subject | Documents |
+|---|---|---|
+| RD-8, RD-9 / I-029 | One execution path for every runtime type; `runtime_type` never selects an adapter in S12; browser providers are bindings | FINAL_ARCHITECTURE §37a, §50; PIPELINE_STAGES §21; PROVIDER_ADAPTERS §9; MUTATION_SAFETY §1 |
+| RD-10 | `runtime_type` the only worker-type enum | DATA_CONTRACTS §50; VOCABULARY_INDEX; EVENT_GATEWAY §14.8 |
+| RD-14 | `AutonomyLevel` the only autonomy enum | DATA_CONTRACTS §38; IDENTITY §5 |
+| RD-15 | Stability Tiers T1–T7 (not "layers") | FINAL_ARCHITECTURE §30; VOCABULARY_INDEX |
+| RD-16 | FINAL_ARCHITECTURE numbering: §37b, §37c, §37d, §50, §51; duplicate I-022…I-025 removed; unclosed fence closed | FINAL_ARCHITECTURE; gate C38 table; plan §2; REPAIRS_APPLIED |
+| RD-18 | Session 0 prompt on gate v10; items 3–16; P1–P6 | S12_SESSION0_PREFLIGHT_PROMPT |
+| E5 | Stale fencing text (per-worker max token) | WORKER_LIFECYCLE §15 Rule 7; DATA_CONTRACTS §37 |
+| — | IDENTITY §7 worker lifecycle (STOPPED/DELETED) aligned with STATE_TRANSITIONS §4 | IDENTITY_AND_TENANCY §7 |
+
+### 19.3 Deferred by gate v10 (target phase: worker management II, after S15)
+
+Sub-agent spawning and `worker_spawn_audit`; batch processing (C40); replanning and `parent_execution_id` (C41); worker groups; config versioning; state-change webhooks; L2 session memory and memory classification (needs `MemoryWriteBarrier`); progressive autonomy (S0–S11 change control); PolicyEngine (S8 change control); browser/RPA adapters and skill compositions; templates, plans, entitlements, marketplace listing; `skills_prompt` and `llm_model` consumption (S2, S0–S11 change control); tenant model allow-list in `TenantPolicy`.
+
+### 19.4 Open items
+
+| ID | Item | Status |
+|---|---|---|
+| WM-O1 | DATA_CONTRACTS had two §31 headings | **CLOSED 2026-09-29:** the Outbox/Inbox records section keeps §31 (it is the one cited) with a distinct title; WorkerIdentity is §31a (TOC and §50 updated) |
+| WM-O2 | FINAL_ARCHITECTURE TOC listed "§42 Schema and API Compatibility During Rolling Upgrades", which has no section | **CLOSED 2026-09-29:** the phantom entry was dropped when the TOC was rebuilt (FINAL 4.5.0, RD-16); rolling-upgrade compatibility is covered by §48 |
+| WM-O3 | Skill Factory "Skill" vs data-defined skill composition: compile path when the Skill Factory lands | OPEN (post-S15) |
+
+### 19.6 Housekeeping (2026-09-29)
+
+| ID | Item | Status |
+|---|---|---|
+| EVT-KEY | Event idempotency key was undefined for events without `source_event_id`, and `{source}:…` collided across providers of the same channel | **DECIDED and PROPAGATED** — `{source}:{source_system}:{discriminator}` with a per-source discriminator rule (EVENT_GATEWAY §3.1; DATABASE and EVENT_GATEWAY DDL comments; SECURITY §11). IMPLEMENTATION_REQUIRED (gateway phase) |
+| EVT-LOCK | EVENT_GATEWAY_AND_ROUTER.md said "DESIGN_PROPOSED, NOT YET LOCKED" although FINAL §6a and DATA_CONTRACTS §46–§47 treat it as the locked contract | **CLOSED** — status DESIGN_LOCKED, IMPLEMENTATION_NOT_READY; BUILD_READINESS row 29 |
+| REG-SNAP | Sections 14–17 predate gate v9/v10 | **CLOSED** — each carries a dated snapshot banner naming what later rulings decided; counts intentionally not recomputed |
+
+### 19.5 Audit round 2 (2026-09-29)
+
+Source: `WORKER_MGMT_SPEC_REVIEW.md` Part G. Status of every audit item after the owner's decisions on B1–B9:
+
+| IDs | Subject | Status |
+|---|---|---|
+| A1–A6 | Per-step quota check cancelled admitted runs; per-step pause; worker-level quota at entry; soft-quota QUEUE at entry; ledger vs entry denials; M8a ordering | DECIDED and PROPAGATED — IMPLEMENTATION_REQUIRED (suite 20, M8a, M14, M16) |
+| B1 | `bindings.required_runtime_types` (empty = any; validated at registration) | DECIDED and PROPAGATED |
+| B2 | `restricted_capabilities` enforced in filter 17b | DECIDED and PROPAGATED |
+| B3 | Admin bypass = run's original principal's live `owner`/`admin` membership | DECIDED and PROPAGATED |
+| B4 | Assignment only for human-submitted, non-event runs; delegation keeps it | DECIDED and PROPAGATED |
+| B5 | Worker groups post-S15, not evaluated | DECIDED and PROPAGATED |
+| **B6** | **Pause at S0.1 — S0–S11 ruling R-P**; S12 entry keeps a safety net | DECIDED — **S0–S11 IMPLEMENTATION AND RE-CERTIFICATION REQUIRED** (gate preflight item 17 STOPs without it) |
+| B7 | `workers.workspace_id` + filter 4b (NULL = ineligible) | DECIDED and PROPAGATED |
+| B8 | `execution_policy.max_mutation` live (filter 17d); retry/timeout keys reserved | DECIDED and PROPAGATED |
+| B9 | `CHECK (used_count <= limit_value)`; I17 by construction | DECIDED and PROPAGATED |
+| C1–C7 | Propagation inconsistencies (incl. the vector guard flagging itself) | FIXED |
+| D1–D12 | Pre-existing documentation defects | FIXED, except D7's duplicate §31 (WM-O1, recorded) |
+
+New pre-existing findings (decided and applied 2026-09-29):
+
+| ID | Finding | Status |
+|---|---|---|
+| **SEC-HMAC** | `webhook_credentials` stored only `secret_hash`, which cannot verify an HMAC signature; EVENT_GATEWAY §10.3 also allowed only one row per (tenant, source), blocking the rotation grace period, and its CHECK named a missing column | **DECIDED and PROPAGATED (2026-09-29)** — envelope-encrypted secret (`secret_ciphertext`, `secret_nonce`, `wrapped_dek`, `kek_version`), `status` active/retiring/retired with partial unique indexes, decryption via `CredentialProvider`, pre-tenant lookup as a documented `system_worker_role` SELECT. DATABASE.md (authoritative), EVENT_GATEWAY §10.3/§11, SECURITY §11. IMPLEMENTATION_REQUIRED (gateway phase); tests `test_webhook_secret_encrypted_not_hashed()`, `test_rotation_grace_accepts_retiring_secret()`, `test_webhook_secret_never_logged()` |
+| SEC-NONCE | SECURITY §11 cited nonexistent `event_subscriptions.nonce` / `last_sequence`; `event_log.idempotency_key` was neither unique nor tenant-scoped (racing duplicates; cross-tenant key space); DATABASE.md's `event_log` copy lacked the column | **DECIDED and PROPAGATED (2026-09-29)** — the idempotency key is the nonce: `UNIQUE (tenant_id, idempotency_key)` with `ON CONFLICT DO NOTHING`; no sequence tracking. DATABASE.md, EVENT_GATEWAY §10.1, SECURITY §11. IMPLEMENTATION_REQUIRED (gateway phase); tests `test_concurrent_duplicate_delivery_deduplicated_once()`, `test_same_event_id_different_tenants_both_accepted()` |
+
+---
+
+## SECTION 20: MEMORY / RAG GROUP (target phase: post-S15, memory / LLM layer)
+
+**Date**: 2026-09-29. **Source**: review of the vector/RAG proposal against FINAL_ARCHITECTURE §20, §21, §36, §37a, §38 and invariants I-001, I-011, I-014, I-020, I-029.
+
+**Blocking rule (owner, 2026-09-29) — LIFTED the same day.** No vector code was to be written until MR-1 was DECIDED and propagated. MR-1 and ADR-14 were DECIDED by the owner on 2026-09-29 (ADR-14 §3.3 accepted: private memory within a workspace, RLS for the tenant boundary only, points 1–10), and the block was lifted in the same change that decided them, under the deletion contract (`s12_s15_golden/README.md`).
+
+**Enforcement (historical):** gate v10 §1 MUST NOT entry, §14 wording and suite 2 check, and the owner golden guard `tests/golden/s12/test_arch_no_vector_code.py`. All were removed in that change; the gate header records the amendment. Vector memory stays out of the S12–S15 phase by gate §14 (target phase: memory / LLM layer, after S15).
+
+| ID | Item | Why | Status | Depends on |
+|---|---|---|---|---|
+| **MR-1** | **Memory scope contract and physical layout.** Every `MemoryBackend` call takes a mandatory `MemoryScope` (tenant, workspace, worker, user, layer) derived from `ExecutionContext` / `PrincipalChain`, never from LLM output; the backend enforces it (no caller filter strings, no cross-tenant API); async methods; `purge(scope)`; physical layout per store (pgvector: RLS + tenant partitions; LanceDB: one dataset per tenant, path built only by the backend). **Owner decisions: ADR-14 §3.3 (accepted as written)** (D1 private memory within a workspace; D2 RLS for the tenant boundary only; points 1–10), 2026-09-29. | §36 `search(vector, limit)` has no scope; LanceDB has no RLS (I-001); memory must be isolated by worker, tenant and user (§21). Retrofitting isolation onto an embedded store is harder than choosing the store with it. | **DECIDED** (owner, 2026-09-29) — block lifted | — |
+| **MR-2** | **Vector backend ADR** — ADR-14 (`ADR-14_VECTOR_MEMORY_BACKEND.md`): **owner decision 2026-09-29 (Q1): Option A, pgvector only**, no I-001 exception; LanceDB not chosen. Tier-2 object store decided by the owner: **Amazon S3** (ADR-14 Part 3). FINAL_ARCHITECTURE §20, §21, §29, §36, §37 and MEMORY_ARCHITECTURE §4 carry supersession notes; their text was rewritten when ADR-14 was DECIDED (2026-09-29). | LanceDB (§20, §29) predates the fleet plan; pgvector gives RLS, atomic writes with events (I-020), multi-node sharing and existing PITR. | **DECIDED** — propagated 2026-09-29 | MR-1 |
+| **MR-3** | **Embedding contract.** Either an additive `RuntimeContract.embed()` (§38 has only `generate`, `stream`, `capabilities`, `cost_model`) or an `embed` kernel operation on a Layer 1 provider adapter, with its binding (frozen at S5), cost model, budget reservation, credentials via `CredentialProvider` (I-018) and mutation level `R`. The memory backend (Layer 0) never calls it; callers embed and pass vectors. Vector capabilities (`memory.embed`, `memory.vector_search`, `memory.nearest_neighbors`) are registered in the Provider Package and run through S0→S15 with S8 authorization (I-029), not directly over A2A. | Runtime Contract has no embedding method (same shape as Laya LB1); Layer 0 may not import Layer 1; A2A carries requests into S0, it is not a bypass. | DECISION_REQUIRED (memory phase) | MR-1, MR-2 |
+| **MR-4** | **Pipeline rulings.** (a) Does an embedding call count toward I-011 ("one LLM call per request, max 2 with retry")? (b) Vector-similarity capability discovery at S3 changes certified S0–S11 code: S0–S11 change control (gate §19.3) and re-certification. | I-011 is written for LLM generation; S3 is certified. | DECISION_REQUIRED (memory phase) | MR-1; MR-3 for (a) |
+
+### 20.1 Findings from `MEMORY_ARCHITECTURE.md` (added 2026-09-29, copied from branch `claude/exciting-brahmagupta-r3gu19` commit b45bdef)
+
+Each finding carries a `Memory repair (MR-n)` marker in MEMORY_ARCHITECTURE.md. Items that depend on MR-1 or MR-3 are flagged there, not redesigned.
+
+| ID | Finding | Rule violated | Repair in MEMORY_ARCHITECTURE.md | Status | Depends on |
+|---|---|---|---|---|---|
+| **MR-5** | Vector write without tenant: `record_pattern()` upserts to LanceDB with `worker_id` only; PostgreSQL queries filter by `worker_id` only; §8 claims "RLS on all memory tables", which LanceDB cannot provide | I-001; gate C34; FINAL_ARCHITECTURE §21 (memory isolated by worker, tenant, user) | Flagged in §8 and §10 | RESOLVED BY DECISION (MR-1, ADR-14): scope on every call, RLS; the document's code is superseded and rewritten in the memory phase | MR-1, MR-2 |
+| **MR-6** | `can_delete` has no tenant check (`worker_id` match or `is_admin`): cross-tenant delete by an admin | I-001; IDENTITY_AND_TENANCY §5 (admin is workspace-scoped) | **Corrected** in §7: tenant check first; admin = `owner`/`admin` membership in the memory's workspace, read live | PROPAGATED — IMPLEMENTATION_REQUIRED; test `test_memory_delete_requires_tenant_match()` | — |
+| **MR-7** | Two `MemoryBackend` interfaces: MEMORY_ARCHITECTURE §4 (`store`, `retrieve`, `delete`, `consolidate`, no search) vs FINAL_ARCHITECTURE §36 (`write`, `read`, `search`, `close`); neither has a scope argument | I-015 (FINAL_ARCHITECTURE wins) | Flagged in §4; ADR-14 §3.1 defines the single interface (FINAL_ARCHITECTURE §36) | RESOLVED BY DECISION (MR-1) | MR-1 |
+| **MR-8** | Memory store embeds text itself (`self._embed`): Layer 0 calling a provider, without binding, credentials or budget | FINAL_ARCHITECTURE §6 dependency direction; I-018; gate C3 | Flagged in §10 | BLOCKED — resolved by MR-3 | MR-1, MR-3 |
+| **MR-9** | No `MemoryWriteBarrier` anywhere: writes go straight to PostgreSQL and the vector store; the two writes and their event are not atomic | I-014; I-020 | Flagged in §6 and §10 | DECISION_REQUIRED — barrier design (deferred item) | MR-1, MR-2 |
+| **MR-10** | Conflicts with certified design: `datetime.now()` in decay; `execution_checkpoints` table, `budget_remaining`, `context.budget`; §1 "memory is NOT a vector store" vs §4 vector search; Redis cache without scoped keys; dead-letter evidence promoted to memory without redaction; `confirmation_patterns` could be read as confirmation input | I-019; gate C3, C10, C31, §1 (no Redis), §13; I-018; FINAL_ARCHITECTURE §21 (memory ≠ authorization), I-007 | **Corrected**: decay takes database time; `checkpoints` table; budget field removed; §1 wording. **Flagged**: Redis scoping, redaction, informational-only memory | PROPAGATED (corrections); cache scoping decided by MR-1 (ADR-14 §4a.7); redaction and informational-only memory for the memory phase | MR-1 (cache scope) |
+
+
+**Also required before vector writes (existing items):** `MemoryWriteBarrier` implementation (I-014; deferred in gate §14 and blocker register §19.3). **Not in S12–S15:** the gate forbids real provider APIs and defers memory, so none of MR-1…MR-4 is implemented in this phase.

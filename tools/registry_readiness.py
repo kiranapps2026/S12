@@ -1,0 +1,63 @@
+"""Registry readiness (Phase D1d): lists every production-enabled write/delete operation that S12 would refuse to run
+because it has no observation method. Exit 0 when the list is empty, 1 otherwise.
+
+    DATABASE_URL=postgresql://... python tools/registry_readiness.py
+
+Rules for filling the registry (owner may overrule):
+  * every W, D and IRREVERSIBLE kernel operation needs `observation_method`: the name of the read that shows its effect;
+  * operations that create or address one resource also need `observation_identifier_field`, the field of the adapter's
+    result that names it (usually `id`);
+  * a delete sets `observation_expects_absent = true` and is verified by the resource being gone;
+  * an operation with no read that could show its effect stays without a method and therefore cannot run: do not invent one.
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+
+import asyncpg
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from adapters.postgres.database import normalize_url  # noqa: E402
+
+QUERY = ("SELECT kernel_op_id, mutation FROM kernel_ops WHERE truth_state = 'PRODUCTION_ENABLED' AND mutation <> 'R'"
+         " AND (observation_method IS NULL OR observation_method = '') ORDER BY kernel_op_id")
+INCOMPLETE = ("SELECT kernel_op_id FROM kernel_ops WHERE truth_state = 'PRODUCTION_ENABLED' AND mutation <> 'R'"
+              " AND observation_method <> '' AND observation_method IS NOT NULL"
+              " AND (observation_identifier_field IS NULL OR observation_identifier_field = '') ORDER BY kernel_op_id")
+
+
+def database_url() -> str | None:
+    """DATABASE_URL from the environment, else from the repo's .env (never printed)."""
+    if os.environ.get("DATABASE_URL"):
+        return os.environ["DATABASE_URL"]
+    env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8-sig"):
+            key, _, value = line.strip().removeprefix("export ").partition("=")
+            if key.strip() == "DATABASE_URL" and value.strip():
+                return value.strip().strip("\"'")
+    return None
+
+
+async def main(url: str) -> int:
+    connection = await asyncpg.connect(normalize_url(url))
+    try:
+        blocked = await connection.fetch(QUERY)
+        no_identifier = await connection.fetch(INCOMPLETE)
+    finally:
+        await connection.close()
+    for row in blocked:
+        print(f"BLOCKED  {row['kernel_op_id']} ({row['mutation']}): no observation_method")
+    for row in no_identifier:
+        print(f"WARNING  {row['kernel_op_id']}: observation_identifier_field is empty (fine only if it addresses no resource)")
+    print(f"{len(blocked)} operation(s) blocked at S12 entry")
+    return 1 if blocked else 0
+
+
+if __name__ == "__main__":
+    url = database_url()
+    if not url:
+        sys.exit("DATABASE_URL is not set in the environment or in .env")
+    sys.exit(asyncio.run(main(url)))

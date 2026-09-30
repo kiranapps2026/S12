@@ -3,7 +3,9 @@
 Repository: `C:\Users\Administrator\Documents\1SuperAgents`
 This file replaces `S0_S11_COMPLETION_PROMPT.md`. Save it as
 `docs\gates\S0_S11_RUNBOOK.md`. It is the only instruction set for finishing S0–S11.
-Revision: v8 — spec documents pinned (Part 0 item 5, OWN-20). v7 — FrozenBindingIdentity extensions updated; ExecutionContext and
+Revision: v9 — R-AA (S0.1 activation check) and R-AM…R-AS (S1 references, files, templates, result
+ownership, detection copy, entities) added to Part 2 on the owner's instruction (2026-09-30).
+v8 — spec documents pinned (Part 0 item 5, OWN-20). v7 — FrozenBindingIdentity extensions updated; ExecutionContext and
 module-level-state rulings added (R-X, R-Y). v6 — the owner certifier `tools/owner_certify.py` is the only
 certification authority; `raw_input` leaves ExecutionContext. v5 — R-Q rewritten (reachable high-risk path, deny threshold), R-U (single
 binding scope), R-V (S6 formula), R-W (scenario and tamper fixtures), Part 6 exact
@@ -361,8 +363,11 @@ step count. Missing metadata → StageStatus DENY `capability_metadata_missing`.
 - `risk = frozen_binding.effective_risk`
 - `mutations = (frozen_binding.effective_mutation,) * steps_estimated` (tuple)
 - `cost = capability.cost * steps_estimated`
-- `requires_confirmation = ("IRREVERSIBLE" in mutations) or ("D" in mutations and
-  capability.cost > 5) or (cost > 20) or (risk > 0.7)`
+- `requires_confirmation = ("IRREVERSIBLE" in mutations) or ("D" in mutations) or
+  (cost > 20) or (risk > 0.7)`
+Every D and IRREVERSIBLE plan is confirmed, whatever its cost or risk (amended: PIPELINE_STAGES
+§12 "never execute D/IRREVERSIBLE unconfirmed" wins over the older DATA_CONTRACTS §7 "D only
+above cost 5"). Cross-provider (3+) cannot occur: one binding, one provider (R-U).
 Comparisons are strict (`>`). The cost rule is S6's job; "enforced at S12" is wrong.
 
 R-T. **Write order and scenario fixtures.**
@@ -412,6 +417,61 @@ reported name. SQLAlchemy models: replace `Base = declarative_base()` with the
 SQLAlchemy 2.0 form `class Base(DeclarativeBase): pass` in each file (one class per
 file, same as now, so table metadata is unchanged). `KernelPolicy.metadata` is
 removed; if a caller needs extra settings, add named fields instead.
+
+R-AA. **S0.1 activation check.** Immediately after S0 creates the ExecutionContext, and
+before any other work (including S8's dependency reads and the run scope), the kernel
+reads the tenant's and the workspace's `paused_until` and `scheduled_activation_at` and
+the database clock `now`. The request is DENIED at S0 when:
+
+| condition | reason (exact) |
+|---|---|
+| tenant `paused_until` > now | `tenant_paused` |
+| workspace `paused_until` > now | `workspace_paused` |
+| tenant or workspace `scheduled_activation_at` > now | `not_yet_active` |
+| the state cannot be read (missing row, database error) | `activation_state_unavailable` |
+
+The first matching row wins; `paused_until == now` is no longer paused. Time is the
+database clock, never the caller's. Fail closed. The check also runs on every reply to a
+waiting confirmation (a paused tenant completes no pending run). No S1–S11 stage produces
+output for a denied request. (Ruling R-P of the S12–S15 gate; S12 entry repeats the check
+as a safety net.)
+
+R-AM. **S1 references: `$ref` and `$N`.** `$ref:N` (N = 1..20) is the N-th most recent
+result of the caller's own conversation. Bare `$N` (one digit, 1–9) is a reference ONLY
+when that result exists; otherwise it is literal text ("$5 fee"). An explicit reference
+that cannot be resolved is CLARIFY `unresolved_reference`; the unresolved text is never
+sent on. At most 10 references per message (`too_many_references`); a reference is
+resolved in ONE pass (a resolved value is never scanned again).
+
+R-AN. **S1 files.** `$file:name` resolves to the file's METADATA in the caller's own
+workspace (`[file:name#id]`). S1 never reads or forwards file content; content access is
+a separate, gated capability that S1 must not acquire.
+
+R-AO. **S1 templates.** `{{name}}` is a variable NAME only: no expressions, filters or
+attribute access (anything else in braces stays literal text and is never evaluated).
+System variables: `today`, `yesterday`, `tomorrow` (database clock). Stored variables are
+set only by a tenant or workspace administrator through an admin path (users cannot
+define variables); a workspace value overrides the tenant's.
+
+R-AP. **S1 result ownership.** A result belongs to a USER within a conversation; a user
+never resolves another user's results, even in a shared conversation, and never another
+tenant's.
+
+R-AQ. **S1 result text.** The stored text of a result is its `summary` (at most 4000
+characters), written by S15. Nothing may write `conversation_results` until S15's
+redaction exists, so secrets cannot be stored there. Resolved text is capped (2000
+characters per result, 500 per variable), stripped of control characters, and then
+sanitised like any other input (a stored value that carries an injection is DENY
+`injection_detected`). The run's stored state never keeps resolved text.
+
+R-AR. **S1 detection copy.** Injection detection also runs on an NFKC-normalised copy with
+invisible format characters removed and whitespace collapsed, so fullwidth or
+zero-width-split text cannot evade it. Detection may only DENY; it never rewrites the text.
+The model receives the user's own text (NFC, trimmed).
+
+R-AS. **S1 entities.** Entity extraction (dates, e-mail addresses, file names, contact
+names) is deterministic, English-only and advisory: nothing decides risk, mutation,
+capability or access from an entity, and entities are NOT given to S2 as hints.
 
 ---
 
@@ -879,7 +939,7 @@ tests/contracts/test_pipeline_state.py::test_write_order_enforced
 tests/stages/test_s7_path_routing.py::test_s7_routing_table
 tests/stages/test_s7_path_routing.py::test_s7_never_emits_agentic
 tests/stages/test_s6_task_profile.py::test_s6_copies_risk_and_mutations_from_frozen_binding
-tests/stages/test_s6_task_profile.py::test_s6_confirmation_table      (9 cases)
+tests/stages/test_s6_task_profile.py::test_s6_confirmation_table      (10 cases)
 tests/stages/test_s7_path_routing.py::test_s7_threshold_unavailable_denies
 tests/stages/test_s9_plan_creation.py::test_s9_plan_shape
 tests/stages/test_s9_plan_creation.py::test_s9_uses_frozen_risk_when_task_profile_tampered
@@ -938,7 +998,8 @@ from tests.fixtures.states import state_ready_for
 CASES = [  # id, mutation, risk, cost_per_step, steps, expected
     ("irreversible",            "IRREVERSIBLE", 0.1, 1, 1, True),
     ("delete_cost_6",           "D",            0.3, 6, 1, True),
-    ("delete_cost_5_boundary",  "D",            0.3, 5, 1, False),
+    ("delete_cost_5_confirmed", "D",            0.3, 5, 1, True),    # R-V amended: D is always confirmed
+    ("delete_cost_1_low_risk", "D",            0.1, 1, 1, True),
     ("write_cost_6_not_delete", "W",            0.3, 6, 1, False),
     ("total_cost_21",           "W",            0.3, 7, 3, True),
     ("total_cost_20_boundary",  "W",            0.3, 5, 4, False),
@@ -1064,3 +1125,36 @@ graph="chain", confidence=0.8))` for required-confirmation tests and
 S9 output (`plan_result=dataclasses.replace(...)`) and are named `*_tampered` where
 applicable; each asserts `(validation_result.is_valid, validation_result.errors,
 execution_manifest)` equals `(False, ("<code>",), None)` with the R-S code.
+
+---
+
+## PART 7 — GOLDEN TEST AMENDMENTS (owner instruction; the test files are authoritative)
+
+The golden tests were rewritten to match the amended rulings and the production behaviour
+(R-V amended, S0.1, suspended runs and the confirmation reply, registry-sourced binding data).
+Each golden file's header records its amendments. The pins in `docs/gates/spec_pins.sha256`
+for these six files must be regenerated by the owner after any amendment.
+
+| file | added / changed |
+|---|---|
+| `test_s6_task_profile.py` | `delete_cost_5_boundary` → `delete_cost_5_confirmed` (True); `delete_cost_1_low_risk`; D/IRREVERSIBLE confirmed at any cost and risk; missing or mismatched capability metadata → DENY `capability_metadata_missing`, nothing written; NORMAL status |
+| `test_s7_path_routing.py` | strict `>` at the threshold (`just_above_threshold` deny, `at_threshold_is_not_denied` workflow); stage status follows the decision; threshold read from policy only |
+| `test_s9_plan_creation.py` | step costs = task cost / steps and add up to `budget_reserved`; single-step cost; NORMAL status, no confirmations on the plan |
+| `test_s10_confirmation.py` | status NORMAL / CLARIFY `confirmation_required`; tenant-bound consume; reject only by its user then unusable; resume uses the replying user, once; resume after expiry → `confirmation_expired` |
+| `test_s11_plan_validation.py` | manifest versions from the frozen binding and `policy_version_id`; DENY status/reason; unknown dependency and duplicate step ids → `dag_invalid`; consumed confirmation for this plan allows the manifest, for another plan → `confirmation_mismatch` |
+| `test_s7_to_s11.py` | `auth_result_id` is a UUID set only on allow; no stage after a refused gate writes anything |
+
+| `test_s0_activation.py` (new golden) | R-AA S0.1: reason table (tenant/workspace pause, scheduled activation, first match wins, `paused_until == now` is not paused), nothing after S0, denied before the run scope is read, fail closed (unreadable state, missing reader), a pause also blocks the reply to a waiting confirmation |
+| `test_s2_intent_validation.py` (new golden) | S2 validation: valid answer + `task_id`; invalid answers retried once with feedback then CLARIFY `intent_unparseable`; an intent the registry never offered is rejected; `unknown` → CLARIFY, `prohibited` → DENY; model failure → ERROR `llm_unavailable`; no text → CLARIFY without calling the model; the model cannot change risk, mutation or capabilities |
+| `test_stage_event_log.py` (new golden, `tests/architecture/`) | one event per stage in order with trace/request/tenant ids; no user text in the log; denials recorded with reason; S0.1 recorded as `S0.1`; an unrecordable stage stops the run (ERROR `ledger_unavailable`) before the next stage; a refusal stays a refusal when the ledger is down; confirmation pause and reply steps recorded |
+| `test_m2a_chain.py` (new golden) | M2a heterogeneous chains (R-AB…R-AL, `docs/proposals/M2_RULINGS.md`): per-step bindings with the singular fields None; each step carries its own operation, mutation, risk, cost, parameters and inverse; profile risk = max, cost = sum; 5-step cap counting item expansion; items expand N + N; 0.85 confidence floor; ambiguous candidates → CLARIFY `ambiguous_capability`; 3+ providers, any D/IRREVERSIBLE step or cost > 20 → confirmation listing every operation with its parameters and `undoable`; S8 checks every step's grant, breaker and mutation policy and the plan's total budget; S11 refuses a step that differs from its own binding even when `plan_hash` was recomputed, swapped, missing or extra steps; the suspended chain holds no intent parameters and resumes after a confirmed reply |
+
+Spec text amended with R-V: the "Confirmation Requirements" row "Any D mutation with cost > 5" now
+reads "Any D mutation (always, whatever the cost; amended — R-V)" in DATA_CONTRACTS §7,
+FINAL_ARCHITECTURE, MUTATION_SAFETY and PIPELINE_STAGES §7; `docs/implementation/README.md` marks
+the conflict resolved. These five pinned specs, and the three new golden files, need pin lines.
+
+R-O extension (owner-authorised for M2a): `FrozenBindingIdentity.inverse_kernel_op_id` (the kernel op that undoes this one, from the registry; R-AF) is added to the certifier's `CONTRACTS` approved-extension list for `FrozenBindingIdentity`. `test_m2a_chain.py` and its fixture `tests/fixtures/multi.py` are pinned.
+
+Source fixes found while amending: S6 no longer assumes cost 1 without metadata (R-V); S9 step
+costs were a constant 1 while the reserved budget was the task total.

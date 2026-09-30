@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-26
 **Scope**: 18-document cross-document consistency & dependency audit
-**Outcome**: Document set is now fully implementation-ready after repairs
+**Outcome**: Document set is now fully implementation-ready after repairs *(historical claim of 2026-09-26; open items are tracked in the blocker register, §18–§20 — audit round 2 D4)*
 
 ---
 
@@ -135,7 +135,7 @@ per piece of state; (4) leaves a machine-readable reason for every decision.
 
 | Document | Repairs | Rulings |
 |---|---|---|
-| FINAL_ARCHITECTURE.md | §10 lease/fence rows and worker states; §11 invariant 4 (PipelineState, not StageResult); §12 state contract, atomic transitions, fence, scheduler; §13/§38 manifest definition and persistence point; §15 heading and "all skipped"; §17 layer mapping and timeout retry; §19 probe pattern; §20 queue; §24 confirmation; §26 worker default; §37a adapter additions; I-004; I-021; glossary | C1, C3, C4, C6, C12, C20, C25, C32, C33, C38 |
+| FINAL_ARCHITECTURE.md | §10 lease/fence rows and worker states; §11 invariant 4 (PipelineState, not StageResult); §12 state contract, atomic transitions, fence, scheduler; §13/§37b (formerly the duplicate "§38..") manifest definition and persistence point; §15 heading and "all skipped"; §17 layer mapping and timeout retry; §19 probe pattern; §20 queue; §24 confirmation; §26 worker default; §37a adapter additions; I-004; I-021; glossary | C1, C3, C4, C6, C12, C20, C25, C32, C33, C38 |
 | STATE_TRANSITIONS.md | Run table code; run annotations; step valid and illegal lists; budget LOCKED exits; lease status; reconciliation scope; I-1, I-3, I-4, I-8; CHECK values | C6, C7, C13, C18, C22, C24, C26, C27, C28, C37 |
 | DATA_CONTRACTS.md | StepState CANCELLED meaning; §19.2 code and text tables; §19.3 illegal rows; new §19.4 StepTerminalReason, §19.5 ProbeOutcome; DeadLetter `status` and fields; verdict rules | C6, C19, C22, C24, C29, C32, C35 |
 | DATABASE.md | Status comments; additive columns for budget_reservations, execution_runs, execution_steps, pending_confirmations, dead_letters, idempotency_ledger, workers, worker_leases; worker identity invariant; recovery flow; execution_leases; budget constraint; test database; new §3 "S12–S15 Additive Tables" | C3, C5, C9, C10, C16, C20, C21, C22, C25, C26, C27, C28, C33, C34, C35 |
@@ -147,3 +147,88 @@ per piece of state; (4) leaves a machine-readable reason for every decision.
 | VOCABULARY_INDEX.md | Worker Runtime, Fence token, Step idempotency key; "runner" replacement | C2, C9, C25 |
 | XS-1_REGISTER_ENTRY.md | Status RESOLVED BY C22 | C22 |
 | SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Section 18 (rulings, Laya LB1–LB11, deferred items) | all |
+
+---
+
+## S12–S15 GATE v10 WORKER-MANAGEMENT REPAIRS (2026-09-29)
+
+**Scope**: propagate `WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md` into the document set, corrected by `WORKER_MGMT_SPEC_REVIEW.md` Part E (rulings RD-1…RD-18, owner-confirmed) and gate v10 C39–C41. Each repaired passage carries a `Worker-management repair (RD-n)` marker (or `(C39–C41)` in the gate). Register mapping: blocker register Section 19.
+
+| Document | Repairs | Rulings |
+|---|---|---|
+| S12_S15_EXECUTION_GATE.md → v10 | C39, C40, C41; §1; preflight 15–16; §7.1–§7.3; §8 steps 1–2; §14; suite 20; I17, I18; §20; Appendix B | C39–C41, RD-1…RD-7 |
+| S12_S15_IMPLEMENTATION_PLAN.md → v3 | M8a; M1 schema; roles; invariants growth; risks | C39 |
+| FINAL_ARCHITECTURE.md → 4.5.0 | TOC; §37b/§37c/§37d/§50/§51 renumbering; I-029; duplicate invariants removed; §15, §21, §26, §29, §30, §33, §34, §37a, §51; closed code fence | RD-8…RD-16 |
+| WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md | §3, §10, §11, §13, §15 Rules 1 and 7, new §16 | C39, RD-1…RD-7, E5 |
+| DATABASE.md | Worker keys `TEXT` (incl. two further FK mismatches); management columns; `operation_quotas`; RLS; indexes; integrity; migration 018 | C39, RD-1…RD-3, RD-6 |
+| DATA_CONTRACTS.md | §37 fencing text; AutonomyLevel note; §50–§53 | C39, RD-10, RD-14, E5 |
+| IDENTITY_AND_TENANCY.md | §5 settings level and contract; §6 rules 5–6; §7 lifecycle; §8.4 pause vs kill switch | C39, RD-5, RD-7, RD-13, RD-14 |
+| PIPELINE_STAGES.md | §14 worker management pointer; §19 rows; §21 runtime_type | C39–C41, RD-8…RD-12 |
+| S12_SESSION0_PREFLIGHT_PROMPT.md | Gate v10; items 3–16; P1–P6 | RD-18 |
+| STATE_TRANSITIONS.md | §4 note; I-9, I-10; §16 rows; §17 | C39–C41 |
+| MUTATION_SAFETY.md | Browser/RPA classification; `worker_policy_ceiling` | RD-8 |
+| SECURITY.md | §12a; checklist | C39, RD-5…RD-9 |
+| PROVIDER_ADAPTERS.md | §9 browser/RPA adapters | RD-8, RD-9 |
+| EVENT_GATEWAY_AND_ROUTER.md | §14.7, §14.8; tests | RD-4, RD-5, RD-10 |
+| VALIDATION.md | Worker-management test index | C39 |
+| VOCABULARY_INDEX.md | New terms, terms to avoid, conflicts; role example | RD-5…RD-15 |
+| BUILD_READINESS_MATRIX.md → 1.1.0 | Rows 9, 10 updated; rows 25–26 | C39 |
+| SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Section 19 | all |
+| WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md → v1.2.0 | Corrected per review Part A and the rulings | all |
+
+---
+
+## AUDIT ROUND 2 REPAIRS (2026-09-29)
+
+**Scope**: fixes from the cross-document audit recorded in `WORKER_MGMT_SPEC_REVIEW.md` Part G (A1–A6, B1–B9, C1–C7, D1–D12), with owner decisions on B1–B9. New S0–S11 ruling: `s0_s11_autopilot/RULING_R-P_pause_check.md`. Register: §19.5.
+
+| Document | Repairs | Items |
+|---|---|---|
+| S12_S15_EXECUTION_GATE.md (v10, round 2) | C39 rewritten (entry checks, filters 4b/12b/13b/14/17a–d, quota at entry only, soft-quota retry, entry denials logged); §1; preflight item 17; §7.1–§7.3; §8; §14; suite 20; I14 order; I17, I18; §20 | A1–A5, B1–B9, C6, D12 |
+| S12_S15_IMPLEMENTATION_PLAN.md | Precondition 7 (R-P); M0 item 17; M8a rewritten; mid-run pause → M14; refund → M16; guard counts | A6, B6 |
+| s0_s11_autopilot/RULING_R-P_pause_check.md | New ruling: pause/activation at S0.1, six tests, sabotage SAB-12 | B6 |
+| WORKER_LIFECYCLE_VERIFICATION_ADMISSION.md | §10 rows removed and note; §11; §13 filters; §16.1–§16.7; header | A1–A5, B1–B9, D1 |
+| DATABASE.md | `workers.workspace_id`; `bindings.required_runtime_types`; quota CHECKs; comments; migration 018 | A3, B1, B7, B9 |
+| DATA_CONTRACTS.md | TOC §38–§49; §31 `lease_epoch`; §50–§52 | A1, A3, B1, B2, B7, B8, C3, D7 |
+| IDENTITY_AND_TENANCY.md | Settings keys; admin roles; §6 rules 5, 5b; §8.4; related links; invariant-copy note | B2–B4, B6–B8, D6, D10 |
+| PIPELINE_STAGES.md | S0 step 8 (S0.1); §14 pointer; §19 rows; header | A1, A2, A4, B6, D1 |
+| WORKER_MANAGEMENT_AND_EVOLUTION_SPEC.md → 1.2.1 | F4, F6, F12, F16; §3; Appendix A, B, C; §9 exception; §10 | all A and B |
+| FINAL_ARCHITECTURE.md → 4.5.1 | §26 DDL; §50 I-029 range and numbering-scheme note; §51 row 16; I-029 citation | C1, C2, C5, D10 |
+| MUTATION_SAFETY.md, SECURITY.md, STATE_TRANSITIONS.md, EVENT_GATEWAY_AND_ROUTER.md, RELIABILITY.md, RESOLVE_LAYER.md | Headers; worker ceiling inert; SECURITY §4/§11/§13 headings, I-022, admin bypass; I-9, I-10; event §14.7 | B3, B4, B6, B8, D1, D9 |
+| VALIDATION.md, VOCABULARY_INDEX.md, MEMORY_ARCHITECTURE.md, EXECUTION_PLAN.md, BUILD_READINESS_MATRIX.md, README.md, S12_SESSION0_PREFLIGHT_PROMPT.md | Test index; duplicates and terms; "Historical Memory"; I-029; ABSENT rows and renumbering; document lists; item 17 and P1/P2 | C2, C4, D2, D3, D5, D8, D11 |
+| s12_s15_golden/ (guard) | Scans every file; 22 sabotage cases; **fixed self-flagging** (the draft failed on its own sabotage data) | C7 |
+
+---
+
+## HOUSEKEEPING (2026-09-29)
+
+| Document | Repair | Item |
+|---|---|---|
+| EVENT_GATEWAY_AND_ROUTER.md | Status DESIGN_LOCKED; new §3.1 idempotency key derivation; EventEnvelope comment and invariant 4; DDL comment; SEC-NONCE note; DATA_CONTRACTS citations in the header | EVT-LOCK, EVT-KEY |
+| DATABASE.md, SECURITY.md | `idempotency_key` format updated to match §3.1 | EVT-KEY |
+| DATA_CONTRACTS.md | Second §31 renumbered §31a (WorkerIdentity); first §31 retitled; TOC and §50 updated | WM-O1 |
+| BUILD_READINESS_MATRIX.md | Row 29 (EVENT_GATEWAY) | EVT-LOCK |
+| STATE_TRANSITIONS.md | Header citations of DATA_CONTRACTS corrected (§9, §16, §46, §47) | found during WM-O1 |
+| SUPERSESSION_AWARE_BLOCKER_REGISTER.md | Snapshot banners on §14–§17; WM-O1, WM-O2 closed; §19.6 | REG-SNAP |
+
+---
+
+## ADR-14 DECIDED — MR-1 (2026-09-29)
+
+The owner accepted ADR-14 §3.3 as written (D1 private memory within a workspace; D2 RLS for the tenant boundary only; points 1–10) after answering Q1 (pgvector only), Q4, Q6 and Q7 (90 days). Q3, Q5 and Q8 are deferred to the memory phase.
+
+| Document | Change | Item |
+|---|---|---|
+| ADR-14_VECTOR_MEMORY_BACKEND.md | Status DECIDED; §3.1 interface (`session_id`, `TenantScope`, `delete`, caller transaction, fixed read set); §3.3 binding | MR-1, MR-2 |
+| FINAL_ARCHITECTURE.md (4.5.2) | pgvector in §20, §21, §29, §37; §36 rewritten | MR-2, MR-7 |
+| DATABASE.md | `memory_vectors`, `memory_tenant_keys` (memory phase, not created in S12–S15); §5 90-day retention bound | ADR-14 §5 |
+| DATA_CONTRACTS.md | §54 memory contracts | MR-1, MR-7 |
+| SECURITY.md, IDENTITY_AND_TENANCY.md, RELIABILITY.md | §12b, §8.8, §15 | ADR-14 §5 |
+| VALIDATION.md | Memory tests; standing-guard row removed | ADR-14 §6; deletion contract |
+| S12_S15_EXECUTION_GATE.md | Header amendment; §1 vector entry and suite 2 check removed; §1 lists vector memory as out of phase; §14 entry updated | Deletion contract 2–5 |
+| S12_S15_IMPLEMENTATION_PLAN.md | Milestone-exit bullet, M21 item, §5 item 5, risk row | Deletion contract 6–7 |
+| s12_s15_golden/ | Guard deleted; README records it and keeps the contract as a pattern | Deletion contract 1, 10 |
+| SUPERSESSION_AWARE_BLOCKER_REGISTER.md | ADR-14 DECIDED; Section 20 block lifted; MR-1, MR-2 DECIDED; MR-5, MR-7 resolved; MR-3/MR-4 no longer blocked by MR-1 | Deletion contract 9 |
+| MEMORY_ARCHITECTURE.md, README.md, BUILD_READINESS_MATRIX.md | Status lines | — |
+
+**Owner action:** re-pin the gate, the plan and the other changed documents on the VPS, and remove the guard from the golden pin list (it was never installed if batch B1 has not run).

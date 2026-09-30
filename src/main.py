@@ -52,8 +52,8 @@ def validate_contracts() -> bool:
         return False
 
 
-async def run_kernel() -> None:
-    """Run the main execution kernel."""
+def run_kernel() -> None:
+    """Serve the HTTP API over the PostgreSQL adapters."""
     if not validate_contracts():
         logger.error("Contract validation failed — aborting startup")
         sys.exit(1)
@@ -61,49 +61,41 @@ async def run_kernel() -> None:
     logger.info("SuprAgents kernel starting...")
     logger.info("Pipeline: %s", " → ".join(PIPELINE_SEQUENCE))
 
-    # Import here to avoid circular imports and allow contract validation first
-    from db.session import DatabaseSession
-    from engine.control_plane.pipeline import PipelineEngine
-    from engine.observability.ledger import EventLedger
+    import uvicorn
+    from app import create_production_app
 
-    db = DatabaseSession()
-    ledger = EventLedger(db)
-    pipeline = PipelineEngine(db, ledger)
-
-    # Setup signal handlers for graceful shutdown
-    shutdown_event = asyncio.Event()
-
-    def handle_signal(signum: int, _frame: Any) -> None:
-        logger.info("Received signal %d, shutting down...", signum)
-        shutdown_event.set()
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-    try:
-        await pipeline.start()
-        logger.info("Pipeline engine started — waiting for requests")
-        await shutdown_event.wait()
-    finally:
-        logger.info("Shutting down pipeline engine...")
-        await pipeline.stop()
-        await db.close()
-        logger.info("Shutdown complete")
+    uvicorn.run(create_production_app(), host="0.0.0.0", port=8000)
 
 
 async def run_migrations() -> None:
-    """Run database migrations."""
-    logger.info("Running database migrations...")
+    """Apply the SQL migrations (adapters/postgres/migrations), once each, in order."""
+    from adapters.postgres.database import Database
+    from adapters.postgres.migrate import apply_migrations
+    from config import get_settings
 
-    from db.session import DatabaseSession
-    from db.migrations.runner import MigrationRunner
+    database = await Database.connect(get_settings().database_url)
+    try:
+        applied = await apply_migrations(database)
+    finally:
+        await database.close()
+    logger.info("Migrations applied: %s", applied or "none (up to date)")
 
-    db = DatabaseSession()
-    runner = MigrationRunner(db)
-    await runner.run_migrations()
-    await db.close()
 
-    logger.info("Migrations complete")
+async def issue_api_key(values: list[str]) -> None:
+    """Create an API key for an existing tenant/workspace/user/membership/connection."""
+    from adapters.postgres.api_keys import PostgresApiKeyAuthenticator
+    from adapters.postgres.database import Database
+    from config import get_settings
+    from contracts.principal import Principal
+
+    tenant, workspace, user, membership, connection, scope = values
+    database = await Database.connect(get_settings().database_url)
+    try:
+        key = await PostgresApiKeyAuthenticator(database).issue(
+            Principal(tenant, workspace, user, membership, connection, scope))
+    finally:
+        await database.close()
+    print(key)  # shown once; only its SHA-256 is stored
 
 
 def run_architecture_checks() -> int:
@@ -152,6 +144,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="SuprAgents — Multi-tenant durable execution kernel")
     parser.add_argument("--worker", action="store_true", help="Start as worker node")
     parser.add_argument("--migrate", action="store_true", help="Run database migrations")
+    parser.add_argument("--issue-api-key", nargs=6, metavar=("TENANT", "WORKSPACE", "USER", "MEMBERSHIP", "CONNECTION", "SCOPE"),
+                        help="Create an API key (printed once)")
     parser.add_argument("--check-architecture", action="store_true", help="Run architecture drift checks")
     parser.add_argument("--validate-contracts", action="store_true", help="Validate contracts only")
 
@@ -162,6 +156,10 @@ def main() -> int:
     if args.validate_contracts:
         success = validate_contracts()
         return 0 if success else 1
+
+    if args.issue_api_key:
+        asyncio.run(issue_api_key(args.issue_api_key))
+        return 0
 
     if args.migrate:
         asyncio.run(run_migrations())
@@ -176,7 +174,7 @@ def main() -> int:
         # Worker startup — handled by worker module
         pass
     else:
-        asyncio.run(run_kernel())
+        run_kernel()
 
     return 0
 

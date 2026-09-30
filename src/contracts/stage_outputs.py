@@ -30,11 +30,23 @@ class NormalizedInput:
     was_modified: bool = False
     has_critical_injection: bool = False
     timestamp: float = 0.0
+    text: str = ""                                         # the user's message after S1: NFC, trimmed,
+                                                           # references resolved, sanitized (what S2 reads)
+    entities: dict[str, Any] = field(default_factory=dict)      # advisory: dates/emails/files/names
+    references: dict[str, str] = field(default_factory=dict)    # reference as written -> what it stood for
 
 
 # ---------------------------------------------------------------------------
 # S2 — Intent Result
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class IntentStep:
+    """One operation of a multi-capability plan (R-AB): a registry intent and its parameters.
+    The model chooses WHICH registered intents and in what order; never their properties."""
+    intent: str
+    parameters: dict = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class IntentResult:
@@ -49,6 +61,8 @@ class IntentResult:
     confidence: float = 1.0                # 0.0-1.0 confidence in decomposition
     raw_llm_output: str = ""               # Raw LLM response for audit
     attempt: int = 1                       # Which attempt (1 or 2)
+    steps: tuple[IntentStep, ...] = field(default_factory=tuple)   # 2-5 ordered operations (M2a);
+                                                                   # empty for a single-intent answer
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +84,7 @@ class CapabilityMatch:
     estimated_cost_units: int = 1  # Budget cost per step (S6 reads this)
     risk_rule: float = 0.0  # Policy-derived risk (S5 uses in max formula)
     risk_implied: float = 0.0  # Context-implied risk (S5 uses in max formula)
+    candidate_count: int = 1  # Distinct capabilities the registry returned (S4/S7 read this)
 
 
 

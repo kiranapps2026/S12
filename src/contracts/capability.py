@@ -74,9 +74,12 @@ class BindingRow:
     risk_policy_version: str
     authorization_version: str
     effective_risk: float                # 0.0-1.0, frozen at S5
+    kernel_op_id: str = ""               # Kernel operation this binding executes
+    engine_module: str = ""              # Python module path of the engine
     selection_rank: int = 0
     is_active: bool = True
     metadata: dict[str, str] = field(default_factory=dict)
+    inverse_kernel_op_id: str | None = None   # kernel op that undoes this one (R-AF)
 
 
 class CapabilityRegistry:
@@ -96,4 +99,9 @@ class CapabilityRegistry:
 
     async def list_bindings(self, capability_id: str) -> list[BindingRow]:
         """List all bindings for a capability."""
+        raise NotImplementedError
+
+    async def known_intents(self, tenant_id: str) -> tuple[str, ...]:
+        """Intents of production-enabled capabilities with a live binding: the only choices
+        offered to the S2 model."""
         raise NotImplementedError

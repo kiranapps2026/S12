@@ -8,3 +8,9 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.env
+
+# build metadata written by `pip install -e`
+*.egg-info/
+observation_proposal.sql
+MASTER_STATUS.md

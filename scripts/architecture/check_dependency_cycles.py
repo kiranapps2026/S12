@@ -24,14 +24,15 @@ SRC = ROOT / "src"
 # Canonical layer ordering (lower = higher level)
 LAYER_ORDER = {
     "contracts": 0,
-    "db": 1,
+    "constants": 0,  # leaf module: importable from every layer
     "memory": 2,
     "engine/registry": 3,
+    "engine/stages": 3,
     "engine/control_plane": 4,
     "engine/execution": 5,
     "engine/reliability": 6,
     "engine/providers": 7,
-    "engine/observability": 8,
+    "adapters": 9,  # outermost: depends on everything above, nothing depends on it
 }
 
 
@@ -63,34 +64,16 @@ def extract_imports(file_path: Path, root: Path) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             if node.module and _is_internal(node.module):
                 imports.append(node.module)
-            elif node.level and node.level > 0:
-                # Relative import — always internal
-                if node.module:
-                    imports.append(node.module)
+            # relative imports stay inside the importer's own package: no layer crossing
 
     return imports
 
 
 def _is_internal(module: str) -> bool:
-    """Check if a module is internal to the project."""
-    parts = module.split(".")
-    # All project modules start with 'src' namespace
-    # The actual package name will be 'supragents' or similar
-    # For now, we check if it doesn't start with known external packages
-    external_prefixes = {
-        "abc", "argparse", "asyncio", "base64", "collections", "contextlib",
-        "copy", "dataclasses", "datetime", "enum", "functools", "hashlib",
-        "http", "io", "json", "logging", "os", "pathlib", "random", "re",
-        "secrets", "socket", "sqlite3", "ssl", "string", "sys", "threading",
-        "time", "traceback", "typing", "uuid", "warnings",
-        # Third-party
-        "fastapi", "sqlalchemy", "alembic", "pydantic", "redis", "httpx",
-        "openai", "anthropic", "lancedb", "jose", "cryptography",
-        "prometheus_client", "opentelemetry", "tenacity", "aio_pika",
-        "psutil", "yaml", "pytest", "mypy", "ruff",
-    }
-    top = parts[0] if parts else ""
-    return top not in external_prefixes and not top.startswith("_")
+    """A module is internal iff its top-level name is a package or module under src/.
+    (Anything else — standard library, third party — is external.)"""
+    top = module.split(".")[0]
+    return (SRC / top).is_dir() or (SRC / f"{top}.py").is_file()
 
 
 def build_dependency_graph() -> dict[str, set[str]]:

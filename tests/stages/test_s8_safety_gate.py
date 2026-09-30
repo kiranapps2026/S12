@@ -10,6 +10,8 @@ Source: DATA_CONTRACTS §8, PIPELINE_STAGES §10
 from __future__ import annotations
 
 import asyncio
+from tests.fixtures.deps import make_s8_deps
+import uuid
 import dataclasses
 import time
 import pytest
@@ -196,7 +198,7 @@ CHECK_MATRIX = [
     ("connection_active", {"connection": "UNKNOWN"}, "unknown",  "connection_active_invalid"),
     ("connection_active", {"connection": 42},        "malformed","connection_active_invalid"),
     # --- capability_granted ---
-    ("capability_granted", {"grant": False},  "false",    "capability_denied"),
+    ("capability_granted", {"grant": False},  "false",    "capability_granted_denied"),
     ("capability_granted", {"grant": None},   "None",     "capability_granted_unavailable"),
     ("capability_granted", {"grant": RAISE},  "RAISE",    "capability_granted_unavailable"),
     ("capability_granted", {"grant": "UNKNOWN"}, "unknown", "capability_granted_invalid"),
@@ -216,13 +218,13 @@ CHECK_MATRIX = [
     # Note: None state not directly supported by ConfigurableCircuitBreaker;
     # it returns the value. We test via RAISE for unavailable.
     # --- budget_available ---
-    ("budget_available", {"budget": False},   "false",    "budget_unavailable"),
+    ("budget_available", {"budget": False},   "false",    "budget_available_denied"),
     ("budget_available", {"budget": None},    "None",     "budget_available_unavailable"),
     ("budget_available", {"budget": RAISE},   "RAISE",    "budget_available_unavailable"),
     ("budget_available", {"budget": "UNKNOWN"}, "unknown", "budget_available_invalid"),
     ("budget_available", {"budget": 42},      "malformed","budget_available_invalid"),
     # --- mutation_safety ---
-    ("mutation_safety", {"mutation": False},  "false",    "mutation_invalid"),
+    ("mutation_safety", {"mutation": False},  "false",    "mutation_safety_denied"),
     ("mutation_safety", {"mutation": None},   "None",     "mutation_safety_unavailable"),
     ("mutation_safety", {"mutation": RAISE},  "RAISE",    "mutation_safety_unavailable"),
     ("mutation_safety", {"mutation": "UNKNOWN"}, "unknown", "mutation_safety_invalid"),
@@ -304,7 +306,7 @@ class TestStatusDenials:
         ({"user": "deactivated"}, "user_active", "user_active_inactive"),
         ({"connection": "revoked"}, "connection_active", "connection_active_inactive"),
         ({"connection": ("active", time.time() - 10)}, "connection_active", "connection_active_expired"),
-        ({"grant": False}, "capability_granted", "capability_denied"),
+        ({"grant": False}, "capability_granted", "capability_granted_denied"),
         ({"scope": False}, "resource_scope", "resource_scope_denied"),
     ], ids=["suspended_tenant", "deactivated_user", "revoked_connection",
             "expired_connection", "withdrawn_grant", "out_of_scope_workspace"])
@@ -356,7 +358,7 @@ class TestStatusDenials:
         ({"user": "deactivated"}, "user_active", "user_active_inactive"),
         ({"connection": "revoked"}, "connection_active", "connection_active_inactive"),
         ({"connection": ("active", time.time() - 10)}, "connection_active", "connection_active_expired"),
-        ({"grant": False}, "capability_granted", "capability_denied"),
+        ({"grant": False}, "capability_granted", "capability_granted_denied"),
         ({"scope": False}, "resource_scope", "resource_scope_denied"),
     ], ids=["suspended_tenant", "deactivated_user", "revoked_connection",
             "expired_connection", "withdrawn_grant", "out_of_scope_workspace"])
@@ -437,6 +439,7 @@ class TestMissingDependencyDenies:
     """Missing deps → DENY with _unavailable."""
 
     @pytest.mark.parametrize("omit_field,expected_check", [
+        ("policy", "kill_switch"),
         ("auth_state", "user_active"),
         ("circuit_breaker", "circuit_breaker"),
         ("mutation_policy", "mutation_safety"),
@@ -445,7 +448,8 @@ class TestMissingDependencyDenies:
         """Missing dependency → DENY with correct unavailable reason."""
         state = state_ready_for_s8()
         deps = S8Dependencies(
-            policy=KernelPolicy(kill_switch_engaged=False, risk_deny_threshold=0.95),
+            policy=None if omit_field == "policy" else KernelPolicy(
+                kill_switch_engaged=False, risk_deny_threshold=0.95),
             auth_state=None if omit_field == "auth_state" else ConfigurableAuthState(),
             circuit_breaker=None if omit_field == "circuit_breaker" else ConfigurableCircuitBreaker(),
             mutation_policy=None if omit_field == "mutation_policy" else ConfigurableMutationPolicy(),
@@ -554,7 +558,7 @@ class TestContextReplacement:
         assert new_ctx is not None
         assert new_ctx.auth_passed is True
         assert new_ctx.auth_result_id is not None
-        assert new_ctx.auth_result_id.startswith("auth-")
+        uuid.UUID(new_ctx.auth_result_id)  # R-M: a new UUID
 
     def test_s8_deny_leaves_context_unchanged(self):
         """On DENY, execution_context is identical (no replacement)."""
@@ -619,6 +623,14 @@ class TestMissingUpstreamOutputs:
         )
         result = asyncio.run(handle(state, deps)).safety_result
         assert (result.allowed, result.failed_check) == (False, "missing_task_profile")
+
+    def test_s8_missing_task_profile_denies(self):
+        """R-L: no task_profile -> DENY, reason missing_task_profile, status DENY."""
+        state = dataclasses.replace(state_ready_for_s8(), task_profile=None)
+        out = asyncio.run(handle(state, make_s8_deps(kill_switch=False)))
+        assert (out.safety_result.allowed, out.safety_result.reason) == (False, "missing_task_profile")
+        assert str(out.stage_status).lower() == "deny"
+        assert out.execution_context.auth_passed is False
 
     def test_missing_frozen_binding_denies(self):
         """No frozen_binding_identity → DENY missing_frozen_binding."""
@@ -818,7 +830,7 @@ class TestCheckCapabilityGrantedUnit:
         auth = ConfigurableAuthState(grant=False)
         binding = _make_binding(capability_id="cap-1")
         r = check_capability_granted(_make_ctx(), _make_task_profile(), binding, _make_deps(auth=auth))
-        assert r == CheckResult("capability_granted", False, "capability_denied")
+        assert r == CheckResult("capability_granted", False, "capability_granted_denied")
 
     def test_no_capability_id_on_binding(self):
         binding = _make_binding(capability_id="")
@@ -875,17 +887,17 @@ class TestCheckBudgetAvailableUnit:
     def test_zero_cost(self):
         tp = _make_task_profile(cost=0)
         r = check_budget_available(_make_ctx(), tp, _make_binding(), _make_deps())
-        assert r == CheckResult("budget_available", False, "budget_unavailable: invalid estimated_cost=0")
+        assert r == CheckResult("budget_available", False, "budget_available_invalid")
 
     def test_negative_cost(self):
         tp = _make_task_profile(cost=-1)
         r = check_budget_available(_make_ctx(), tp, _make_binding(), _make_deps())
-        assert "budget_unavailable" in r.reason
+        assert r.reason == "budget_available_invalid"
 
     def test_budget_false(self):
         auth = ConfigurableAuthState(budget=False)
         r = check_budget_available(_make_ctx(), _make_task_profile(), _make_binding(), _make_deps(auth=auth))
-        assert r == CheckResult("budget_available", False, "budget_unavailable")
+        assert r == CheckResult("budget_available", False, "budget_available_denied")
 
 
 class TestCheckMutationSafetyUnit:
@@ -895,7 +907,7 @@ class TestCheckMutationSafetyUnit:
         mutation = ConfigurableMutationPolicy(value=False)
         binding = _make_binding(effective_mutation="DELETE", effective_risk=0.9)
         r = check_mutation_safety(_make_ctx(), _make_task_profile(), binding, _make_deps(mutation=mutation))
-        assert r == CheckResult("mutation_safety", False, "mutation_invalid")
+        assert r == CheckResult("mutation_safety", False, "mutation_safety_denied")
 
     def test_mutation_raises(self):
         mutation = ConfigurableMutationPolicy(value=RAISE)

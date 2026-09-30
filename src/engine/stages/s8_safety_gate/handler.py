@@ -14,11 +14,14 @@ execution_context.auth_result_id via validate_replace, then writes safety_result
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import dataclasses
+import uuid
 
 from contracts.pipeline_state import PipelineState
 from contracts.safety import SafetyResult
+from contracts.stage_registry import StageStatus
 from engine.stages.s8_safety_gate.dependencies import S8Dependencies
 
 from .checks import (
@@ -27,6 +30,31 @@ from .checks import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _run_checks(context, task_profile, frozen, deps) -> tuple[str, str] | None:
+    """Run the 8 checks; return (reason, failed_check) for the first failure, else None."""
+    for check_name, check_fn in SAFETY_CHECKS:
+        try:
+            r = check_fn(context, task_profile, frozen, deps)
+        except Exception:
+            return f"{check_name}_unavailable", check_name
+        if not isinstance(r, CheckResult) or r.name != check_name:
+            return f"{check_name}_invalid", check_name
+        if r.passed is not True:
+            return (r.reason or f"{check_name}_failed"), check_name
+    return None
+
+
+def _run_all(context, task_profile, bindings, deps) -> tuple[str, str] | None:
+    """The 8 checks for EVERY step's binding (M2a, R-AB): the grant is per capability, the circuit
+    breaker per provider, the mutation policy per (mutation, risk); the budget check sees the
+    plan's total cost. The first failure of any step denies the plan."""
+    for frozen in bindings:
+        failure = _run_checks(context, task_profile, frozen, deps)
+        if failure is not None:
+            return failure
+    return None
 
 
 async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> PipelineState:
@@ -52,9 +80,10 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
     """
     def deny(reason: str, failed_check: str) -> PipelineState:
         logger.warning("S8: DENY %s (%s)", reason, failed_check)
-        return state.with_stage_output(
+        denied = state.with_stage_output(
             "S8", SafetyResult(allowed=False, reason=reason, failed_check=failed_check)
         )
+        return denied.with_status(StageStatus.DENY, reason)
 
     # 1. Kill switch — always first. deps or policy missing -> DENY.
     try:
@@ -69,35 +98,46 @@ async def handle(state: PipelineState, deps: S8Dependencies | None = None) -> Pi
     # 2. Required upstream outputs.
     if state.task_profile is None:
         return deny("missing_task_profile", "missing_task_profile")
-    if state.frozen_binding_identity is None:
+    if not state.bindings:
         return deny("missing_frozen_binding", "missing_frozen_binding")
     if state.execution_context is None:
         return deny("missing_identity", "missing_identity")
 
-    # 3. The 8 checks in R-B table order. First non-pass denies.
-    for check_name, check_fn in SAFETY_CHECKS:
-        try:
-            r = check_fn(
-                state.execution_context,
-                state.task_profile,
-                state.frozen_binding_identity,
-                deps,
-            )
-        except Exception:
-            return deny(f"{check_name}_unavailable", check_name)
-        if not isinstance(r, CheckResult) or r.name != check_name:
-            return deny(f"{check_name}_invalid", check_name)
-        if r.passed is not True:
-            return deny(r.reason or f"{check_name}_failed", check_name)
+    # 3. The 8 checks in R-B table order, in a worker thread: providers are synchronous
+    #    (R-C) and may block on I/O. First non-pass denies.
+    failure = await asyncio.to_thread(
+        _run_all, state.execution_context, state.task_profile, state.bindings, deps)
+    if failure is not None:
+        return deny(*failure)
 
     # 4. All checks pass.
     # R-M: set auth_passed/auth_result_id via replace_context, then write safety_result.
     state = state.replace_context(
         "S8",
         auth_passed=True,
-        auth_result_id=f"auth-{state.execution_context.request_id[:8]}",
+        auth_result_id=str(uuid.uuid4()),
     )
     return state.with_stage_output(
         "S8",
         SafetyResult(allowed=True, reason=None, failed_check=None),
     )
+
+
+async def recheck_safety(state: PipelineState, deps: S8Dependencies | None) -> tuple[str, str] | None:
+    """Re-evaluate the kill switch and all 8 checks for a run that was suspended after S8,
+    without writing anything. Returns (reason, failed_check) for the first failure, or None
+    if the request is still authorized. Time has passed since S8 allowed it (kill switch,
+    suspended user, revoked grant): a stale ALLOW must not carry a run to S11."""
+    try:
+        engaged = deps.policy.kill_switch_engaged
+    except Exception:  # noqa: BLE001
+        return "kill_switch_state_unavailable", "kill_switch"
+    if engaged is True:
+        return "kill_switch", "kill_switch"
+    if engaged is not False:
+        return "kill_switch_state_unavailable", "kill_switch"
+    if (state.task_profile is None or not state.bindings
+            or state.execution_context is None):
+        return "missing_identity", "missing_identity"
+    return await asyncio.to_thread(
+        _run_all, state.execution_context, state.task_profile, state.bindings, deps)
