@@ -83,7 +83,8 @@ def test_a_certified_read_run_is_admitted_and_left_running(pg):
         (state.frozen_binding_identity.binding_id, "R", "crm.contact_list")
     assert (owner["runtime_instance_id"], owner["worker_id"], owner["lease_id"], owner["fencing_token"]) == \
         ("runtime-1", None, None, 0)
-    assert moves == [("step", None, "pending"), ("run", None, "pending"), ("run", "pending", "running")]
+    # the run row exists before its steps, so its creation is logged first (C24 history in real order)
+    assert moves == [("run", None, "pending"), ("step", None, "pending"), ("run", "pending", "running")]
 
 
 def test_a_chain_is_admitted_with_one_step_row_per_step_its_own_binding_and_its_verifiers(pg):
