@@ -33,11 +33,11 @@ was added while drafting M05: as a superuser, the frozen confirmation store cons
 | `s12/M05_confirmation_store.py` | M5 | 30 | 11 fail, 19 pass (the frozen store: regression, CONF-010) | 30 / 30 | 3 / 3 |
 | `s12/M06_entry.py` | M6 | 23 | 3 fail (DEF-001), 20 pass (prototype entry) | 23 / 23 | 3 / 3 |
 | `s12/M07_leases.py` | M7 | 15 | 15 fail | 15 / 15 | 4 / 4 |
-| `s12/M08_admission.py` | M8 | 36 | 36 fail | 36 / 36 | 3 / 3 |
+| `s12/M08_admission.py` | M8 | 39 | 39 fail | 39 / 39 | 4 / 4 |
 | `s12/M08a_worker_mgmt.py` | M8a | 49 | 39 fail, 10 pass (prototype entry quota) | 49 / 49 | 3 / 3 |
 | `s12/M09_budget.py` | M9 | 17 | 16 fail | 17 / 17 | 4 / 4 |
 
-After the B2 review (`docs/gates/S12_B2_REVIEW.md`), all 486 cases of M01–M09 pass together on the reference (a scratch worktree, deleted; nothing of it is in `src/`).
+After the B2 review (`docs/gates/S12_B2_REVIEW.md`), all 489 cases of M01–M09 pass together (after CONF-017) on the reference (a scratch worktree, deleted; nothing of it is in `src/`).
 Building the reference caught five defects in the B2 drafts before pinning: M05 depended on the database role; M06's
 verifier case used a read-only plan and its race used `asyncio.gather` outside a loop; M06 could not see a wrong binding
 copied consistently into both the step row and the index (G3 now checked against the certified state); M07's I8 ordered
@@ -142,7 +142,7 @@ setup error):
 | `M06_write_before_checks.py`, `M06_skip_plan_integrity.py` | denial / zero-row cases |
 | `M06_first_binding_for_every_step.py` | `test_admitted_run_is_durable_and_consistent[two-step-chain]` (G3) |
 | `M07_per_worker_token.py`, `M07_stale_leases_counted.py`, `M07_renew_after_expiry.py`, `M07_steal_live_execution.py` | takeover, expiry, renewal, one-owner cases |
-| `M08_capacity_rejects.py`, `M08_last_gate_wins.py`, `M08_owner_ignored.py` | gate 7, first-reject, locality |
+| `M08_capacity_rejects.py`, `M08_last_gate_wins.py`, `M08_owner_ignored.py`, `M08_backpressure_rejects.py` | gate 7, first-reject, locality, gates 9/11 DELAY |
 | `M08a_null_workspace_matches.py`, `M08a_assignment_for_event_runs.py`, `M08a_bypass_everything.py` | filters 4b, 14, bypass scope |
 | `M09_no_tenant_lock.py`, `M09_all_periods_count.py`, `M09_commit_from_reserved.py`, `M09_lock_in_own_transaction.py` | concurrency, period, illegal commit, I-3 |
 
