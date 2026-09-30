@@ -167,6 +167,7 @@ class ExecutionContext:
     tenant_policy_version_id: str | None = None
     workspace_policy_version_id: str | None = None
     policy_version_id: str | None = None  # Effective policy version
+```
 
 
 **Ownership note**: FrozenBindingIdentity owns provider resolution (S5). ExecutionContext owns only request identity (S0). FrozenBindingIdentity is produced at S5 and consumed by S6-S12. ExecutionContext is never modified after S0.
@@ -1252,6 +1253,7 @@ class StepState(StrEnum):
     UNKNOWN = "unknown"           # Outcome uncertain (network drop, timeout)
     PENDING_PROBE = "pending_probe"  # Waiting for upstream probe (D-PIPE1)
     DEAD_LETTER = "dead_letter"   # Permanent failure, escalated to human
+```
 
 ### 19.2 Legal Transitions
 
