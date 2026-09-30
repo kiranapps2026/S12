@@ -17,3 +17,5 @@ MILESTONE M4 REACHED at 8f38edb except S12-REC (STOP-001)
 MILESTONE M5 REACHED at 77c26e2 except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
 6091a87 | M6 | full | 12/14 | DEF-001 fixed; golden M6 23/23, sabotage 3/3; tests 836, tests_postgres 330 (prototype log-order expectation updated)
 MILESTONE M6 REACHED at 6091a87 except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
+62f8ebb | M7 | full | 14/16 | leases, fencing, ownership; golden M7 15/15, x5, sabotage 5/5; agent 15 (found and fixed: load not resynced when an acquisition expired leases then refused); tests 836, tests_postgres 330
+MILESTONE M7 REACHED at 62f8ebb except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
