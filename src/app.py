@@ -37,6 +37,9 @@ def _production_lifespan(database_url: str, intent_model: IntentModel | None):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         from adapters.postgres.database import Database
+        from adapters.postgres.rate_limit import PostgresRateLimiter
+        from adapters.postgres.usage import MeteredIntentModel, UsageMeter
+        from engine.control_plane.api import RateLimits
         from bootstrap import build_admin, build_authenticator, build_intent_model, build_runner, build_webhook_gateway
         from contracts.errors import DependencyUnavailable
         from contracts.stage_registry import validate_stage_order
@@ -67,6 +70,13 @@ def _production_lifespan(database_url: str, intent_model: IntentModel | None):
             app.state.authenticator = build_authenticator(database)
             app.state.webhooks = build_webhook_gateway(database, settings)
             app.state.admin = build_admin(database, settings)
+            app.state.rate_limiter = PostgresRateLimiter(database)
+            app.state.rate_limits = RateLimits(settings.rate_limit_user_per_minute, settings.rate_limit_tenant_per_minute,
+                                               settings.rate_limit_invite_per_minute)
+            app.state.usage_meter = UsageMeter(database)
+            app.state.llm_price_per_million_tokens = settings.llm_price_per_million_tokens
+            if model is not None:
+                model = MeteredIntentModel(model, app.state.usage_meter)
             app.state.pipeline = build_runner(database, model) if model is not None else None
             if app.state.pipeline is None:
                 logger.warning("No intent model configured (DEEPSEEK_API_KEY): /execute answers 503")
@@ -75,7 +85,7 @@ def _production_lifespan(database_url: str, intent_model: IntentModel | None):
                 from bootstrap import build_scheduler
                 from engine.gateway.scheduler import run_forever
                 scheduler_task = asyncio.create_task(run_forever(
-                    build_scheduler(database, app.state.webhooks, app.state.pipeline),
+                    build_scheduler(database, app.state.webhooks, app.state.pipeline, app.state.usage_meter),
                     settings.scheduler_interval_seconds))
                 logger.info("Event scheduler started (every %ds)", settings.scheduler_interval_seconds)
             logger.info("SuprAgents API started")
@@ -106,7 +116,8 @@ async def _static_lifespan(app: FastAPI):
     yield
 
 
-def create_app(pipeline=None, authenticator=None, *, webhooks=None, admin=None,
+def create_app(pipeline=None, authenticator=None, *, webhooks=None, admin=None, rate_limiter=None, rate_limits=None,
+               usage_meter=None,
                database_url: str | None = None, intent_model: IntentModel | None = None,
                cors_origins: tuple[str, ...] = ()) -> FastAPI:
     """Create the FastAPI application (see the module docstring)."""
@@ -123,6 +134,9 @@ def create_app(pipeline=None, authenticator=None, *, webhooks=None, admin=None,
     app.state.authenticator = authenticator
     app.state.webhooks = webhooks
     app.state.admin = admin
+    app.state.rate_limiter = rate_limiter
+    app.state.rate_limits = rate_limits
+    app.state.usage_meter = usage_meter
     app.state.database = None
 
     if cors_origins:
@@ -172,6 +186,8 @@ def create_app(pipeline=None, authenticator=None, *, webhooks=None, admin=None,
     app.include_router(admin_router, prefix="/api/v1")
     from engine.control_plane.admin_access_api import router as admin_access_router
     app.include_router(admin_access_router, prefix="/api/v1")
+    from engine.control_plane.onboarding_api import router as onboarding_router
+    app.include_router(onboarding_router, prefix="/api/v1")
 
     return app
 

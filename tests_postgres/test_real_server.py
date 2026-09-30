@@ -202,3 +202,19 @@ def test_the_server_stays_healthy_after_the_burst(stack_factory):
     asyncio.run(go())
     assert httpx.get(f"{st.server.url}/ready", timeout=10).json() == {"status": "ready"}
     assert st.ask("list contacts").json()["status"] == "NORMAL"
+
+
+# ---- 6. limits and usage on the real process ----------------------------------------------------
+
+def test_the_real_server_limits_a_user_and_bills_every_model_call_to_its_tenant(stack_factory):
+    st = stack_factory(extra_env={"RATE_LIMIT_USER_PER_MINUTE": "4", "RATE_LIMIT_TENANT_PER_MINUTE": "1000"})
+    codes = [st.ask("list contacts").status_code for _ in range(6)]
+    assert codes[:4] == [200] * 4 and codes[4:] == [429, 429]
+    limited = httpx.post(f"{st.server.url}/api/v1/execute", json={"input_data": {"message": "x"}},
+                         headers=headers(st.keys["tenant-a"]), timeout=10)
+    assert limited.status_code == 429 and int(limited.headers["retry-after"]) >= 1
+    assert httpx.post(f"{st.server.url}/api/v1/execute", json={"input_data": {"message": "list contacts"}},
+                      headers=headers(st.keys["tenant-b"]), timeout=10).status_code == 200      # another tenant is unaffected
+    usage = st.rows("tenant-a", "SELECT user_id, model, total_tokens FROM llm_usage")
+    assert len(usage) == 4 and {u["user_id"] for u in usage} == {"tenant-a.user"} and all(u["total_tokens"] > 0 for u in usage)
+    assert len(st.rows("tenant-b", "SELECT 1 FROM llm_usage")) == 1

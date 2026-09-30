@@ -72,12 +72,14 @@ async def prepare(database_url: str, *extra_sql: str) -> dict[str, str]:
 class Server:
     """The app as a separate OS process (a real restart is a real process restart)."""
 
-    def __init__(self, database_url: str, fake_url: str, model_timeout: float = 2.0) -> None:
+    def __init__(self, database_url: str, fake_url: str, model_timeout: float = 2.0, extra_env: dict | None = None) -> None:
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self._env = {**os.environ, "APP_DATABASE_URL": login_url(database_url), "APP_PORT": str(self.port),
                      "FAKE_DEEPSEEK_URL": fake_url, "MODEL_TIMEOUT": str(model_timeout),
-                     "PYTHONPATH": f"{ROOT / 'src'}{os.pathsep}{ROOT}", "DEEPSEEK_API_KEY": ""}
+                     "PYTHONPATH": f"{ROOT / 'src'}{os.pathsep}{ROOT}", "DEEPSEEK_API_KEY": "",
+                     # generous limits: the burst tests are not about limiting (test_real_server sets its own)
+                     "RATE_LIMIT_USER_PER_MINUTE": "100000", "RATE_LIMIT_TENANT_PER_MINUTE": "100000", **(extra_env or {})}
         self._log = tempfile.NamedTemporaryFile("w+", suffix=".log", delete=False)
         self.proc: subprocess.Popen | None = None
 
@@ -154,8 +156,8 @@ class Stack:
         self.fake.__exit__(None, None, None)
 
 
-def make_stack(database_url, delay=0.0, model_timeout=2.0, extra_sql=()):
+def make_stack(database_url, delay=0.0, model_timeout=2.0, extra_sql=(), extra_env=None):
     keys = asyncio.run(prepare(database_url, *extra_sql))
     fake = FakeDeepSeek(delay).__enter__()
-    server = Server(database_url, fake.endpoint, model_timeout).start()
+    server = Server(database_url, fake.endpoint, model_timeout, extra_env).start()
     return Stack(database_url, keys, fake, server)

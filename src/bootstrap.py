@@ -50,9 +50,14 @@ def build_admin(database: Database, settings: Settings) -> AdminService:
     return AdminService(database, credentials)
 
 
-def build_scheduler(database: Database, gateway: EventGateway, pipeline) -> EventScheduler:
-    return EventScheduler(PostgresScheduleStore(database), gateway,
-                          lambda received: run_received_event(pipeline, gateway, received))
+def build_scheduler(database: Database, gateway: EventGateway, pipeline, meter=None) -> EventScheduler:
+    """Scheduled events run through the same pipeline; with a `meter` their model calls are billed to their tenant."""
+    async def run(received):
+        if meter is None:
+            return await run_received_event(pipeline, gateway, received)
+        with meter.scope(received.principal.tenant_id, received.principal.user_id, received.envelope.event_id):
+            return await run_received_event(pipeline, gateway, received)
+    return EventScheduler(PostgresScheduleStore(database), gateway, run)
 
 
 def build_intent_model(settings: Settings) -> IntentModel:

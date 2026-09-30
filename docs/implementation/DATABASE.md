@@ -1071,7 +1071,7 @@ columns `execution_runs.parent_execution_id` (RD-11), `execution_runs.batch_mode
 
 ---
 
-### Implementation deviations of the S0–S11 repair (owner rulings R-AT, R-AU, R-AW, R-AZ, 2026-09-30; 001–005 and 011–013 added 2026-09-30)
+### Implementation deviations of the S0–S11 repair (owner rulings R-AT, R-AU, R-AW, R-AZ, 2026-09-30; 001–005, 011–014 added 2026-09-30)
 
 The repair implements this schema as numbered SQL files (`adapters/postgres/migrations/001`…`010`, applied once each
 by `main.py --migrate`; Alembic is not used). The following differences from the definitions above are **accepted**
@@ -1093,6 +1093,7 @@ tenant-scoped have forced row-level security on `app.current_tenant`.
 | 011 | `event_schemas` (per-tenant registered payload schemas: `(tenant_id, source_system, event_type, schema_version)` primary key, `schema JSONB`, `is_active`; forced RLS). `event_log.schema_version TEXT NOT NULL DEFAULT '1'`. `event_schedules` (schedule event source: fixed identity columns like `api_keys`, `event_type`, `payload JSONB`, `kind` in `interval`/`daily`/`weekly` with per-kind CHECKs, `interval_seconds >= 60`, `is_active`, `last_planned`; **no row-level security**, so every access filters by tenant explicitly and only the scheduler reads across tenants). |
 | 012 | Administration API. `api_keys` gains `label`, `created_by`, `revoked_at`; `webhook_credentials` and `event_schedules` gain `label`, `created_by`; `event_schemas` gains `created_by`. `admin_audit` (append-only record of administrative changes: `audit_id`, `tenant_id`, actor user and membership, `action`, `target_type`, `target_id`, `details JSONB` holding ids, versions and labels only, never a secret, `occurred_at`); UPDATE and DELETE are rejected by trigger `reject_change()`; forced RLS. |
 | 013 | Access management. `users` gains `display_name`, `is_service BOOLEAN NOT NULL DEFAULT FALSE` (a service identity; webhook/MCP endpoints and schedules may only act as one) and `created_by`; `workspaces` gains `created_by`; `memberships`, `connections` and `capability_grants` gain `created_by` and `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`. |
+| 014 | Onboarding, usage and limits. `invitations` (one-time invitation tokens, stored as SHA-256; `tenant_id`, `workspace_id`, `role`, `expires_at`, `revoked_at`, `accepted_at`, `accepted_user_id`): looked up before the tenant is known, so **no row-level security**; administrative queries filter by tenant. `llm_usage` (one row per language-model call: `tenant_id`, `user_id`, `request_id`, `model`, `total_tokens`, `called_at`): tenant table, forced RLS. `rate_limit_counters` (`bucket` primary key, `window_start`, `hits`): fixed-window counters shared by all processes; no tenant data, **no row-level security**; rows are reset in place (the application role cannot DELETE). |
 
 ## 4. Migrations
 

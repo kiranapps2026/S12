@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     # Seconds between scheduler ticks; 0 disables the event scheduler (schedules then never fire)
     scheduler_interval_seconds: int = 0
 
+    # === Rate limits (per fixed one-minute window, counted in PostgreSQL; 0 or less refuses everything) ===
+    rate_limit_user_per_minute: int = 60
+    rate_limit_tenant_per_minute: int = 600
+    rate_limit_invite_per_minute: int = 10      # per client address, for the unauthenticated invitation redemption
+    llm_price_per_million_tokens: float = 0.0   # 0: usage is reported in tokens only
+
     # === HTTP ===
     cors_origins: str = ""  # comma-separated allowed origins; empty = no CORS
 

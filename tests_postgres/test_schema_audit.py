@@ -11,11 +11,11 @@ import pytest
 SRC = Path(__file__).resolve().parent.parent / "src"
 
 # Deliberately without row-level security (DATABASE.md deviations 002, 007, 011; global catalog tables).
-NO_RLS = {"api_keys", "webhook_credentials", "event_schedules",                          # tenant-filtered in code
+NO_RLS = {"api_keys", "webhook_credentials", "event_schedules", "invitations", "rate_limit_counters",                          # tenant-filtered in code
           "capabilities", "bindings", "kernel_ops", "registry_versions",                 # global catalog
           "system_settings", "schema_migrations"}
-NO_TENANT_COLUMN = {"capabilities", "bindings", "kernel_ops", "registry_versions", "system_settings", "schema_migrations"}
-NOT_TABLES = {"pg_roles", "pg_class", "information_schema", "__future__", "abc", "adapters", "app", "authentication", "bootstrap", "checks", "clock_timestamp",
+NO_TENANT_COLUMN = {"rate_limit_counters", "capabilities", "bindings", "kernel_ops", "registry_versions", "system_settings", "schema_migrations"}
+NOT_TABLES = {"set", "pg_roles", "pg_class", "information_schema", "__future__", "abc", "adapters", "app", "authentication", "bootstrap", "checks", "clock_timestamp",
               "collections", "contracts", "dataclasses", "datetime", "engine", "typing", "enum", "json", "os", "re",
               "uuid", "asyncio", "fastapi", "pydantic", "config", "constants", "time", "hashlib", "hmac", "base64",
               "math", "logging", "functools", "itertools", "secrets", "unicodedata", "pathlib", "urllib", "sys",

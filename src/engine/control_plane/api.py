@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
+from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -78,6 +81,38 @@ class HealthResponse(BaseModel):
     contracts_valid: bool
 
 
+@dataclass(frozen=True)
+class RateLimits:
+    user_per_minute: int
+    tenant_per_minute: int
+    invite_per_minute: int
+    window_seconds: int = 60
+
+
+async def enforce_rate_limit(request: Request, principal: Principal) -> None:
+    """429 when the caller's user or tenant window is used up. No limiter configured (tests): unlimited.
+    A limiter that cannot be read answers 503: no limiter, no request (fail closed)."""
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is None:
+        return
+    limits: RateLimits = request.app.state.rate_limits
+    try:
+        for bucket, limit in ((f"u:{principal.tenant_id}:{principal.user_id}", limits.user_per_minute),
+                              (f"t:{principal.tenant_id}", limits.tenant_per_minute)):
+            decision = await limiter.hit(bucket, limit, limits.window_seconds)
+            if not decision.allowed:
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate_limited",
+                                    headers={"Retry-After": str(decision.retry_after)})
+    except DependencyUnavailable:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable")
+
+
+def usage_scope(request: Request, tenant_id: str, user_id: str, request_id: str):
+    """Attribute the language-model calls made inside the block to this tenant, user and request."""
+    meter = getattr(request.app.state, "usage_meter", None)
+    return nullcontext() if meter is None else meter.scope(tenant_id, user_id, request_id)
+
+
 async def get_principal(request: Request) -> Principal:
     authenticator = getattr(request.app.state, "authenticator", None)
     if authenticator is None:
@@ -91,6 +126,7 @@ async def get_principal(request: Request) -> Principal:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "authentication_unavailable")
     if principal is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthenticated")
+    await enforce_rate_limit(request, principal)
     return principal
 
 
@@ -104,13 +140,16 @@ def get_pipeline(request: Request) -> PipelineRunner:
 @router.post("/execute", response_model=ExecuteResponse)
 async def execute_pipeline(
     body: ExecuteRequest,
+    request: Request,
     principal: Principal = Depends(get_principal),
     pipeline: PipelineRunner = Depends(get_pipeline),
 ) -> ExecuteResponse:
     """Run S0–S11 for the authenticated principal."""
+    request_id = str(uuid.uuid4())
     entry = EntryRequest(
         raw_payload=body.input_data,
         entry_channel="api",
+        request_id=request_id,
         tenant_id=principal.tenant_id,
         workspace_id=principal.workspace_id,
         user_id=principal.user_id,
@@ -120,7 +159,8 @@ async def execute_pipeline(
         resource_scope=principal.resource_scope,
         idempotency_key=body.idempotency_key,
     )
-    return _response(await pipeline.run(entry))
+    with usage_scope(request, principal.tenant_id, principal.user_id, request_id):
+        return _response(await pipeline.run(entry))
 
 
 class EventRequest(BaseModel):
@@ -146,7 +186,8 @@ async def _signed_body(request: Request) -> bytes:
     return await request.body()
 
 
-async def _run_event(gateway: EventGateway, pipeline: PipelineRunner, receive) -> ExecuteResponse:
+async def _run_event(request: Request, gateway: EventGateway, pipeline: PipelineRunner, receive, *,
+                     limited: bool = False) -> ExecuteResponse:
     """Receive an event (any source) and run it through the one pipeline. A repeat delivery is
     acknowledged without running again."""
     try:
@@ -155,9 +196,12 @@ async def _run_event(gateway: EventGateway, pipeline: PipelineRunner, receive) -
         raise HTTPException(rejected.status, rejected.reason)
     except DependencyUnavailable:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable")
+    if not limited:                       # API events were counted when their key was authenticated
+        await enforce_rate_limit(request, received.principal)
     if received.duplicate:
         return ExecuteResponse(status="NORMAL", final_stage="S0", reason="duplicate_event")
-    return _response(await run_received_event(pipeline, gateway, received))
+    with usage_scope(request, received.principal.tenant_id, received.principal.user_id, received.envelope.event_id):
+        return _response(await run_received_event(pipeline, gateway, received))
 
 
 @router.post("/webhooks/{source_system}/{endpoint_id}", response_model=ExecuteResponse)
@@ -174,7 +218,7 @@ async def receive_webhook(
     path as a user request (EVENT_DRIVEN mode)."""
     gateway = _event_gateway(request)
     body = await _signed_body(request)
-    return await _run_event(gateway, pipeline, lambda: gateway.receive(
+    return await _run_event(request, gateway, pipeline, lambda: gateway.receive(
         source_system, endpoint_id, body, request.headers.get("x-signature")))
 
 
@@ -187,7 +231,7 @@ async def receive_mcp_event(
     """A tool call reported by an internal MCP server, signed like a webhook (header `X-Signature`)."""
     gateway = _event_gateway(request)
     body = await _signed_body(request)
-    return await _run_event(gateway, pipeline, lambda: gateway.receive_mcp(
+    return await _run_event(request, gateway, pipeline, lambda: gateway.receive_mcp(
         endpoint_id, body, request.headers.get("x-signature")))
 
 
@@ -200,8 +244,8 @@ async def receive_api_event(
 ) -> ExecuteResponse:
     """An event posted by an authenticated API client. The identity is the API key's, never the body's."""
     gateway = _event_gateway(request)
-    return await _run_event(gateway, pipeline, lambda: gateway.receive_api(
-        principal, body.model_dump(), request_id=request.headers.get("x-request-id")))
+    return await _run_event(request, gateway, pipeline, lambda: gateway.receive_api(
+        principal, body.model_dump(), request_id=request.headers.get("x-request-id")), limited=True)
 
 
 @router.post("/confirmations/{confirmation_id}", response_model=ExecuteResponse)
