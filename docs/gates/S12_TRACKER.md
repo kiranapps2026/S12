@@ -2,14 +2,14 @@
 
 Generated 2026-09-30 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 22 not_started, 0 red_confirmed, 0 in_progress, 0 green, 1 reviewed of 23 milestones. Open: 1 conflicts, 0 stops, 0 defects.
+**Summary:** 21 not_started, 1 red_confirmed, 0 in_progress, 0 green, 1 reviewed of 23 milestones. Open: 3 conflicts, 0 stops, 0 defects.
 
-**Next:** M1 Schema: migrations (model: sonnet, complexity: medium-high, status: not_started)
+**Next:** M1 Schema: migrations (model: sonnet, complexity: medium-high, status: red_confirmed)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
-| M0 Preflight | B0 | reviewed | low | sonnet | ★ | not done | 1 | 0 | 0 | 0 |
-| M1 Schema: migrations | B1 | not_started | medium-high | sonnet | ★ | partial | 0 | 0 | 0 | 0 |
+| M0 Preflight | B0 | reviewed | low | sonnet | ★ | not done | 2 | 0 | 0 | 0 |
+| M1 Schema: migrations | B1 | red_confirmed | medium-high | sonnet | ★ | partial | 0 | 2 | 0 | 0 |
 | M2 fenced_write(), repositories, transition log | B1 | not_started | medium | sonnet |  | partial | 0 | 0 | 0 | 0 |
 | M3 State machines I: run, step, budget | B1 | not_started | medium | sonnet |  | prototype | 0 | 0 | 0 | 0 |
 | M4 State machines II: lease, worker, dead letter, episode, confirmation, breaker | B1 | not_started | medium | sonnet |  | not done | 0 | 0 | 0 | 0 |
@@ -44,3 +44,5 @@ None.
 - CONF-006 (M3, ruled): `src/contracts/state_validators.py:41` StateTransitionValidator (DATA_CONTRACTS §26) contradicts gate Appendix A: run machine `:72-92` uses budget states; step machine `:94-118` uses SUCCESS/TIME_OUT/PROBE_FAILED and allows UNKNOWN→FAILED, RUNNING→UNKNOWN. Loaded at `src/main.py:25,48`. Prototype `s12_execute/transitions.py` matches A.1/A.2 exactly
 - CONF-007 (M1, ruled): Gate §7.3 (C39): `operation_quotas` has `worker_id` in `UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type, period_start)` and `CHECK (worker_id IS NULL)`. Code `009_execution_admission.sql:113-129`: no `worker_id` column, unique key without it. M8a golden "rejects a non-NULL worker_id" cannot hold
 - CONF-008 (M6, ruled): Gate D1 / C32 assume metadata read "at the pinned versions". Code: `kernel_ops` has no version column; `registry_versions` is a singleton (`001_s0_s11_schema.sql:104`); `registry.py:125-132` returns None when versions moved, so every earlier-certified plan is denied after a bump
+- CONF-009 (M1, open): Plan v3 §3 puts golden tests in `tests\golden\s12\Mxx_*.py`. The S0–S11 certifier OWN-13 runs `pytest tests` and must stay 19/19 every milestone (plan §4 exit), but a golden file is red until its milestone is built, so inside `tests\` it turns OWN-13 FAIL
+- CONF-010 (M1, open): Plan §5.2: "a golden test that already passes is rejected". 30 of 89 M01 cases already pass because migrations 009/010 (inside the tag) built part of the M1 schema; they cannot be made red without editing tagged migrations (an M1 trap)
