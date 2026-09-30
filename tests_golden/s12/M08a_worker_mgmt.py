@@ -189,6 +189,53 @@ def test_admin_is_read_live_from_memberships(db_schema, run, user, expected):
     assert run(PostgresSelectionReader(db_schema.database()).is_workspace_admin(T, "ws-live", user)) is expected
 
 
+# --- I18 end to end: live candidates -> filters -> selection -> lease ------------------------------------------------
+
+async def _seed_i18(schema, execution):
+    await _seed_workers(schema)
+    await schema.execute(
+        "INSERT INTO execution_runs (execution_id, request_id, trace_id, task_id, user_id, tenant_id, workspace_id,"
+        " conversation_id, status, actor_type, actor_id, budget_spent) VALUES ($1, $1, 'tr', 'task', 'u-member', $2,"
+        " 'ws-live', 'conv', 'running', 'user', 'u-member', 0) ON CONFLICT DO NOTHING", execution, T, tenant=T)
+    await schema.execute(
+        "INSERT INTO execution_ownership (execution_id, tenant_id, runtime_instance_id, fencing_token,"
+        " checkpoint_sequence, updated_at) VALUES ($1, $2, 'admission', 0, 0, now()) ON CONFLICT DO NOTHING",
+        execution, T, tenant=T)
+
+
+def _lease_through_filters(schema, run, execution, **ctx):
+    from adapters.postgres.leases import PostgresLeaseManager
+    from adapters.postgres.selection import PostgresSelectionReader
+    from engine.stages.s12_execute.eligibility import filter_workers
+    from engine.stages.s12_execute.selection import lease_for_step
+    reader, leases = PostgresSelectionReader(schema.database()), PostgresLeaseManager(schema.database())
+    selection = _ctx(workspace_id="ws-live", now=time.time(), **ctx)
+
+    async def candidates():
+        return filter_workers(await reader.candidates(T), selection).eligible
+
+    async def acquire(worker_id):
+        return await leases.acquire(tenant_id=T, worker_id=worker_id, execution_id=execution,
+                                    runtime_instance_id="runtime-A", ttl_s=30)
+
+    return run(lease_for_step(candidates=candidates, acquire=acquire, current_owner=None, max_attempts=3))
+
+
+def test_only_an_eligible_worker_is_ever_leased(db_schema, run):
+    """I18: w-live-1 is paused and w-live-3 is DRAINING; only w-live-2 may get the lease."""
+    run(_seed_i18(db_schema, "e-i18-ok"))
+    lease = _lease_through_filters(db_schema, run, "e-i18-ok")
+    assert getattr(lease, "worker_id", None) == "w-live-2"
+    assert run(db_schema.fetchval("SELECT count(*) FROM worker_leases WHERE worker_id <> 'w-live-2'")) == 0
+
+
+def test_no_eligible_worker_is_no_worker_and_nothing_is_leased(db_schema, run):
+    run(_seed_i18(db_schema, "e-i18-none"))
+    before = run(db_schema.fetchval("SELECT count(*) FROM worker_leases"))
+    assert _lease_through_filters(db_schema, run, "e-i18-none", capability_id="cap.q") == "no_worker"
+    assert run(db_schema.fetchval("SELECT count(*) FROM worker_leases")) == before
+
+
 # --- entry quota (§7.2, I17) and the pause safety net (§7.1 item 7) ---------------------------------------------------
 
 TABLES = ("execution_runs", "execution_steps", "execution_manifests", "execution_plans", "execution_ownership",

@@ -10,7 +10,8 @@ Interface this file fixes (``adapters.postgres.leases``):
       ``async acquire(*, tenant_id, worker_id, execution_id, runtime_instance_id, ttl_s) -> Lease | None`` — ONE
       transaction: lock the worker row (FOR UPDATE), expire its stale leases (``active → expired``, reason
       ``ttl_elapsed``, logged), count its usable leases, and only if the count is below ``capacity`` and the worker is
-      ``ACTIVE``: take the token from ``fence_token_seq``, insert the lease ``active`` (logged ``None → active``,
+      ``ACTIVE`` and the execution has no other usable lease (one owner at a time; takeover only after the old lease
+      expired or was released): take the token from ``fence_token_seq``, insert the lease ``active`` (logged ``None → active``,
       ``acquired``), set ``workers.current_load`` to the new count and ``workers.lease_epoch`` to the token, and set
       ``execution_ownership`` (worker_id, lease_id, runtime_instance_id, fencing_token) by compare-and-set to the new,
       strictly greater token. ``None`` when at capacity or not ACTIVE (nothing written).
@@ -169,6 +170,19 @@ def test_takeover_by_another_worker_gets_a_larger_token_and_fences_the_old_owner
     assert new is not None and new.fence_token > old.fence_token
     assert not run(_write_ok(db_schema, old, runtime="runtime-old"))
     assert run(_write_ok(db_schema, new, runtime="runtime-new"))
+    run(assert_system_invariants(db_schema))
+
+
+def test_a_live_execution_cannot_be_taken_over(db_schema, run):
+    """One owner at a time (WORKER_LIFECYCLE §14 failover, gate suite 17): while its lease is usable, no other Worker
+    Runtime may lease the execution, and ownership is unchanged."""
+    run(_seed(db_schema, workers={"w-live-a": 1, "w-live-b": 1}, executions=["e-live"]))
+    held = run(_acquire(db_schema, "w-live-a", "e-live", runtime="runtime-a"))
+    assert run(_acquire(db_schema, "w-live-b", "e-live", runtime="runtime-b")) is None
+    owner = run(db_schema.fetch("SELECT worker_id, runtime_instance_id, fencing_token FROM execution_ownership"
+                                " WHERE execution_id = 'e-live'"))[0]
+    assert tuple(owner) == ("w-live-a", "runtime-a", held.fence_token)
+    assert run(_load(db_schema, "w-live-b"))[:2] == (0, 0) and run(_write_ok(db_schema, held, runtime="runtime-a"))
     run(assert_system_invariants(db_schema))
 
 

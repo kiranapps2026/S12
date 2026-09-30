@@ -185,6 +185,7 @@ def test_manifest_is_persisted_identical_to_s11(db_schema, run):
                   "risk_policy_version", "authorization_version", "auth_result_id", "worker_runtime_version",
                   "model_version"):
         assert row[field] == getattr(m, field), field
+    assert abs(row["created_at"].timestamp() - (m.created_at or 0.0)) < 1e-3     # the S11 time, not the admission time
 
 
 def test_run_creation_and_admission_are_logged_as_appendix_a_transitions(db_schema, run):

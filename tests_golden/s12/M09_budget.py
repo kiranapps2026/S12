@@ -13,10 +13,12 @@ Interface this file fixes (``adapters.postgres.budget_reserver``):
       ``async reserve(holder, *, user_id, step_id, cost) -> Reservation`` — insert ``reserved`` (logged
       ``None → reserved``, reason ``reserved``) and set ``execution_steps.reservation_id`` in the same transaction; a step
       that already has a live reservation gets that one back (idempotent); exhausted → nothing written.
-      ``async lock(holder, reservation_id, *, reason)``, ``async commit(holder, reservation_id, *, reason)``,
-      ``async release(holder, reservation_id, *, reason)`` — one Appendix A.3 transition each, validated with its reason
+      ``async lock(holder, reservation_id, *, reason, connection=None)``, ``async commit(...)``,
+      ``async release(...)`` (same signature) — one Appendix A.3 transition each, validated with its reason
       (``engine.stages.s12_execute.transitions.validate``), logged; an illegal move raises ``IllegalStateTransition`` and
-      writes nothing; a stale holder raises ``FencedOut`` and writes nothing.
+      writes nothing; a stale holder raises ``FencedOut`` and writes nothing. With ``connection`` (a connection inside the
+      caller's ``fenced_write`` for the same holder) the move joins that transaction instead of opening its own: Appendix
+      A.2 requires the step's ``pending → running`` and its reservation's ``reserved → locked`` in ONE transaction (I-3).
       ``async status(tenant_id, reservation_id) -> str | None``.
 """
 from __future__ import annotations
@@ -131,6 +133,33 @@ def test_illegal_moves_are_rejected_and_write_nothing(db_schema, run, op, start)
         run(getattr(m, op)(_holder(tenant), r.reservation_id, reason=reasons[op]))
     assert (run(m.status(tenant, r.reservation_id)), run(db_schema.fetchval("SELECT count(*) FROM state_transitions"))) \
         == before
+
+
+def test_lock_joins_the_callers_transaction(db_schema, run):
+    """I-3: the step starts and its reservation locks together, or neither happens."""
+    from adapters.postgres.fencing import fenced_write
+    tenant = "t-join"
+    run(_seed(db_schema, tenant, pool=100, steps=2))
+    m = _reserver(db_schema)
+    a = run(_reserve(db_schema, tenant, "s0", 5))
+    b = run(_reserve(db_schema, tenant, "s1", 5))
+
+    async def start(step, reservation_id, fail):
+        async def write(c):
+            await c.execute("UPDATE execution_steps SET status = 'running' WHERE tenant_id = $1 AND step_id = $2",
+                            tenant, f"e-{tenant}:{step}")
+            await m.lock(_holder(tenant), reservation_id, reason="step_started", connection=c)
+            if fail:
+                raise RuntimeError("crash after lock, before commit")
+        await fenced_write(db_schema.database(), _holder(tenant), write)
+
+    run(start("s0", a.reservation_id, fail=False))
+    with pytest.raises(RuntimeError):
+        run(start("s1", b.reservation_id, fail=True))
+    rows = {r["step_id"]: (r["status"], r["res"]) for r in run(db_schema.fetch(
+        "SELECT s.step_id, s.status, b.status AS res FROM execution_steps s JOIN budget_reservations b"
+        " ON b.reservation_id = s.reservation_id WHERE s.tenant_id = $1", tenant))}
+    assert rows == {f"e-{tenant}:s0": ("running", "locked"), f"e-{tenant}:s1": ("pending", "reserved")}
 
 
 def test_a_disallowed_reason_is_rejected(db_schema, run):
