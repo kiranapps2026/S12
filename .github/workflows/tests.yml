@@ -41,9 +41,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Document consistency (gate vs STATE_TRANSITIONS vs DATA_CONTRACTS, rulings, versions, fences)
-        # Non-blocking while CONF-001/CONF-002 (unclosed fences in DATA_CONTRACTS.md) are open.
-        # Remove continue-on-error once the owner has fixed the fences and re-pinned.
-        continue-on-error: true
         run: python tools/doc_consistency.py
       - name: S12 tracker rules
         run: python tools/s12_tracker.py check

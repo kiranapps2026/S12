@@ -2,13 +2,13 @@
 
 Generated 2026-09-30 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 23 not_started, 0 red_confirmed, 0 in_progress, 0 green, 0 reviewed of 23 milestones. Open: 2 conflicts, 0 stops, 0 defects.
+**Summary:** 23 not_started, 0 red_confirmed, 0 in_progress, 0 green, 0 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 0 defects.
 
 **Next:** M0 Preflight (model: sonnet, complexity: low, status: not_started)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
-| M0 Preflight | B0 | not_started | low | sonnet | ★ | not done | 0 | 2 | 0 | 0 |
+| M0 Preflight | B0 | not_started | low | sonnet | ★ | not done | 0 | 0 | 0 | 0 |
 | M1 Schema: migrations | B1 | not_started | medium-high | sonnet | ★ | partial | 0 | 0 | 0 | 0 |
 | M2 fenced_write(), repositories, transition log | B1 | not_started | medium | sonnet |  | partial | 0 | 0 | 0 | 0 |
 | M3 State machines I: run, step, budget | B1 | not_started | medium | sonnet |  | prototype | 0 | 0 | 0 | 0 |
@@ -38,5 +38,4 @@ None.
 
 ## Open records
 
-- CONF-001 (M0, open): `DATA_CONTRACTS.md` line 131: python code fence (section 2 ExecutionContext) has no closing fence before line 215; text between renders as code. Tool key `C7:unclosed-fence-DATA_CONTRACTS.md-131`
-- CONF-002 (M0, open): `DATA_CONTRACTS.md` line 1240: python code fence (19.1 StepState) has no closing fence before line 1256 (heading 19.2). Key `C7:unclosed-fence-DATA_CONTRACTS.md-1240`
+None.
