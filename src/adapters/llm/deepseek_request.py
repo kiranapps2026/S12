@@ -38,6 +38,9 @@ If the request asks for several DIFFERENT operations one after the other (at mos
 {"steps": [{"intent": "<allowed value>", "parameters": {...}}, ...], "confidence": <number from 0 to 1>}
 with the steps in the order they must happen; put only the values the request states into each
 step's "parameters" and never a value that depends on the result of an earlier step.
+If any operation the request asks for is not among the allowed values, do not guess and do not skip it:
+answer {"intent": "unknown", "confidence": 0.3, "parameters": {}} for the whole request.
+Always answer with the json object; an empty answer is never acceptable.
 Never invent an intent."""
 
 

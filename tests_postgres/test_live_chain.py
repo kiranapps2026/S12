@@ -18,11 +18,22 @@ from tests_postgres.test_live_full_stack import STAGES, _events, _run, _show
 
 
 def _answers(calls):
-    return [json.loads(c[1]) for c in calls]
+    """The model's raw answers as objects. An empty or non-JSON answer (the real model sometimes goes silent) is
+    kept as {} so the test can still say what the SYSTEM did with it: S2 refuses it (`intent_unparseable`)."""
+    answers = []
+    for call in calls:
+        try:
+            parsed = json.loads(call[1])
+        except (TypeError, ValueError):
+            parsed = {}
+        answers.append(parsed if isinstance(parsed, dict) else {})
+    return answers
 
 
 def _intents(answer):
-    return [s["intent"] for s in answer["steps"]] if "steps" in answer else [answer.get("intent")]
+    if "steps" in answer:
+        return [s["intent"] for s in answer["steps"]]
+    return [answer["intent"]] if "intent" in answer else []
 
 
 def _chain(pg, message, *setup):
