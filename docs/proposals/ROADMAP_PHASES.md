@@ -50,8 +50,8 @@ Order matters: A → B → (C, D in parallel) → tag → E → F. Blocking item
 ### Phase C — Event gateway completion (S0 event mode)
 | # | Item |
 |---|---|
-| C1 | Schedule, MCP and API event sources and their authentication (only signed webhooks exist) |
-| C2 | Per-event-type payload schema registry and validation |
+| C1 | Schedule, MCP and API event sources and their authentication (only signed webhooks exist) | **done 2026-09-30**: MCP (signed), API (Bearer) and schedule (interval/daily/weekly) sources, `EVENT_SOURCES.md` |
+| C2 | Per-event-type payload schema registry and validation | **done 2026-09-30**: registered per-event-type payload schemas, unregistered/invalid events refused |
 | C3 | EventRouter and subscription matching (bridge from `event_log` to a run; currently the run is synchronous) |
 | C4 | Event replay after a pause (`event_log` keeps the payload; nothing replays) |
 

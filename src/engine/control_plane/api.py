@@ -23,7 +23,8 @@ from contracts.errors import DependencyUnavailable, UnknownConfirmation
 from contracts.principal import Principal
 from contracts.stage_registry import PIPELINE_SEQUENCE, StageStatus
 from engine.control_plane.pipeline_state_runner import PipelineRunner
-from engine.gateway.webhook import WebhookGateway, WebhookRejected, MAX_BODY_BYTES, event_message
+from engine.gateway.run import run_received_event
+from engine.gateway.webhook import EventGateway, WebhookRejected, MAX_BODY_BYTES
 from engine.stages.s0_entry.handler import EntryRequest
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,43 @@ async def execute_pipeline(
     return _response(await pipeline.run(entry))
 
 
+class EventRequest(BaseModel):
+    """An event posted by an API client. Deliberately has no identity fields."""
+    model_config = {"extra": "forbid"}
+
+    type: str = Field(..., max_length=64)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, max_length=128)
+
+
+def _event_gateway(request: Request) -> EventGateway:
+    gateway: EventGateway | None = getattr(request.app.state, "webhooks", None)
+    if gateway is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "webhooks_unavailable")
+    return gateway
+
+
+async def _signed_body(request: Request) -> bytes:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
+    return await request.body()
+
+
+async def _run_event(gateway: EventGateway, pipeline: PipelineRunner, receive) -> ExecuteResponse:
+    """Receive an event (any source) and run it through the one pipeline. A repeat delivery is
+    acknowledged without running again."""
+    try:
+        received = await receive()
+    except WebhookRejected as rejected:
+        raise HTTPException(rejected.status, rejected.reason)
+    except DependencyUnavailable:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable")
+    if received.duplicate:
+        return ExecuteResponse(status="NORMAL", final_stage="S0", reason="duplicate_event")
+    return _response(await run_received_event(pipeline, gateway, received))
+
+
 @router.post("/webhooks/{source_system}/{endpoint_id}", response_model=ExecuteResponse)
 async def receive_webhook(
     source_system: str,
@@ -129,55 +167,41 @@ async def receive_webhook(
     request: Request,
     pipeline: PipelineRunner = Depends(get_pipeline),
 ) -> ExecuteResponse:
-    """An external event, authenticated by its signing secret (header `X-Signature`).
+    """A provider event, authenticated by its signing secret (header `X-Signature`).
 
-    The tenant, workspace and user come from the endpoint's credential, never from the body.
-    A repeat delivery is acknowledged without running again. The run is the same S0-S11 path
-    as a user request (EVENT_DRIVEN mode)."""
-    gateway: WebhookGateway | None = getattr(request.app.state, "webhooks", None)
-    if gateway is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "webhooks_unavailable")
-    declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
-    body = await request.body()
-    try:
-        received = await gateway.receive(source_system, endpoint_id, body,
-                                         request.headers.get("x-signature"))
-    except WebhookRejected as rejected:
-        raise HTTPException(rejected.status, rejected.reason)
-    except DependencyUnavailable:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable")
-    if received.duplicate:
-        return ExecuteResponse(status="NORMAL", final_stage="S0", reason="duplicate_event")
-    principal, envelope = received.principal, received.envelope
-    entry = EntryRequest(
-        raw_payload={"message": event_message(received)},
-        entry_channel="event",
-        tenant_id=principal.tenant_id,
-        workspace_id=principal.workspace_id,
-        user_id=principal.user_id,
-        membership_id=principal.membership_id,
-        conversation_id=envelope.correlation_id,
-        connection_id=principal.connection_id,
-        resource_scope=principal.resource_scope,
-        idempotency_key=envelope.event_id,
-        event_id=envelope.event_id,
-    )
-    try:
-        result = await pipeline.run(entry)
-    except Exception:
-        await _finish_event(gateway, envelope, "failed")
-        raise
-    await _finish_event(gateway, envelope, "failed" if result.status is StageStatus.ERROR else "processed")
-    return _response(result)
+    The tenant, workspace and user come from the endpoint's credential, never from the body. The
+    event type must be registered and the payload must fit its schema. The run is the same S0-S11
+    path as a user request (EVENT_DRIVEN mode)."""
+    gateway = _event_gateway(request)
+    body = await _signed_body(request)
+    return await _run_event(gateway, pipeline, lambda: gateway.receive(
+        source_system, endpoint_id, body, request.headers.get("x-signature")))
 
 
-async def _finish_event(gateway: WebhookGateway, envelope, status_: str) -> None:
-    try:
-        await gateway.finish(envelope.tenant_id, envelope.event_id, status_)
-    except DependencyUnavailable:
-        logger.warning("could not record processing status of event %s", envelope.event_id)
+@router.post("/mcp/{endpoint_id}", response_model=ExecuteResponse)
+async def receive_mcp_event(
+    endpoint_id: str,
+    request: Request,
+    pipeline: PipelineRunner = Depends(get_pipeline),
+) -> ExecuteResponse:
+    """A tool call reported by an internal MCP server, signed like a webhook (header `X-Signature`)."""
+    gateway = _event_gateway(request)
+    body = await _signed_body(request)
+    return await _run_event(gateway, pipeline, lambda: gateway.receive_mcp(
+        endpoint_id, body, request.headers.get("x-signature")))
+
+
+@router.post("/events", response_model=ExecuteResponse)
+async def receive_api_event(
+    body: EventRequest,
+    request: Request,
+    principal: Principal = Depends(get_principal),
+    pipeline: PipelineRunner = Depends(get_pipeline),
+) -> ExecuteResponse:
+    """An event posted by an authenticated API client. The identity is the API key's, never the body's."""
+    gateway = _event_gateway(request)
+    return await _run_event(gateway, pipeline, lambda: gateway.receive_api(
+        principal, body.model_dump(), request_id=request.headers.get("x-request-id")))
 
 
 @router.post("/confirmations/{confirmation_id}", response_model=ExecuteResponse)

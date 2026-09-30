@@ -12,16 +12,17 @@ class PostgresEventLog:
         self._db = database
 
     async def record(self, *, envelope: EventEnvelope, principal: Principal, idempotency_key: str,
-                     raw_body: bytes) -> StoredEvent:
+                     raw_body: bytes, auth_method: str, auth_principal: str) -> StoredEvent:
         async with self._db.tenant_transaction(envelope.tenant_id) as connection:
             inserted = await connection.fetchval(
                 "INSERT INTO event_log (event_id, tenant_id, workspace_id, event_type, source, source_system,"
                 " payload, payload_ref, payload_checksum, correlation_id, idempotency_key, auth_method,"
-                " auth_principal) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'hmac_sha256',$12)"
+                " auth_principal, schema_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)"
                 " ON CONFLICT (tenant_id, idempotency_key) DO NOTHING RETURNING event_id",
                 envelope.event_id, envelope.tenant_id, envelope.workspace_id, envelope.type,
                 envelope.source, envelope.source_system, raw_body, envelope.payload_ref,
-                envelope.payload_checksum, envelope.correlation_id, idempotency_key, principal.connection_id)
+                envelope.payload_checksum, envelope.correlation_id, idempotency_key, auth_method, auth_principal,
+                envelope.schema_version)
         return StoredEvent(duplicate=inserted is None)
 
     async def finish(self, tenant_id: str, event_id: str, status: str) -> None:

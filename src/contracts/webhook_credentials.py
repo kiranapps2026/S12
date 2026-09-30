@@ -40,7 +40,7 @@ class StoredEvent:
 
 class EventLog(Protocol):
     async def record(self, *, envelope, principal: Principal, idempotency_key: str,
-                     raw_body: bytes) -> StoredEvent:
+                     raw_body: bytes, auth_method: str, auth_principal: str) -> StoredEvent:
         """Store the raw payload once per (tenant, idempotency_key). A repeat is `duplicate`."""
 
     async def finish(self, tenant_id: str, event_id: str, status: str) -> None:

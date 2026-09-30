@@ -18,7 +18,11 @@ from engine.control_plane.pipeline_state_runner import (
 )
 from adapters.llm.deepseek import DeepSeekIntentModel
 from config import Settings
-from engine.gateway.webhook import WebhookGateway
+from adapters.postgres.event_schemas import PostgresEventSchemas
+from adapters.postgres.schedules import PostgresScheduleStore
+from engine.gateway.run import run_received_event
+from engine.gateway.scheduler import EventScheduler
+from engine.gateway.webhook import EventGateway
 from contracts.intent_model import IntentModel
 
 
@@ -26,12 +30,19 @@ def build_authenticator(database: Database) -> PostgresApiKeyAuthenticator:
     return PostgresApiKeyAuthenticator(database)
 
 
-def build_webhook_gateway(database: Database, settings: Settings) -> WebhookGateway | None:
-    """The webhook gateway, or None when WEBHOOK_KEK is not set (webhooks then answer 503)."""
-    if not settings.webhook_kek:
-        return None
-    kek = Kek.from_base64(settings.webhook_kek, settings.webhook_kek_version)
-    return WebhookGateway(PostgresWebhookCredentials(database, kek), PostgresEventLog(database))
+def build_webhook_gateway(database: Database, settings: Settings) -> EventGateway:
+    """The event gateway for every source. Signed sources (webhook, mcp) need WEBHOOK_KEK; without it
+    they answer 503, while API events and schedules still work. Event types must be registered."""
+    credentials = None
+    if settings.webhook_kek:
+        credentials = PostgresWebhookCredentials(
+            database, Kek.from_base64(settings.webhook_kek, settings.webhook_kek_version))
+    return EventGateway(credentials, PostgresEventLog(database), PostgresEventSchemas(database))
+
+
+def build_scheduler(database: Database, gateway: EventGateway, pipeline) -> EventScheduler:
+    return EventScheduler(PostgresScheduleStore(database), gateway,
+                          lambda received: run_received_event(pipeline, gateway, received))
 
 
 def build_intent_model(settings: Settings) -> IntentModel:

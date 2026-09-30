@@ -12,6 +12,7 @@ import pytest
 
 from adapters.postgres.api_keys import PostgresApiKeyAuthenticator
 from adapters.postgres.event_log import PostgresEventLog
+from adapters.postgres.event_schemas import PostgresEventSchemas
 from adapters.postgres.webhook_credentials import Kek, PostgresWebhookCredentials
 from app import create_app
 from bootstrap import build_runner
@@ -23,6 +24,15 @@ from tests_postgres.test_end_to_end import EchoIntentModel
 
 A, B = "tenant-a", "tenant-b"
 KEK = Kek(bytes(range(32)), 1)
+
+
+async def _gateway(db, store):
+    """A gateway whose registry accepts any object for the event types these tests use."""
+    schemas = PostgresEventSchemas(db)
+    for tenant in (A, B):
+        for event_type in ("x", "contact.created"):
+            await schemas.register(tenant, "ghl", event_type, {"type": "object"})
+    return WebhookGateway(store, PostgresEventLog(db), schemas)
 
 
 def _principal(tenant):
@@ -38,7 +48,7 @@ def _post(pg, body, *, tenant=A, source="ghl", setup=None, mutate=None, sign_wit
         endpoint, secret = endpoints[endpoint_from or tenant]
         if mutate:
             secret = await mutate(store, endpoint, secret) or secret
-        gateway = WebhookGateway(store, PostgresEventLog(db))
+        gateway = await _gateway(db, store)
         app = create_app(pipeline=build_runner(db, EchoIntentModel()), webhooks=gateway)
         raw = body if isinstance(body, bytes) else json.dumps(body).encode()
         header = signature.sign((sign_with or secret).encode(), ts or int(time.time()), raw)
@@ -90,7 +100,7 @@ def test_an_event_can_drive_a_capability_end_to_end(pg):
         store = PostgresWebhookCredentials(db, KEK)
         endpoint, secret = await store.issue(_principal(A), "ghl")
         app = create_app(pipeline=build_runner(db, EventModel()),
-                         webhooks=WebhookGateway(store, PostgresEventLog(db)))
+                         webhooks=await _gateway(db, store))
         raw = json.dumps({"type": "contact.created", "id": "e9", "tenant_id": B}).encode()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
             r = await client.post(f"/api/v1/webhooks/ghl/{endpoint}", content=raw, headers={
@@ -118,7 +128,7 @@ def test_another_tenants_secret_does_not_work_on_this_tenants_endpoint(pg):
         ep_a, _ = await store.issue(_principal(A), "ghl")
         _, secret_b = await store.issue(_principal(B), "ghl")
         app = create_app(pipeline=build_runner(db, EchoIntentModel()),
-                         webhooks=WebhookGateway(store, PostgresEventLog(db)))
+                         webhooks=await _gateway(db, store))
         raw = b'{"type":"x","id":"1"}'
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
             return await client.post(f"/api/v1/webhooks/ghl/{ep_a}", content=raw, headers={
@@ -209,7 +219,7 @@ def test_the_event_log_is_isolated_per_tenant_and_dedups_per_tenant(pg):
     async def body(db):
         store = PostgresWebhookCredentials(db, KEK)
         log = PostgresEventLog(db)
-        gw = WebhookGateway(store, log)
+        gw = await _gateway(db, store)
         got = []
         for tenant in (A, B, A):
             ep, secret = await store.issue(_principal(tenant), "ghl") if tenant != A or not got else (ep_a, sec_a)

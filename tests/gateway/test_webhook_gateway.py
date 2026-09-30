@@ -32,12 +32,26 @@ class Store:
         self.verified.append(credential_id)
 
 
+class Schemas:
+    """Fixture EventSchemaStore: every event type is registered with a permissive object schema."""
+    def __init__(self, registered=None):
+        self.registered = registered if registered is not None else {}
+        self.asked = []
+
+    async def latest(self, tenant_id, source_system, event_type):
+        from contracts.event_schema import RegisteredSchema
+        self.asked.append((tenant_id, source_system, event_type))
+        return self.registered.get((source_system, event_type), RegisteredSchema("1", {"type": "object"})) \
+            if self.registered is not None else None
+
+
 class Log:
     def __init__(self):
         self.rows = {}
         self.finished = []
 
-    async def record(self, *, envelope, principal, idempotency_key, raw_body):
+    async def record(self, *, envelope, principal, idempotency_key, raw_body, auth_method="", auth_principal=""):
+        self.keys = getattr(self, "keys", []) + [idempotency_key]
         key = (envelope.tenant_id, idempotency_key)
         duplicate = key in self.rows
         self.rows.setdefault(key, (envelope, raw_body))
@@ -53,7 +67,7 @@ def _receive(body, header="AUTO", *, store=None, log=None, now=NOW, source="ghl"
         body = json.dumps(body).encode()
     if header == "AUTO":
         header = signature.sign(secret, ts, body)
-    gateway = WebhookGateway(store or Store(), log or Log(), clock=lambda: now)
+    gateway = WebhookGateway(store or Store(), log or Log(), Schemas(), clock=lambda: now)
     return asyncio.run(gateway.receive(source, endpoint, body, header))
 
 
@@ -170,12 +184,15 @@ def test_a_repeat_delivery_with_the_same_source_event_id_is_a_duplicate():
     assert _receive({**EVENT, "id": "evt-2"}, log=log).duplicate is False
 
 
-def test_without_a_source_id_an_exact_replay_is_a_duplicate_but_a_new_signature_is_not():
+def test_without_a_source_id_identical_bodies_are_one_event_whatever_the_signature_time():
+    """EVENT_GATEWAY §3.1: `sha256:` + the hash of the raw body is the discriminator."""
     log = Log()
     body = {"type": "ping"}
     assert _receive(body, log=log).duplicate is False
     assert _receive(body, log=log).duplicate is True
-    assert _receive(body, log=log, now=NOW + 5, ts=NOW + 5).duplicate is False
+    assert _receive(body, log=log, now=NOW + 5, ts=NOW + 5).duplicate is True
+    assert _receive({"type": "ping", "n": 2}, log=log).duplicate is False
+    assert log.keys[0].startswith("webhook:ghl:sha256:") and len(log.keys[0]) == len("webhook:ghl:sha256:") + 64
 
 
 def test_the_same_event_id_in_two_tenants_is_not_a_duplicate():
@@ -200,3 +217,9 @@ def test_s0_uses_the_event_id_as_task_id_and_s2_keeps_it():
     assert state.execution_context.task_id == "evt-42"
     result = run_pipeline({"message": "contact.list", "connection_id": "conn-1"}, make_scenario())
     assert result.final_state.execution_context.task_id            # a normal run still gets one at S2
+
+
+def test_the_idempotency_key_is_source_source_system_discriminator():
+    log = Log()
+    _receive(EVENT, log=log)
+    assert log.keys == ["webhook:ghl:evt-1"]

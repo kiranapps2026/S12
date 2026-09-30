@@ -14,6 +14,7 @@ Two ways to build it:
 from __future__ import annotations
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -68,8 +69,21 @@ def _production_lifespan(database_url: str, intent_model: IntentModel | None):
             app.state.pipeline = build_runner(database, model) if model is not None else None
             if app.state.pipeline is None:
                 logger.warning("No intent model configured (DEEPSEEK_API_KEY): /execute answers 503")
+            scheduler_task = None
+            if app.state.pipeline is not None and settings.scheduler_interval_seconds > 0:
+                from bootstrap import build_scheduler
+                from engine.gateway.scheduler import run_forever
+                scheduler_task = asyncio.create_task(run_forever(
+                    build_scheduler(database, app.state.webhooks, app.state.pipeline),
+                    settings.scheduler_interval_seconds))
+                logger.info("Event scheduler started (every %ds)", settings.scheduler_interval_seconds)
             logger.info("SuprAgents API started")
-            yield
+            try:
+                yield
+            finally:
+                if scheduler_task is not None:
+                    scheduler_task.cancel()
+                    await asyncio.gather(scheduler_task, return_exceptions=True)
         except DependencyUnavailable as exc:
             raise StartupError(str(exc)) from None
         finally:

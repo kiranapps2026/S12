@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     # Key-encryption key for webhook signing secrets: 32 random bytes, base64 (never in the database)
     webhook_kek: str = ""
     webhook_kek_version: int = 1
+    # Seconds between scheduler ticks; 0 disables the event scheduler (schedules then never fire)
+    scheduler_interval_seconds: int = 0
 
     # === HTTP ===
     cors_origins: str = ""  # comma-separated allowed origins; empty = no CORS
