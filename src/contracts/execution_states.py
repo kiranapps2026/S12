@@ -20,6 +20,8 @@ Stored values are always the enum ``.value``. Every CHECK constraint on the colu
     pending_confirmations.status       ConfirmationStatus     (C20)
     workers.runtime_type               RuntimeType            (C39, DATA_CONTRACTS §50)
 
+Not persisted: CircuitBreakerState (in memory, C37).
+
 Worker lifecycle states are ``contracts.worker.WorkerStatus`` (S0–S11, unchanged).
 """
 from __future__ import annotations
@@ -154,3 +156,11 @@ class RuntimeType(StrEnum):
     RAG = "rag"
     CODE = "code"
     HUMAN = "human"
+
+
+class CircuitBreakerState(StrEnum):
+    """Per-provider breaker (gate Appendix A.9, C37). In-memory in this phase (ADR-5: persistence deferred).
+    S8 reads the member NAME (``CLOSED``/``OPEN``/``HALF_OPEN``) through the S0–S11 CircuitBreaker protocol."""
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"

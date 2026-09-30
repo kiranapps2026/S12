@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from contracts.execution_states import CircuitBreakerState, ReservationState
 from contracts.step_execution import AdapterResult, StepAdapter, StepCall
 
 logger = logging.getLogger(__name__)
@@ -30,13 +31,13 @@ class ReliabilityGuard:
 
     async def execute(self, call: StepCall, *, reservation_status: str | None) -> AdapterResult:
         # BudgetTracker layer (C31): read-only. No LOCKED reservation, no adapter call.
-        if reservation_status != "locked":
+        if reservation_status != ReservationState.LOCKED.value:
             return AdapterResult("error", False, "budget_not_locked")
         provider = call.binding.provider
         if self._breaker is None:
             return AdapterResult("error", False, "circuit_unavailable")
         try:
-            if self._breaker.state(provider) == "OPEN":
+            if self._breaker.state(provider) == CircuitBreakerState.OPEN.name:
                 return AdapterResult("error", False, "circuit_open")
         except Exception:  # noqa: BLE001 — fail closed
             return AdapterResult("error", False, "circuit_unavailable")

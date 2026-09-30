@@ -21,6 +21,8 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from contracts.execution_states import ExecutionStatus as R
+from contracts.execution_states import StepState as S
 from contracts.plan_hash import canonical_plan_digest
 from contracts.step_execution import (
     AdapterResult, FencedOut, LiveAuthorization, PASS, FAIL, StepCall, StepVerification,
@@ -85,7 +87,7 @@ async def run_execution(deps: StepLoopDeps, tenant_id: str, execution_id: str) -
     if loaded is None:
         raise LookupError(f"no such execution {execution_id}")
     statuses = {sid: row.status for sid, row in loaded.steps.items()}
-    if loaded.run_status != "running":                       # nothing to do (terminal, or not admitted)
+    if loaded.run_status != R.RUNNING.value:                       # nothing to do (terminal, or not admitted)
         return LoopResult(loaded.run_status, None, statuses)
     try:
         return await _run(deps, loaded, statuses, started)
@@ -110,7 +112,7 @@ async def _run(deps, loaded, statuses: dict, started: float) -> LoopResult:
 
     halt: _Halt | None = None
     for step in order:
-        if statuses[step.id] != "pending":
+        if statuses[step.id] != S.PENDING.value:
             continue
         halt = await _run_step(deps, loaded, statuses, step)
         if halt is not None:
@@ -130,10 +132,10 @@ async def _set(deps, loaded, statuses, step, to, *, reason, **fields) -> None:
 async def _cancel_pending(deps, loaded, statuses, reason: str) -> None:
     """Remaining PENDING steps become CANCELLED with the trigger's reason (C22)."""
     for sid, status in list(statuses.items()):
-        if status == "pending":
+        if status == S.PENDING.value:
             await deps.repo.transition_step(loaded.tenant_id, loaded.execution_id, loaded.steps[sid].step_id,
-                                            "cancelled", reason="collateral", terminal_reason=reason)
-            statuses[sid] = "cancelled"
+                                            S.CANCELLED.value, reason="collateral", terminal_reason=reason)
+            statuses[sid] = S.CANCELLED.value
 
 
 async def _skip_dependents(deps, loaded, statuses, failed_id: str) -> None:
@@ -142,11 +144,11 @@ async def _skip_dependents(deps, loaded, statuses, failed_id: str) -> None:
     for step in topological_order(loaded.plan.steps):
         if blocked & set(step.depends_on):
             blocked.add(step.id)
-            if statuses[step.id] == "pending":
+            if statuses[step.id] == S.PENDING.value:
                 await deps.repo.transition_step(loaded.tenant_id, loaded.execution_id,
-                                                loaded.steps[step.id].step_id, "skipped",
+                                                loaded.steps[step.id].step_id, S.SKIPPED.value,
                                                 reason="dependency_failed", terminal_reason="dependency_failed")
-                statuses[step.id] = "skipped"
+                statuses[step.id] = S.SKIPPED.value
 
 
 async def _live(deps, loaded, binding):
@@ -166,28 +168,28 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
 
     # cancellation request (C16): checked before each step; an in-flight call is never interrupted
     if await deps.repo.cancel_requested(tenant, execution):
-        await _set(deps, loaded, statuses, step, "cancelled", reason="cancel_requested",
+        await _set(deps, loaded, statuses, step, S.CANCELLED.value, reason="cancel_requested",
                    terminal_reason="user_cancelled")
-        return _Halt("cancelled", "user_cancelled", "user_cancelled")
+        return _Halt(R.CANCELLED.value, "user_cancelled", "user_cancelled")
 
     # live authorization at the start of every step (C23)
     revoked = await _live(deps, loaded, binding)
     if revoked is not None:
-        await _set(deps, loaded, statuses, step, "cancelled", reason=revoked.reason,
+        await _set(deps, loaded, statuses, step, S.CANCELLED.value, reason=revoked.reason,
                    terminal_reason=revoked.reason)
-        return _Halt("cancelled", revoked.reason, revoked.reason)
+        return _Halt(R.CANCELLED.value, revoked.reason, revoked.reason)
 
     # reserve budget (C3): exhausted -> this step and every remaining one is CANCELLED (C15)
     reservation = await deps.budget.reserve(tenant_id=tenant, user_id=loaded.user_id, execution_id=execution,
                                             step_id=step_id, cost=step.cost)
     if reservation.reservation_id is None:
-        await _set(deps, loaded, statuses, step, "cancelled", reason="budget_exhausted",
+        await _set(deps, loaded, statuses, step, S.CANCELLED.value, reason="budget_exhausted",
                    terminal_reason="budget_exhausted")
-        return _Halt("cancelled", "budget_exhausted", "budget_exhausted")
+        return _Halt(R.CANCELLED.value, "budget_exhausted", "budget_exhausted")
     rid = reservation.reservation_id
 
     # PENDING -> RUNNING, budget RESERVED -> LOCKED
-    await _set(deps, loaded, statuses, step, "running", reason="step_started")
+    await _set(deps, loaded, statuses, step, S.RUNNING.value, reason="step_started")
     await deps.budget.lock(tenant, rid)
 
     verifier = loaded.verifiers.get(step.id)
@@ -196,10 +198,10 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
         # immediately before EVERY adapter call (C23)
         revoked = await _live(deps, loaded, binding)
         if revoked is not None:
-            await _set(deps, loaded, statuses, step, "cancelled", reason=revoked.reason,
+            await _set(deps, loaded, statuses, step, S.CANCELLED.value, reason=revoked.reason,
                        terminal_reason=revoked.reason)
             await _release(deps, loaded, rid)
-            return _Halt("cancelled", revoked.reason, revoked.reason)
+            return _Halt(R.CANCELLED.value, revoked.reason, revoked.reason)
         await deps.repo.mark_dispatched(tenant, execution, step_id, attempt)
         began = time.monotonic()
         result = await deps.guard.execute(
@@ -216,14 +218,14 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
     if result.status == "timeout":
         # probe (M13) is not built: never guess. The budget stays LOCKED (D4).
         await _set(deps, loaded, statuses, step, "timeout", reason="timeout")
-        await _set(deps, loaded, statuses, step, "pending_probe", reason="timeout_probe_queued")
+        await _set(deps, loaded, statuses, step, S.PENDING_PROBE.value, reason="timeout_probe_queued")
         await _set(deps, loaded, statuses, step, "dead_letter", reason="probe_unavailable",
                    error="timeout", attempt=attempt)
         return _Halt("dead_letter", "unknown_unresolved", "run_dead_lettered")
 
     if result.status != "ok":
         # definitive failure (a mutation is never retried without the idempotency ledger)
-        await _set(deps, loaded, statuses, step, "failed", reason="adapter_error", error=result.error_class,
+        await _set(deps, loaded, statuses, step, S.FAILED.value, reason="adapter_error", error=result.error_class,
                    attempt=attempt, duration_ms=elapsed_ms)
         await _release(deps, loaded, rid)
         await _skip_dependents(deps, loaded, statuses, step.id)
@@ -233,13 +235,13 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
     if step.mutation != "R" or verifier is not None:
         verdict = await _verify(deps, verifier, result)
         if verdict == FAIL:
-            await _set(deps, loaded, statuses, step, "failed", reason="verification_failed",
+            await _set(deps, loaded, statuses, step, S.FAILED.value, reason="verification_failed",
                        error="verification_failed", attempt=attempt, duration_ms=elapsed_ms)
             await _release(deps, loaded, rid)
             await _skip_dependents(deps, loaded, statuses, step.id)
             return None
         if verdict != PASS:
-            await _set(deps, loaded, statuses, step, "pending_probe", reason="verification_unknown")
+            await _set(deps, loaded, statuses, step, S.PENDING_PROBE.value, reason="verification_unknown")
             await _set(deps, loaded, statuses, step, "dead_letter", reason="verification_unresolved",
                        error="verification_unknown", attempt=attempt)
             return _Halt("dead_letter", "unknown_unresolved", "run_dead_lettered")
@@ -247,7 +249,7 @@ async def _run_step(deps, loaded, statuses, step) -> _Halt | None:
     undo = None
     if step.inverse and step.mutation in ("W", "D"):
         undo = json.dumps({"inverse_kernel_op_id": step.inverse, "step_id": step_id}, sort_keys=True)
-    await _set(deps, loaded, statuses, step, "completed", reason="step_completed", attempt=attempt,
+    await _set(deps, loaded, statuses, step, S.COMPLETED.value, reason="step_completed", attempt=attempt,
                undo_token=undo, duration_ms=elapsed_ms, data=result.data or None)
     await deps.budget.commit(tenant, rid)
     return None
@@ -266,16 +268,16 @@ async def _verify(deps, verifier, result: AdapterResult) -> str:
 
 async def _finish(deps, loaded, statuses, halt: _Halt | None, started: float) -> LoopResult:
     """Minimal consolidation (the full S13 rules are a later milestone): the run's terminal state."""
-    completed = [s for s in loaded.plan.steps if statuses[s.id] == "completed"]
+    completed = [s for s in loaded.plan.steps if statuses[s.id] == S.COMPLETED.value]
     spent = sum(s.cost for s in completed)
     if halt is not None:
         status, reason = halt.run_status, halt.run_reason
     elif len(completed) == len(loaded.plan.steps):
-        status, reason = "completed", None
+        status, reason = R.COMPLETED.value, None
     elif completed:
-        status, reason = "partial", "step_failed"
+        status, reason = R.PARTIAL.value, "step_failed"
     else:
-        status, reason = "failed", "step_failed"
+        status, reason = R.FAILED.value, "step_failed"
     await deps.repo.transition_run(loaded.tenant_id, loaded.execution_id, status, reason=reason or "consolidated",
                                    terminal_reason=reason, budget_spent=spent,
                                    duration_ms=int((time.monotonic() - started) * 1000))

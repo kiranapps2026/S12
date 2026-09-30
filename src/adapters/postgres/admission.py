@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from adapters.postgres.database import Database
 from contracts import codec
 from contracts.admission import ADMITTED, DENIED, DUPLICATE, AdmissionOutcome
+from contracts.execution_states import ExecutionStatus
 from contracts.pipeline_state import PipelineState
 from contracts.verifier import Verifier
 from engine.stages.plan_steps import plan_step_bindings
@@ -171,4 +172,4 @@ class PostgresExecutionAdmission:
             await c.execute(
                 "UPDATE execution_runs SET status = 'running', started_at = now()"
                 " WHERE tenant_id = $1 AND execution_id = $2", tenant, execution_id)
-        return AdmissionOutcome(ADMITTED, execution_id, "running")
+        return AdmissionOutcome(ADMITTED, execution_id, ExecutionStatus.RUNNING.value)

@@ -5,8 +5,11 @@ a legal edge with one of its listed reasons returns None, anything else raises `
 ``from_state=None`` is a creation: legal only to the machine's initial state with its creation reason.
 Retries are not transitions (C24): there is no RUNNING -> RUNNING edge.
 
-Machines in this module: run (A.1), step (A.2), reservation (A.3). States come from contracts.execution_states;
-values are the stored ``.value`` strings (C28). "Not produced" edges (running -> cancelled/partial, unknown -> ...) are
+Machines: run (A.1), step (A.2), reservation (A.3), lease (A.4), worker (A.5 = STATE_TRANSITIONS §4, validator only),
+dead_letter (A.6), episode (A.7), confirmation (A.8), breaker (A.9). States come from contracts.execution_states and
+contracts.worker.WorkerStatus; values are the stored ``.value`` strings (C28). Worker and confirmation list no reason
+codes, so any non-empty reason is accepted (CONF-012). ``closed=True`` (an episode whose ``closed_at`` is set) rejects
+every episode move; an exhausted episode keeps ``pending_probe`` and is closed, which is not a transition (A.7). "Not produced" edges (running -> cancelled/partial, unknown -> ...) are
 legal for the validator, but no code in this phase writes them (C24).
 """
 from __future__ import annotations
@@ -15,10 +18,16 @@ import types
 from collections.abc import Mapping
 
 from contracts.errors import StateTransitionError
+from contracts.execution_states import CircuitBreakerState as K
+from contracts.execution_states import ConfirmationStatus as C
+from contracts.execution_states import DeadLetterStatus as D
 from contracts.execution_states import ExecutionStatus as R
+from contracts.execution_states import LeaseStatus as L
+from contracts.execution_states import ReconciliationStatus as E
 from contracts.execution_states import ReservationState as B
 from contracts.execution_states import StepState as S
 from contracts.execution_states import StepTerminalReason
+from contracts.worker import WorkerStatus as W
 
 
 class IllegalStateTransition(StateTransitionError):
@@ -76,6 +85,46 @@ _EDGES: Mapping[str, Mapping[tuple[str, str], object]] = types.MappingProxyType(
         (B.LOCKED.value, B.RELEASED.value): frozenset({"step_failed", "probe_not_executed", "no_dispatch_marker",
                                                        "dead_letter_resolved_not_executed"}),
     }),
+    "lease": types.MappingProxyType({
+        (L.ACTIVE.value, L.ACTIVE.value): frozenset({"renewed"}),       # only while usable; new fence token (C26)
+        (L.ACTIVE.value, L.EXPIRED.value): frozenset({"ttl_elapsed"}),
+        (L.ACTIVE.value, L.RELEASED.value): frozenset({"work_complete", "fenced_out", "run_terminal"}),
+    }),
+    "worker": types.MappingProxyType({
+        (W.REGISTERED.value, W.ACTIVE.value): ANY_REASON,
+        (W.REGISTERED.value, W.TERMINATED.value): ANY_REASON,
+        (W.ACTIVE.value, W.DRAINING.value): ANY_REASON,
+        (W.ACTIVE.value, W.TERMINATED.value): ANY_REASON,
+        (W.DRAINING.value, W.DRAINED.value): ANY_REASON,
+        (W.DRAINING.value, W.ACTIVE.value): ANY_REASON,
+        (W.DRAINED.value, W.TERMINATED.value): ANY_REASON,
+        (W.DRAINED.value, W.ACTIVE.value): ANY_REASON,
+    }),
+    "dead_letter": types.MappingProxyType({
+        (D.PENDING.value, D.RETRYING.value): frozenset({"retry_started"}),
+        (D.PENDING.value, D.RESOLVED.value): frozenset({"human_resolved"}),
+        (D.RETRYING.value, D.RESOLVED.value): frozenset({"retry_resolved"}),
+        (D.RETRYING.value, D.PENDING.value): frozenset({"retry_inconclusive"}),
+        (D.RETRYING.value, D.ABANDONED.value): frozenset({"abandoned_after_retries"}),
+    }),
+    "episode": types.MappingProxyType({
+        (E.PENDING_PROBE.value, E.RECONCILING.value): frozenset({"attempt_started"}),
+        (E.RECONCILING.value, E.CONFIRMED_SUCCESS.value): frozenset({"executed_success", "verified_pass", "ledger_hit"}),
+        (E.RECONCILING.value, E.CONFIRMED_FAILURE.value): frozenset({"executed_failure", "verified_fail", "not_executed",
+                                                                    "ledger_hit_failure"}),
+        (E.RECONCILING.value, E.PENDING_PROBE.value): frozenset({"inconclusive"}),
+    }),
+    "confirmation": types.MappingProxyType({
+        (C.PENDING.value, C.CONSUMED.value): ANY_REASON,
+        (C.PENDING.value, C.REJECTED.value): ANY_REASON,
+        (C.PENDING.value, C.EXPIRED.value): ANY_REASON,
+    }),
+    "breaker": types.MappingProxyType({
+        (K.CLOSED.value, K.OPEN.value): frozenset({"failure_threshold"}),
+        (K.OPEN.value, K.HALF_OPEN.value): frozenset({"recovery_timeout"}),
+        (K.HALF_OPEN.value, K.CLOSED.value): frozenset({"trial_success"}),
+        (K.HALF_OPEN.value, K.OPEN.value): frozenset({"trial_failure", "trial_inconclusive"}),
+    }),
 })
 
 # Initial state and creation reason per machine (C24); the reservation's creation reason is its state name.
@@ -83,6 +132,10 @@ _INITIAL: Mapping[str, tuple[str, str]] = types.MappingProxyType({
     "run": (R.PENDING.value, "created"),
     "step": (S.PENDING.value, "created"),
     "reservation": (B.RESERVED.value, B.RESERVED.value),
+    "lease": (L.ACTIVE.value, "acquired"),
+    "dead_letter": (D.PENDING.value, "created"),
+    "episode": (E.PENDING_PROBE.value, "opened"),           # logged none -> pending_probe (C18)
+    "confirmation": (C.PENDING.value, "created"),
 })
 
 _TERMINAL_REASONS = frozenset(r.value for r in StepTerminalReason)
@@ -94,7 +147,11 @@ def validate(machine: str, from_state: str | None, to_state: str, *, reason: str
         raise IllegalStateTransition(f"unknown state machine {machine!r}")
     if not reason:
         raise IllegalStateTransition(f"{machine}: a transition needs a reason code (C24)")
+    if closed and machine == "episode":
+        raise IllegalStateTransition("episode: no transition after closed_at (A.7)")
     if from_state is None:
+        if machine not in _INITIAL:
+            raise IllegalStateTransition(f"{machine}: rows are not created through the transition log")
         if _INITIAL[machine] != (to_state, reason):
             raise IllegalStateTransition(f"{machine}: creation must be {_INITIAL[machine]}, got ({to_state}, {reason})")
         return

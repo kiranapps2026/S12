@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from adapters.postgres.budget import AVAILABLE_SQL
 from adapters.postgres.database import Database
+from contracts.execution_states import ReservationState
 from engine.stages.s12_execute import transitions
 
 
@@ -42,7 +43,7 @@ class PostgresBudgetReserver:
                 " VALUES ($1,$2,$3,$4,$5,$6,'reserved')", reservation_id, tenant_id, user_id, execution_id, step_id, cost)
             await c.execute("UPDATE execution_steps SET reservation_id = $3 WHERE tenant_id = $1 AND step_id = $2",
                             tenant_id, step_id, reservation_id)
-            return Reservation(reservation_id, "reserved")
+            return Reservation(reservation_id, ReservationState.RESERVED.value)
 
     async def status(self, tenant_id: str, reservation_id: str) -> str | None:
         async with self._db.tenant_transaction(tenant_id) as c:
@@ -50,13 +51,13 @@ class PostgresBudgetReserver:
                                     tenant_id, reservation_id)
 
     async def lock(self, tenant_id: str, reservation_id: str) -> None:
-        await self._move(tenant_id, reservation_id, "locked", "locked_at")
+        await self._move(tenant_id, reservation_id, ReservationState.LOCKED.value, "locked_at")
 
     async def commit(self, tenant_id: str, reservation_id: str) -> None:
-        await self._move(tenant_id, reservation_id, "committed", "committed_at")
+        await self._move(tenant_id, reservation_id, ReservationState.COMMITTED.value, "committed_at")
 
     async def release(self, tenant_id: str, reservation_id: str) -> None:
-        await self._move(tenant_id, reservation_id, "released", "released_at")
+        await self._move(tenant_id, reservation_id, ReservationState.RELEASED.value, "released_at")
 
     async def _move(self, tenant_id: str, reservation_id: str, to: str, stamp: str) -> None:
         async with self._db.tenant_transaction(tenant_id) as c:

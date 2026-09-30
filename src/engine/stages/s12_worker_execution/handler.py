@@ -15,6 +15,7 @@ import logging
 import time
 import uuid
 
+from contracts.execution_states import ExecutionStatus
 from contracts.pipeline_state import PipelineState
 from contracts.stage_registry import StageOutcome
 from contracts.errors import ProviderTimeoutError, LeaseAcquisitionError
@@ -44,7 +45,7 @@ class InMemoryWorkerProxy(WorkerProxy):
         """Simulate execution."""
         logger.info("Executing via worker %s: manifest=%s", self.worker_id, manifest)
         return {
-            "result": {"status": "completed"},
+            "result": {"status": ExecutionStatus.COMPLETED.value},
             "tokens_used": 100,
             "duration_ms": 50,
         }
@@ -88,7 +89,7 @@ async def handle(state: PipelineState) -> PipelineState:
 
         execution_result = {
             "execution_id": manifest.execution_id,
-            "status": "completed",
+            "status": ExecutionStatus.COMPLETED.value,
             "result": raw_result["result"],
             "tokens_used": raw_result["tokens_used"],
             "duration_ms": duration_ms,
