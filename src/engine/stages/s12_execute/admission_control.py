@@ -1,8 +1,9 @@
-"""Per-step admission control (gate §8 step 1, C5, C30; WORKER_LIFECYCLE §10, §11; ruling CONF-017).
+"""Per-step admission control (gate §8 step 1, C5, C30, C35; WORKER_LIFECYCLE §10, §11; rulings CONF-017, CONF-032).
 
 ``evaluate`` is a pure predicate over a snapshot of live state: gates 1–11 in order, the first failing gate decides.
 It reserves nothing and holds no lease (admission is stateless), so it may be evaluated any number of times. Gate 7
-(worker capacity) is a QUEUE, never a REJECT (C5); gates 9 and 11 (backpressure) are a DELAY (CONF-017). ``admit_step``
+(worker capacity) is a QUEUE, never a REJECT (C5); gates 9 and 11 (backpressure, CONF-017) and gate 8 (an open
+provider circuit: a transient outage never cancels a run, C35, CONF-032) are a DELAY. ``admit_step``
 bounds QUEUE/DELAY and ends them as REJECT ``admission_exhausted``; ``reject_outcome`` maps a REJECT to the run's path
 by ``gate_failed`` (C30).
 
@@ -63,7 +64,7 @@ _GATES = (
     ("5", "mode_allowed", False, "mode_not_allowed", _A.REJECT),
     ("6", "provider_allowed", False, "provider_blocked", _A.REJECT),
     ("7", "worker_capacity_available", False, "worker_at_capacity", _A.QUEUE),
-    ("8", "circuit_open", True, "provider_circuit_open", _A.REJECT),
+    ("8", "circuit_open", True, "provider_circuit_open", _A.DELAY),
     ("9", "db_pool_pressure", True, "db_pool_pressure", _A.DELAY),
     ("10", "budget_available", False, "budget_exhausted", _A.REJECT),
     ("11", "system_overloaded", True, "system_overloaded", _A.DELAY),

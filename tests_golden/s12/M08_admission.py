@@ -3,7 +3,8 @@
 Gate v10: §8 steps 1–3, C5 (a worker at capacity is not selectable), C30 (REJECT mapped by gate_failed; gate 7 is a
 QUEUE, never a REJECT; every decision is a ledger event), WORKER_LIFECYCLE §10 (gates 1–11 in order, first reject
 wins, admission is stateless), §11 (AdmissionDecision), §13 (locality scoring is deterministic and advisory);
-rulings CONF-015 (the §11 contract, not the frozen contracts/worker.py one) and CONF-017 (gates 9 and 11 are DELAY).
+rulings CONF-015 (the §11 contract, not the frozen contracts/worker.py one), CONF-017 (gates 9 and 11 are DELAY) and
+CONF-032 (gate 8, an open provider circuit, is a DELAY: a transient outage never cancels a run, C35).
 
 Interface this file fixes:
   * ``contracts.step_admission.AdmissionDecision(status, reason=None, detail=None, retry_after_ms=None,
@@ -14,8 +15,8 @@ Interface this file fixes:
       ``workspace_active``, ``mode_allowed``, ``provider_allowed``, ``worker_capacity_available``, ``circuit_open``,
       ``db_pool_pressure``, ``budget_available``, ``system_overloaded``, ``degrade`` (default False);
       ``evaluate(snapshot) -> AdmissionDecision`` — pure; first failing gate decides; gate 7 → QUEUE with reason
-      ``worker_at_capacity`` and a ``retry_after_ms``; gates 9 (``db_pool_pressure``) and 11 (``system_overloaded``) →
-      DELAY with that reason and a ``retry_after_ms`` (backpressure, §11; ruling CONF-017); any other failing gate → REJECT
+      ``worker_at_capacity`` and a ``retry_after_ms``; gates 8 (``provider_circuit_open``), 9 (``db_pool_pressure``) and 11
+      (``system_overloaded``) → DELAY with that reason and a ``retry_after_ms`` (§11; rulings CONF-017, CONF-032); any other failing gate → REJECT
       with the §10 reason; all passing → ACCEPT, or DEGRADE when ``degrade``;
       ``async admit_step(snapshot_source, *, ledger, max_attempts, sleep) -> AdmissionDecision`` — calls
       ``await snapshot_source()`` then ``evaluate``; QUEUE/DELAY → ``await sleep(retry_after_ms / 1000)`` and again, at
@@ -96,11 +97,11 @@ def test_degrade_when_all_pass_and_degraded():
 def test_each_gate_rejects_with_its_reason(gate, field, value, reason):
     from engine.stages.s12_execute.admission_control import evaluate
     decision = evaluate(_ok(**{field: value}))
-    expected_status = {"7": "QUEUE", "9": "DELAY", "11": "DELAY"}.get(gate, "REJECT")
+    expected_status = {"7": "QUEUE", "8": "DELAY", "9": "DELAY", "11": "DELAY"}.get(gate, "REJECT")
     assert (decision.status, decision.gate_failed, decision.reason) == (expected_status, gate, reason)
 
 
-@pytest.mark.parametrize("field", ["db_pool_pressure", "system_overloaded"])
+@pytest.mark.parametrize("field", ["circuit_open", "db_pool_pressure", "system_overloaded"])
 def test_backpressure_is_a_delay_with_retry_after_never_a_reject(field):
     from engine.stages.s12_execute.admission_control import evaluate
     decision = evaluate(_ok(**{field: True}))
@@ -195,7 +196,7 @@ def test_persistent_backpressure_ends_as_admission_exhausted():
 @pytest.mark.parametrize("gate,expected", [
     ("1", ("kill_switch_engaged", "revocation")), ("3", ("authorization_revoked", "revocation")),
     ("10", ("budget_exhausted", "budget")), ("2", ("admission_rejected", "consolidate")),
-    ("6", ("admission_rejected", "consolidate")), ("8", ("admission_rejected", "consolidate"))])
+    ("6", ("admission_rejected", "consolidate")), ("5", ("admission_rejected", "consolidate"))])
 def test_reject_is_mapped_by_gate(gate, expected):
     from engine.stages.s12_execute.admission_control import evaluate, reject_outcome
     field, value = next((g[1], g[2]) for g in GATES if g[0] == gate)
