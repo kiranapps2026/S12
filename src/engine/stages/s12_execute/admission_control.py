@@ -111,11 +111,12 @@ async def admit_step(snapshot_source: Callable[[], Awaitable[AdmissionSnapshot]]
 
 
 def reject_outcome(decision: AdmissionDecision) -> tuple[str, str]:
-    """(step terminal reason, path) for a REJECT (C30); ``admission_exhausted`` is never a gate's own outcome."""
+    """(step terminal reason, path) for a REJECT (C30). An exhausted QUEUE/DELAY keeps its own terminal reason
+    ``admission_exhausted`` (§8 step 1, C22; DEF-005) and, like any non-revocation REJECT, the run is consolidated."""
     if decision.status != _A.REJECT:
         raise ValueError(f"only a REJECT has an outcome, got {decision.status}")
     if decision.reason == _R.ADMISSION_EXHAUSTED:
-        return _OTHER_REJECT
+        return (_R.ADMISSION_EXHAUSTED, CONSOLIDATE)
     return _REJECT_OUTCOMES.get(decision.gate_failed, _OTHER_REJECT)
 
 
