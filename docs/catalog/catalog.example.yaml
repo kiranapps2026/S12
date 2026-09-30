@@ -1,0 +1,53 @@
+# Registry catalog (Phase D1d). Copy to docs/catalog/catalog.yaml, replace the example operations with your real ones,
+# then:   python tools/load_catalog.py docs/catalog/catalog.yaml            (dry run: validates and prints the plan)
+#         python tools/load_catalog.py docs/catalog/catalog.yaml --apply    (one transaction)
+#
+# The versions below are pinned into every plan S11 produces. Whenever anything else in this file changes, change them too
+# (the loader refuses otherwise): a plan made under the old registry must not silently run against the new one.
+versions:
+  capability: cap-1
+  binding: bind-1
+  risk_policy: risk-1
+  authorization: auth-1
+  worker_runtime: rt-1
+  model: model-1
+
+# One entry per operation the provider adapter can perform.
+#   mutation        R read, W write, D delete, IRREVERSIBLE (cannot be undone)
+#   risk_floor      0-1: the plan's risk is never lower than this
+#   cost            budget units one execution reserves (>= 1)
+#   retry_safety    safe | idempotent | never  (mutations are never retried by S12 whatever is written here)
+#   inverse         the operation that undoes this one (optional; must exist in this file)
+#   observation     REQUIRED for every W / D / IRREVERSIBLE operation that is PRODUCTION_ENABLED: the read that shows the
+#                   effect. method = a read the adapter implements; identifier_field = the field of the adapter's result
+#                   that names the resource; expects_absent = true for deletes (the resource must be gone).
+#                   An operation with no read-back cannot be verified: leave it DRAFT instead of inventing one.
+kernel_ops:
+  - {id: crm.contact_list,   mutation: R, risk_floor: 0.1, cost: 1, timeout_seconds: 30, retry_safety: safe}
+  - id: crm.contact_create
+    mutation: W
+    risk_floor: 0.2
+    cost: 3
+    timeout_seconds: 30
+    retry_safety: never
+    inverse: crm.contact_delete
+    observation: {method: get_contact, identifier_field: id}
+  - id: crm.contact_delete
+    mutation: D
+    risk_floor: 0.5
+    cost: 5
+    timeout_seconds: 30
+    retry_safety: never
+    observation: {method: get_contact, identifier_field: id, expects_absent: true}
+
+# What users can ask for. `intent` is the name S2/S3 match on; `mutation` must equal its operation's.
+capabilities:
+  - {id: cap.contact.list,   name: List contacts,  intent: contact.list,   mutation: R, risk_floor: 0.1, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.contact.create, name: Create contact, intent: contact.create, mutation: W, risk_floor: 0.2, risk_rule: 0.0, risk_implied: 0.0}
+  - {id: cap.contact.delete, name: Delete contact, intent: contact.delete, mutation: D, risk_floor: 0.5, risk_rule: 0.0, risk_implied: 0.0}
+
+# Which adapter performs an operation for a capability. `engine_module` / `adapter_class` name the S12 adapter (M10).
+bindings:
+  - {id: bind.contact.list,   capability: cap.contact.list,   kernel_op: crm.contact_list,   provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.contact.create, capability: cap.contact.create, kernel_op: crm.contact_create, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}
+  - {id: bind.contact.delete, capability: cap.contact.delete, kernel_op: crm.contact_delete, provider: crm, engine_module: engines.crm, adapter_class: CrmAdapter}

@@ -63,3 +63,19 @@ nobody asked for, and behaviour across many runs (one run of each case is not a 
 operation needs another's result. The guards are the confirmation text (which lists the chain in order) and,
 for chains without a delete or high risk, the user's own request. M2b (input/output schemas) is what makes
 this checkable.
+
+## Loading the registry (the loader)
+
+The repo had no way to put a real catalog into a database. `tools/load_catalog.py` does that from a YAML file
+(`docs/catalog/catalog.example.yaml` is the template; copy it to `docs/catalog/catalog.yaml` and describe your real operations):
+
+```
+python tools/load_catalog.py docs/catalog/catalog.yaml            # dry run: validates and shows what would change
+python tools/load_catalog.py docs/catalog/catalog.yaml --apply    # one transaction
+python tools/registry_readiness.py                                  # must report 0 blocked
+```
+
+Rules it enforces: every production write/delete/irreversible operation names `observation.method` (or stays `DRAFT`);
+references and mutations agree; an intent is offered by one production capability only; nothing is deleted (retire with
+`truth_state: DEPRECATED`); and `versions` must change whenever anything else does, because every plan pins them.
+A fresh database has an EMPTY `registry_versions`, so nothing can run through S11 until a catalog is loaded.
