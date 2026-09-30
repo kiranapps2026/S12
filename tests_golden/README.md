@@ -38,9 +38,11 @@ The 30 cases that already pass cover schema the tag already has (migrations 009/
 trigger, `execution_plans`, the run/step status CHECKs apart from the enum import, no cascades, key types). Plan §5.2
 says "a golden test that already passes is rejected"; for M1 that rule is applied per file, not per case (CONF-010).
 
-"Reference implementation" means a throw-away `contracts/execution_states.py` plus migration `015` written only to prove
-that every case can pass together (a golden set that cannot all pass would force a STOP). It was run in a scratch
-worktree and deleted; nothing of it is in `src/`.
+"Reference implementation" means throw-away code (enums, migration `015`, `fencing.py`, `transition_log.py`,
+`settings.py`, a `transitions.py` generated from Appendix A, the circuit breaker on the enum, and the other prototype
+files deleted) written only to prove that every case can pass together (a golden set that cannot all pass would force a
+STOP). It ran in a scratch worktree and was deleted; nothing of it is in `src/`. It does not show that the prototype
+tests in `tests/` stay green; that is Fable's job under CONF-011.
 
 ## Interfaces fixed by M01 (what Fable must build)
 
