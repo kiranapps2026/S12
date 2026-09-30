@@ -21,3 +21,5 @@ MILESTONE M6 REACHED at 6091a87 except owner rows S12-PIN (B2 unpinned) and S12-
 MILESTONE M7 REACHED at 62f8ebb except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
 6e49b7a | M8 | full | 15/17 | admission controller and selection; golden M8 39/39, sabotage 4/4; agent 27 (mutation-checked); tests 836, tests_postgres 330; note for M12: retry delays to settings (§21 S1)
 MILESTONE M8 REACHED at 6e49b7a except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002)
+24e2296 | M8a | full | 16/18 | filters, selection reader, quota settings; golden M8a 49/49, x5, sabotage caught; agent 35 (mutation-checked); tests 836, tests_postgres 330 (schema audit: date_part, not extract FROM); CONF-019, CONF-020, STOP-003 opened
+MILESTONE M8a REACHED at 24e2296 except owner rows S12-PIN (B2 unpinned) and S12-REC (STOP-001, STOP-002, STOP-003; CONF-019, CONF-020) — ★ STOP for owner review
