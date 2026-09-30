@@ -53,7 +53,7 @@ async def handle(entry: EntryRequest) -> PipelineState:
         workspace_id=entry.workspace_id,
         user_id=entry.user_id,
         membership_id=entry.membership_id,
-        conversation_id=entry.conversation_id,
+        conversation_id=entry.conversation_id or str(uuid.uuid4()),   # R-BA: never empty (S12 entry needs one)
         connection_id=entry.connection_id,
         idempotency_key=entry.idempotency_key,
         task_id=entry.event_id,          # EVENT_DRIVEN: the gateway's event id; else assigned at S2

@@ -103,10 +103,22 @@ def test_item_1a_every_value_execution_runs_needs_must_exist(field):
     assert _check(_ctx(_state(), **{field: ""})) == (False, "context_incomplete")
 
 
-def test_item_1a_a_run_without_a_conversation_is_denied():
+def test_item_1a_a_request_without_a_conversation_gets_one_from_s0_and_is_admitted():
+    """R-BA: S0 generates a conversation id when the caller gives none, so gate item 1a no longer
+    denies every conversation-less API request."""
     s = asyncio.run(build_pipeline(make_pipeline_deps(make_scenario())).run(
         make_entry({"message": "x", "connection_id": "c"}))).final_state
-    assert _check(s) == (False, "context_incomplete")
+    assert s.execution_context.conversation_id
+    assert _check(s) == (True, None)
+
+
+def test_s0_keeps_a_supplied_conversation_and_never_reuses_a_generated_one():
+    from engine.stages.s0_entry.handler import handle as s0
+    supplied = asyncio.run(s0(make_entry({"message": "x", "conversation_id": "conv-9"})))
+    a = asyncio.run(s0(make_entry({"message": "x"})))
+    b = asyncio.run(s0(make_entry({"message": "x"})))
+    assert supplied.execution_context.conversation_id == "conv-9"
+    assert a.execution_context.conversation_id and a.execution_context.conversation_id != b.execution_context.conversation_id
 
 
 def test_item_2_authorisation_must_be_recorded_and_match_the_manifest():

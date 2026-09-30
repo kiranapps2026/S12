@@ -28,11 +28,11 @@ Order matters: A → B → (C, D in parallel) → tag → E → F. Blocking item
 | # | Item | Who |
 |---|---|---|
 | A1 **[B]** | ~~Update `$expected` in `tools/owner_verify.ps1`~~ done on the owner's instruction (equals the certifier hash and `docs/gates/owner_certify.sha256`); it must be updated again after any certifier edit | done |
-| A2 **[B]** | Rule R-AA (S0.1 pause check), the S1 reference-resolution choices | owner |
-| A3 **[B]** | Rule E1–E5 (webhook credential columns, `event_log` payload, synchronous run, no RLS on credentials, webhook-only sources) | owner |
-| A4 **[B]** | Ratify or overrule the working M2 rulings R-AB…R-AL (`M2_RULINGS.md`) | owner |
-| A5 | Accept or amend the gate amendments G1–G8 (`S12_MULTI_STEP.md`) and the schema deviations of migrations 006, 008, 009, 010 | gate owner |
-| A6 **[B]** | Decide item 1a: the gate denies every run without a `conversation_id`, the API does not require one. Either S0 supplies one or the gate drops it | owner |
+| A2 **[B]** | Rule R-AA (S0.1 pause check), the S1 reference-resolution choices | ruled (R-AA, R-AM…R-AS), owner applies runbook text |
+| A3 **[B]** | Rule E1–E5 (webhook credential columns, `event_log` payload, synchronous run, no RLS on credentials, webhook-only sources) | ruled (R-AT…R-AX) |
+| A4 **[B]** | Ratify or overrule the working M2 rulings R-AB…R-AL (`M2_RULINGS.md`) | working rulings R-AB…R-AL stand unless overruled |
+| A5 | Accept or amend the gate amendments G1–G8 (`S12_MULTI_STEP.md`) and the schema deviations of migrations 006, 008, 009, 010 | ruled (R-AY, R-AZ); owner applies to gate/DATABASE.md and re-pins |
+| A6 **[B]** | Decide item 1a: the gate denies every run without a `conversation_id`, the API does not require one. Either S0 supplies one or the gate drops it | ruled and implemented (R-BA): S0 generates a conversation id |
 | A7 | Decide whether S12 prototype code stays in this tree before the tag (see §4) or moves to a separate branch | owner |
 
 ### Phase B — S0–S11 production readiness and proof
