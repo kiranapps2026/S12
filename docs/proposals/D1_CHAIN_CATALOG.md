@@ -34,6 +34,8 @@ SELECT kernel_op_id, mutation FROM kernel_ops
 ```
 
 Every row returned is an operation that S12 will refuse to run. An empty result is the D1d exit condition.
+`DATABASE_URL=... python tools/registry_readiness.py` runs this check (exit 1 while any operation is blocked) and states the
+rules for filling the registry.
 
 ## What is proved, and what is not
 
