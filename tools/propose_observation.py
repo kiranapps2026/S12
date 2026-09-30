@@ -53,6 +53,19 @@ def propose(ops: list[dict], all_ids: set[str]) -> list[str]:
     return lines
 
 
+def database_url() -> str | None:
+    """DATABASE_URL from the environment, else from the repo's .env (never printed)."""
+    if os.environ.get("DATABASE_URL"):
+        return os.environ["DATABASE_URL"]
+    env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8"):
+            key, _, value = line.strip().partition("=")
+            if key.strip() == "DATABASE_URL" and value.strip():
+                return value.strip().strip("\"'")
+    return None
+
+
 async def main(url: str) -> int:
     connection = await asyncpg.connect(normalize_url(url))
     try:
@@ -74,7 +87,7 @@ async def main(url: str) -> int:
 
 
 if __name__ == "__main__":
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        sys.exit("set DATABASE_URL")
-    sys.exit(asyncio.run(main(database_url)))
+    url = database_url()
+    if not url:
+        sys.exit("DATABASE_URL is not set in the environment or in .env")
+    sys.exit(asyncio.run(main(url)))
