@@ -29,8 +29,8 @@ class PostgresBudgetReserver:
         async with self._db.tenant_transaction(tenant_id) as c:
             await c.fetchval("SELECT 1 FROM tenants WHERE tenant_id = $1 FOR UPDATE", tenant_id)
             live = await c.fetchrow(
-                "SELECT reservation_id, status FROM budget_reservations WHERE step_id = $1 AND status <> 'released'",
-                step_id)
+                "SELECT reservation_id, status FROM budget_reservations"
+                " WHERE tenant_id = $1 AND step_id = $2 AND status <> 'released'", tenant_id, step_id)
             if live is not None:
                 return Reservation(live["reservation_id"], live["status"])
             available = await c.fetchval(AVAILABLE_SQL, tenant_id)
@@ -40,12 +40,14 @@ class PostgresBudgetReserver:
             await c.execute(
                 "INSERT INTO budget_reservations (reservation_id, tenant_id, user_id, execution_id, step_id, cost, status)"
                 " VALUES ($1,$2,$3,$4,$5,$6,'reserved')", reservation_id, tenant_id, user_id, execution_id, step_id, cost)
-            await c.execute("UPDATE execution_steps SET reservation_id = $2 WHERE step_id = $1", step_id, reservation_id)
+            await c.execute("UPDATE execution_steps SET reservation_id = $3 WHERE tenant_id = $1 AND step_id = $2",
+                            tenant_id, step_id, reservation_id)
             return Reservation(reservation_id, "reserved")
 
     async def status(self, tenant_id: str, reservation_id: str) -> str | None:
         async with self._db.tenant_transaction(tenant_id) as c:
-            return await c.fetchval("SELECT status FROM budget_reservations WHERE reservation_id = $1", reservation_id)
+            return await c.fetchval("SELECT status FROM budget_reservations WHERE tenant_id = $1 AND reservation_id = $2",
+                                    tenant_id, reservation_id)
 
     async def lock(self, tenant_id: str, reservation_id: str) -> None:
         await self._move(tenant_id, reservation_id, "locked", "locked_at")
@@ -59,9 +61,10 @@ class PostgresBudgetReserver:
     async def _move(self, tenant_id: str, reservation_id: str, to: str, stamp: str) -> None:
         async with self._db.tenant_transaction(tenant_id) as c:
             current = await c.fetchval(
-                "SELECT status FROM budget_reservations WHERE reservation_id = $1 FOR UPDATE", reservation_id)
+                "SELECT status FROM budget_reservations WHERE tenant_id = $1 AND reservation_id = $2 FOR UPDATE",
+                tenant_id, reservation_id)
             if current is None:
                 raise transitions.StateTransitionError(f"unknown reservation {reservation_id}")
             transitions.check_budget(current, to)
-            await c.execute(f"UPDATE budget_reservations SET status = $2, {stamp} = now() WHERE reservation_id = $1",
-                            reservation_id, to)
+            await c.execute(f"UPDATE budget_reservations SET status = $3, {stamp} = now()"
+                            " WHERE tenant_id = $1 AND reservation_id = $2", tenant_id, reservation_id, to)

@@ -9,3 +9,4 @@ Status: `open`, `fixed` (fix commit recorded, golden test added or extended), `w
 
 | ID | Caused by | Status | Opened | Found in | Severity | Description and reproduction | Fix commit / test |
 |---|---|---|---|---|---|---|---|
+| DEF-001 | M6 | open | 2026-09-30 | M2 (reading prototype) | major | `src/adapters/postgres/admission.py:157-169` logs creation rows with reason `admitted` (Appendix A: `created`) and run `pending → running` with `admission_complete` (A.1: `admitted`); I5 (`tests_golden/fixtures/invariants.py`) rejects both. Prototype code, reworked in M6 | fix in M6 with the admission rework |

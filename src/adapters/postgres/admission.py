@@ -169,6 +169,6 @@ class PostgresExecutionAdmission:
                 " ($1,'run',$2,'pending','running','admission_complete',$3)",
                 tenant, execution_id, runtime_instance_id)
             await c.execute(
-                "UPDATE execution_runs SET status = 'running', started_at = now() WHERE execution_id = $1",
-                execution_id)
+                "UPDATE execution_runs SET status = 'running', started_at = now()"
+                " WHERE tenant_id = $1 AND execution_id = $2", tenant, execution_id)
         return AdmissionOutcome(ADMITTED, execution_id, "running")
