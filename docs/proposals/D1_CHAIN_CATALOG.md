@@ -36,6 +36,10 @@ SELECT kernel_op_id, mutation FROM kernel_ops
 Every row returned is an operation that S12 will refuse to run. An empty result is the D1d exit condition.
 `DATABASE_URL=... python tools/registry_readiness.py` runs this check (exit 1 while any operation is blocked) and states the
 rules for filling the registry.
+`DATABASE_URL=... python tools/propose_observation.py > observation_proposal.sql` prints proposed `UPDATE` statements (read-only:
+nothing is applied). Create/update/delete operations named `<domain>.<noun>_<verb>` get `get_<noun>` with identifier `id`, deletes
+expect absence, a create gets its delete as `inverse`; everything else is marked `NEEDS OWNER` and stays blocked until the
+owner names a read that really shows its effect.
 
 ## What is proved, and what is not
 
