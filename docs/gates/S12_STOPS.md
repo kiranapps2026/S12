@@ -10,3 +10,4 @@ A milestone cannot be marked `green` or `reviewed` while one of its STOPs is `op
 
 | ID | Milestone | Status | Opened | Failing test / check | Gate section | Fable's reasoning (short) | Ruling (by, date) | Applied in commit |
 |---|---|---|---|---|---|---|---|---|
+| STOP-001 | M1 | open | 2026-09-30 | S12-PIN (`owner_certify_s12.py --milestone M1 --fast`: 4/6 PASS) | plan §5.6, S12_AUTOPILOT guardrails | `docs/gates/s12_pins.sha256` and `owner_certify_s12.sha256` do not exist on `origin/s12-work` (last commit `bca563b`): the golden set is unpinned, and pinning is owner-only | owner: run `tools\owner_pin_s12.ps1`, then mark this row `applied` | |
