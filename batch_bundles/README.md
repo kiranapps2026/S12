@@ -12,6 +12,7 @@ and a pinned document disagree, the pinned document wins and the agent STOPs (se
 | 4. `<batch>/MANIFEST.md` | Every file the batch's golden tests load; for B3–B5, how to run the reference layer in a scratch checkout |
 | 5. [`IMPROVEMENT_GUIDE_B3-B5.md`](IMPROVEMENT_GUIDE_B3-B5.md) | Extra points for an existing B3–B5 implementation: fix method, agent tests, validation runbook, cross-stage dependency map (does not change the flow above) |
 | 6. [`IMPROVEMENT_GUIDE_B1-B2.md`](IMPROVEMENT_GUIDE_B1-B2.md) | The same for the built B1/B2 code: guard tests, silent-failure points, what B3–B5 rely on, and behaviour that must not be "fixed" |
+| 7. [`ROADMAP_AFTER_S12.md`](ROADMAP_AFTER_S12.md) | Everything left after S12: owner close-out, M10–M21, certification, then the deferred phases in the gate's order with every leftover placed |
 
 ## Status of every batch (verified 2026-10-01 on `s12-work` `f4a8d5f`, PostgreSQL 16)
 
