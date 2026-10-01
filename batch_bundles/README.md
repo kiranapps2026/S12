@@ -1,17 +1,33 @@
-# Batch bundles: agent guide index (B3 = M10–M14, B4 = M15–M18, B5 = M19–M21)
+# Batch bundles: agent guide index (B1 = M1–M4, B2 = M5–M9, B3 = M10–M14, B4 = M15–M18, B5 = M19–M21)
 
-These folders tell the coding agent **what to build, where, and under which rules** for the last three batches of
-the S12–S15 plan. They do not replace the plan, the gate or the autopilot; they point into them. When this folder
+These folders tell the coding agent **what to build, where, and under which rules** for all five batches of the
+S12–S15 plan. They do not replace the plan, the gate or the autopilot; they point into them. When this folder
 and a pinned document disagree, the pinned document wins and the agent STOPs (see "Precedence").
 
 | Read in this order | What it gives you |
 |---|---|
-| 1. This file | Rules for both batches, the S12→S15 module map, the names the tests patch, how layers depend on each other |
-| 2. `B3_M10-M14/AGENT_GUIDE.md`, `B4_M15-M18/AGENT_GUIDE.md` or `B5_M19-M21/AGENT_GUIDE.md` | Batch entry conditions, order, per-file ownership, milestone targets, exit checks |
+| 1. This file | Status of every batch, rules for all batches, the S12→S15 module map, the names the tests patch, how layers depend on each other |
+| 2. `B1_M01-M04/`, `B2_M05-M09/`, `B3_M10-M14/`, `B4_M15-M18/` or `B5_M19-M21/` + `AGENT_GUIDE.md` | Batch entry conditions, order, per-file ownership, milestone targets, exit checks |
 | 3. `<batch>/milestones/Mxx_*.md` | One milestone: interface, logic and conditions, rulings, traps, done checklist |
-| 4. `<batch>/MANIFEST.md` | Every file the batch's golden tests load, and how to run the reference layer in a scratch checkout |
+| 4. `<batch>/MANIFEST.md` | Every file the batch's golden tests load; for B3–B5, how to run the reference layer in a scratch checkout |
 
-**Reference layers.** All three folders carry the same merged reference `src/` (built through M21). B3 adds the two
+## Status of every batch (verified 2026-10-01 on `s12-work` `f4a8d5f`, PostgreSQL 16)
+
+| Batch | Milestones | Code on `s12-work` | Golden | Sabotage | What is still open |
+|---|---|---|---|---|---|
+| [B1](B1_M01-M04/AGENT_GUIDE.md) | M1–M4 | **built** | 316 / 316 | 12 / 12 | owner rows only: re-pin, STOP-001 `applied`, M1 ★ schema review, `owner_verify` |
+| [B2](B2_M05-M09/AGENT_GUIDE.md) | M5–M9, M8a | **built** | 174 / 174 | 21 / 21 | owner rows only: pin B2, close STOP-002, M8a ★ review, DEF-003 decision, `owner_verify` |
+| [B3](B3_M10-M14/AGENT_GUIDE.md) | M10–M14 | not started (STOP-004, STOP-005 to close) | reference 184 / 184 | reference 39 / 39 | the next agent work; M14 ★ |
+| [B4](B4_M15-M18/AGENT_GUIDE.md) | M15–M18 | not started | reference 135 / 135 | reference 12 / 12 | CONF-005 open (M15) |
+| [B5](B5_M19-M21/AGENT_GUIDE.md) | M19–M21 | not started | reference 68 / 68 | reference 10 / 10 | CONF-042–047 open; M21 ★ |
+
+On `s12-work`, `owner_certify_s12.py --milestone M9` (full) gives 18/21. The three failures are the owner rows
+**S12-PIN** and **S12-REC**, plus **S12-S011** when the package is not importable: run with `PYTHONPATH=src` (then
+`owner_certify.py` is 19/19). `docs/gates/s12_milestones.json` still shows M1 `red_confirmed` and the rest
+`not_started`, because only the owner's checkpoint moves a status. **The agent's next milestone is M10, after the
+owner closes the B1/B2 rows and STOP-004/005.**
+
+**Reference layers (B3–B5).** B1 and B2 have none: their code is the live `s12-work` code. The B3–B5 folders carry the same merged reference `src/` (built through M21). B3 adds the two
 files B4/B5 never load (`dispatch.py`, the reworked `live_authorization.py`); B5 adds `recovery.py`; B4 adds
 `s14_dead_letter/`. Verified on 2026-10-01 (PostgreSQL 16) with all of them layered together: M01–M09 490, B3 184,
 B4 135, B5 68 passed; every B3 sabotage patch caught (39/39); the frozen `tests/` suite 836 passed.
@@ -31,10 +47,10 @@ B4 135, B5 68 passed; every B3 sabotage patch caught (39/39); the frozen `tests/
 A conflict between 1–4 is a `CONF-nnn` row in `S12_RECORDS.md` (quote both sides with file:line) and, without a
 ruling, a STOP. Never resolve it by editing a test or a pinned document.
 
-## Ten rules for B3, B4 and B5
+## Ten rules for every batch
 
 1. **Milestone order is fixed.** Work the first row of `docs/gates/s12_milestones.json` that is not `green` or
-   `reviewed`. B3 starts only after M9 is `green`; B4 only after M14 (★) is `green`; B5 only after M18 is `green`.
+   `reviewed`. B1 and B2 are built: change them only additively, as their guides list. B3 starts only after M9 is `green`; B4 only after M14 (★) is `green`; B5 only after M18 is `green`.
    Never start a later card early "because the module is missing".
 2. **Never edit:** `tests_golden/**` (including `tests_golden/sabotage/**` and fixtures), `tools/owner_*`,
    `tools/doc_consistency.py`, `tools/s12_tracker.py`, `docs/gates/*.sha256`, `docs/gates/s12_milestones.json`,
@@ -78,11 +94,23 @@ ruling, a STOP. Never resolve it by editing a test or a pinned document.
 
 ## S12 → S15 module map (target state after M21)
 
-Owner milestone = the milestone whose golden file first requires the file. "Ref" = present in the bundle's `src/`.
+Owner milestone = the milestone whose golden file first requires the file. "Ref" = present in the bundle's `src/`;
+"live" = built and verified on `s12-work` (B1/B2; owner sign-off pending), so there is no bundle copy.
 
 | Layer | Path | Owner | What it holds | Ref |
 |---|---|---|---|---|
 | contracts | `contracts/execution_states.py` | M3–M4, +M16 | Run/step/budget/lease/episode/dead-letter states and reasons; `ConsolidationOutcome` (M16) | yes |
+| contracts | `contracts/confirmation_record.py` | M5 | `ConsumedConfirmation`, `ConsumedConfirmationReader` | live |
+| contracts | `contracts/step_admission.py` | M8 | `AdmissionStatus`, `AdmissionDecision` (WORKER_LIFECYCLE §11, CONF-015), `DecisionLedger` | live |
+| engine S12 entry | `engine/stages/s12_entry/{checks,admission,verifiers,confirmation}.py` | M5–M6, M8a | `check_entry` (§7.1 order), `admit_run`, `build_verifiers`, `confirmation_denial` | live |
+| engine S12 | `engine/stages/s12_execute/transitions.py` | M3–M4 | `validate(machine, from, to, *, reason, closed=False)`, `IllegalStateTransition` | live |
+| engine S12 | `engine/stages/s12_execute/settings.py` | M2, +M8a, +M19 | `ExecutionSettings.from_env` (C37) | live |
+| engine S12 | `engine/stages/s12_execute/admission_control.py` | M8 | `AdmissionSnapshot`, `evaluate`, `admit_step`, `reject_outcome` | live |
+| engine S12 | `engine/stages/s12_execute/{selection,eligibility}.py` | M8, M8a, +M12 | `select_worker`, `lease_for_step`; `WorkerCandidate`, `SelectionContext`, `filter_workers` | live |
+| adapters pg | `adapters/postgres/{fencing,transition_log}.py` | M2, +M9 | `FenceHolder`, `check_fence`, `fenced_write`; `log_transition` | live |
+| adapters pg | `adapters/postgres/budget_reserver.py` | M9, +M10 (`reservation`), +M17 (`settle_dead_letter_reservation`) | `PostgresBudgetReserver`: the only budget writer (C31) | live |
+| adapters pg | `adapters/postgres/{admission,confirmation_records,selection}.py` | M5–M8a | durable admission (§7.2, quota), the C20 reader, the selection reader | live |
+| adapters pg | `adapters/postgres/migrations/015_s12_schema.sql` | M1 | the S12 schema (workers, leases, episodes, dead letters, ledger, checkpoints, C39) | live |
 | contracts | `contracts/adapter_interface.py` | M10 | `CallMeta`, `GuardedCall`, `ErrorClass`, `RETRYABLE`, `BaseAdapter` (probe/observe defaults), `ProbeOutcome`, `Observation`, `BudgetStateError` | yes |
 | contracts | `contracts/idempotency.py` | M11 | `IdempotencyConflict`, ledger record types | yes |
 | contracts | `contracts/verification.py` | M15 | `Verdict`, `VerificationLayer`, `LayerResult`, `VerificationOutcome` | yes |
@@ -114,7 +142,7 @@ Owner milestone = the milestone whose golden file first requires the file. "Ref"
 | adapters pg | `adapters/postgres/consolidation.py` | M16 | `PostgresConsolidator` (`consolidate`, `__call__`, `cancel`) | yes |
 | adapters pg | `adapters/postgres/dead_letters.py` | M17 | `PostgresDeadLetters` | yes |
 | adapters pg | `adapters/postgres/run_summary.py` | M18 | `PostgresRunSummaries.load` | yes |
-| adapters pg | `adapters/postgres/leases.py` | M7, +M19 | `PostgresLeaseManager`; M19 adds `acquire(..., skip_locked=False)`, `expire_lapsed` | yes (patch) |
+| adapters pg | `adapters/postgres/leases.py` | M7, +M12 (`holder=`), +M19 | `PostgresLeaseManager`; M19 adds `acquire(..., skip_locked=False)`, `expire_lapsed` | yes (patch) |
 | adapters pg | migration `017_recovery_candidates.sql` | M19 | `s12_recovery_candidates(runtime_instance_id, limit, orphan_after_s)`, `SECURITY DEFINER`, ids only | yes |
 
 Prototype files that the gate supersedes (`s13_reconciliation/handler.py`, `s14_verification/handler.py`,
@@ -177,7 +205,7 @@ The engine must **call through these names at run time** (`ledger.lookup(...)`, 
 not hold a private copy taken at import (`from ... import resolve_execution as _r` bound before the patch), or the
 sabotage never reaches the code and the X-row fails.
 
-## Rulings that bind B3, B4 and B5
+## Rulings that bind B3, B4 and B5 (B1/B2 rulings: CONF-002–020, listed in their guides)
 
 Ruled (apply them): CONF-019 (runtime list in `SelectionContext`), CONF-021 (frozen `AdapterResult`), CONF-022
 (breaker per provider), CONF-023 (4xx trial releases, `TimeoutError` = timeout), CONF-024 (key
