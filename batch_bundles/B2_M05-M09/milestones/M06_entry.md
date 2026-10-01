@@ -32,7 +32,7 @@
 | 5a | no step parameter references another step's output (C36) | `data_flow_unsupported` |
 | 5b | each **distinct** binding row read **once**: its version equals `manifest.binding_version` (C32). No reader, or the reader raises → fail closed | `binding_version_mismatch` / `binding_unavailable` |
 | 6 | verifiers built (D1) from the step and the registry metadata at the manifest's versions; a mutation without observation metadata is denied | `verifier_metadata_unavailable` (or the builder's reason) |
-| 7 | pause safety net (C39): the S0.1 activation check again, at the database's time | `tenant_paused`, `workspace_paused`, `not_yet_active`; `activation_unavailable` if unreadable |
+| 7 | pause safety net (C39): the S0.1 activation check again, at the database's time (`inactive_reason`, `engine/stages/s0_entry/activation.py`) | `tenant_paused`, `workspace_paused`, `not_yet_active`; **`activation_state_unavailable`** when no reader or it raises |
 | C20 | the confirmation check (M5), last | `confirmation_mismatch` / `confirmation_unavailable` |
 
 **`PostgresExecutionAdmission.admit`: one transaction (§7.2), then the outcome:**
@@ -50,6 +50,10 @@
 
 **Invariants:** I5 (every log row legal), I9 (every persisted plan's digest equals its `plan_hash`), I10 (each step's
 binding columns equal its binding's).
+
+**Database guards behind this milestone** (see `../../B1_M01-M04/SCHEMA.md`): `uq_execution_runs_request` settles
+concurrent duplicates; triggers `execution_manifests_immutable` and `execution_plans_immutable` (`reject_update()`)
+reject any later UPDATE of the manifest or plan, so I9 cannot be broken by a later milestone even by mistake.
 
 ## Sabotage
 

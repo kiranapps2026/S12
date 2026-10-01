@@ -122,6 +122,21 @@ transaction, with the A.3 `dead_letter_*` reasons:
 **`InverseBudget.check`:** pass only when `call.reservation_id is None` **and** the idempotency key ends with
 `:inverse`. Anything else raises `BudgetStateError` (fail closed).
 
+## Schema notes (all columns exist since migration 015; see `../../B1_M01-M04/SCHEMA.md`)
+
+- **Evidence is stored in `dead_letters.context`** (JSONB, NOT NULL, default `'{}'`). The `evidence=` argument is
+  written there and invariant I11 reads it. An empty `{}` is what the default gives, so the "non-empty evidence" rule
+  is enforced only by `create` (and checked by I11), not by the database.
+- `status` defaults to `pending`; `resolved` must equal `status in (resolved, abandoned)` (`chk_dead_letters_resolved`),
+  so every status move also writes `resolved`.
+- `retry_mode` is NOT NULL with no default: `create` must always pass one.
+- `mutation_type` defaults to `R`, so pass the step's mutation. `is_idempotent` (default false) and `next_retry_at`
+  are written by no code in this phase; do not read them as information.
+- FKs to the run, step, reservation and episode exist, so a record cannot name a missing episode.
+
+**Unfenced by design:** `create_rollback` and `settle_dead_letter_reservation` write for a terminal run, where no
+runtime owns the execution. They are the only unfenced writes this milestone adds (README rule 7).
+
 ## Traps
 
 - Accepting a record without evidence (sabotage `M17_evidence_optional`, invariant I11).

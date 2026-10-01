@@ -53,6 +53,7 @@ that file.
 | `src/adapters/postgres/transition_log.py` | S12 new | M2 `838ebcf` | `log_transition(connection, *, …)` |
 | `src/engine/stages/s12_execute/settings.py` | S12 new | M2, M8a, M9 | `ExecutionSettings.from_env` (C37 ordering) |
 | `src/engine/stages/s12_execute/transitions.py` | prototype (CONF-011) | M3 `b9e6123`, M4 `8f38edb` | `validate(machine, from, to, *, reason, closed=False)`, `IllegalStateTransition`, the nine machines |
+| `src/adapters/postgres/execution.py` | prototype | M2 (fenced, tenant-filtered); **M12 adds `PostgresExecutionStore`** (`load`, `transition_step`, `transition_run`, `cancel_requested`, plan decode with both hashes) | the loop's store; additive only |
 | Prototype repositories reworked in M2/M4 | prototype | M2, M4 | `adapters/postgres/{admission,budget_reserver,execution}.py` write through `fenced_write` and filter on `tenant_id`; `loop.py`, `guard.py`, `circuit_breaker.py`, `s12_worker_execution/handler.py` use the enums (no bare literals) |
 
 The schema from **before** the tag also counts as B1's base: migrations `009_execution_admission.sql`
@@ -60,7 +61,18 @@ The schema from **before** the tag also counts as B1's base: migrations `009_exe
 `state_transitions`, `operation_quotas`) and `010_step_loop.sql` (the step `terminal_reason` CHECK and its trigger).
 Both are inside the tag: **never edit 001–014** (CONF-010 explains why 30 M01 cases already passed on them).
 
-## 4. Rules for touching B1 code from a later batch
+## 4. What later batches import from B1 (contracts the M10–M21 golden files use)
+
+| Symbol | Imported by | Must stay |
+|---|---|---|
+| `adapters.postgres.fencing.FenceHolder`, `fenced_write` | M10–M21 goldens (8 imports), every repository | the four fields and their order; `fenced_write(database, holder, write)` |
+| `engine.stages.s12_execute.transitions.IllegalStateTransition`, `validate` | M17 golden (illegal A.6 moves), every repository | the exception type (not `ValueError`) |
+| `engine.stages.s12_execute.transitions.RUN` / `STEP` / `BUDGET` | M17 reference (`settle_dead_letter_reservation`) | mappings of from-states that still have outgoing edges |
+| `engine.stages.s12_execute.settings.ExecutionSettings.from_env` | M21 golden | env names; C37 checks; M19 adds `recovery_sweep_interval_s` |
+| `contracts.execution_states.*` | everything | values (CHECKs depend on them) |
+| the schema 001–015 | every later milestone | see [`SCHEMA.md`](SCHEMA.md): B3–B5 need **no** change to it, only migrations 016 and 017 |
+
+## 5. Rules for touching B1 code from a later batch
 
 B1 is the foundation everything else imports. A later card may extend it only like this:
 
@@ -76,10 +88,11 @@ B1 is the foundation everything else imports. A later card may extend it only li
 After any such change, re-run M01–M04 and their 12 sabotage patches (§6). A B1 regression is a STOP-worthy event
 under "the PASS count went down".
 
-## 5. Conflict avoidance (B1-specific)
+## 6. Conflict avoidance (B1-specific)
 
 | Risk | Rule |
 |---|---|
+| A rule only code enforces | The database does not enforce: a non-null transition reason, one active lease per execution, token order, fenced writes, the budget ceiling, commit-only-from-LOCKED. A writer that bypasses the code path breaks them silently; see the enforcement map in `SCHEMA.md` |
 | One vocabulary, two spellings | Every state and reason string in S12–S15 code comes from `contracts.execution_states`. M04's scan fails on a bare literal. Machine names (`run`, `step`, `dead_letter`, …) are exempt (CONF-013); a `DEAD_LETTER` state literal is not |
 | A CHECK drifting from its enum | CHECK sets are generated from the enums (C28). Sabotage `M01_check_wider_than_enum.sql` proves an upper-case `PENDING_PROBE` is caught |
 | Two validators | `transitions.validate` is canonical. `contracts/state_validators.py` is non-canonical (CONF-006): S12 code must not import it; deletion after S15 via change control |
@@ -88,7 +101,7 @@ under "the PASS count went down".
 | Frozen vs prototype | Frozen = `src/` at `s0-s11-certified` minus the `PROTOTYPE` list in `tests_golden/fixtures/code_scan.py` (CONF-011). S12-FRZ fails on any byte change to a frozen file |
 | `ruff --fix` on a directory | It once rewrote two frozen files. Fix files one by one |
 
-## 6. Commands
+## 7. Commands
 
 ```bash
 export TEST_DATABASE_URL=postgresql://…/suprpg_test PYTHONPATH=$PWD/src   # name must end in _test
@@ -101,11 +114,11 @@ GOLDEN_SABOTAGE=$PWD/tests_golden/sabotage/M02_skip_fence_check.py python -m pyt
 python -m pytest tests -q && python tools/owner_certify.py      # 836 and 19/19 must hold
 ```
 
-## 7. Milestone files
+## 8. Milestone files
 
 | Milestone | Cases | Sabotage | File |
 |---|---|---|---|
-| M1 schema ★ | 89 | 4 | [milestones/M01_schema.md](milestones/M01_schema.md) |
+| M1 schema ★ | 89 | 4 | [milestones/M01_schema.md](milestones/M01_schema.md) and [SCHEMA.md](SCHEMA.md) (full as-built schema, enforcement map, column usage, gaps) |
 | M2 fencing core | 18 (x5) | 3 | [milestones/M02_fencing_core.md](milestones/M02_fencing_core.md) |
 | M3 machines I | 130 | 3 | [milestones/M03_machines_run_step_budget.md](milestones/M03_machines_run_step_budget.md) |
 | M4 machines II | 79 | 2 | [milestones/M04_machines_other.md](milestones/M04_machines_other.md) |

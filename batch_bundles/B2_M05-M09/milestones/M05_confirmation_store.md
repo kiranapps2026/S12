@@ -31,7 +31,8 @@ whose plan needed a confirmation, check the store row really was consumed **for 
 
 | Situation | Result |
 |---|---|
-| the plan needed no confirmation | `None`; the reader is **not** read |
+| the plan needed no confirmation (`state.confirmation` is None or not `required`) | `None`; the reader is **not** read |
+| a confirmation was required but `state.confirmation.confirmation`, the plan, the manifest or the context is missing | `"confirmation_mismatch"` (checked **before** the reader, so a missing reader does not turn this into `unavailable`) |
 | the reader is missing, or `read` raises | `"confirmation_unavailable"` (fail closed, like `binding_unavailable`) |
 | the row is not visible to the run's tenant, or `status != consumed`, or its `execution_id` ≠ `state.plan.execution_id`, or its `plan_hash` ≠ `state.execution_manifest.plan_hash` | `"confirmation_mismatch"` |
 | consumed for this tenant, execution and plan hash | `None` (allowed) |
@@ -47,6 +48,9 @@ whose plan needed a confirmation, check the store row really was consumed **for 
 - There is **no foreign key** from confirmations to `execution_runs` (C20 forbids it).
 
 **A denial writes nothing** (`test_entry_check_writes_nothing`).
+
+**Known (not a defect):** `ConsumedConfirmation.user_id` is read but **not** compared. C20 binds the confirmation to
+the tenant, the execution and the plan hash; the user is already bound by S10's consume (`consume(…, user_id=…)`).
 
 ## Sabotage
 

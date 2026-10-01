@@ -36,7 +36,9 @@
 | 11 | `system_overloaded` is True | `system_overloaded` | **DELAY** (CONF-017) |
 | — | all pass | | ACCEPT, or DEGRADE when `degrade` |
 
-Every decision carries `gate_failed` ("1".."11") and `detail` naming the gate. `evaluate` touches no database
+Every decision carries `gate_failed` ("1".."11") and `detail` naming the gate. `retry_after_ms` is
+`QUEUE_RETRY_AFTER_MS = 1000` for QUEUE and `DELAY_RETRY_AFTER_MS = 500` for DELAY. DEGRADE carries
+`degraded_features = ("analytics", "notifications", "post_processing")` (WORKER_LIFECYCLE §11). `evaluate` touches no database
 (`test_admission_module_touches_no_database`).
 
 **`admit_step`:**

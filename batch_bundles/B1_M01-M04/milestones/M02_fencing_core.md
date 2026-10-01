@@ -53,7 +53,7 @@ checks every log row against Appendix A.
 | `S12_LEASE_TTL_S` | `lease_ttl_s` |
 | `S12_LEASE_RENEWAL_INTERVAL_S` | `lease_renewal_interval_s` |
 | `S12_QUOTA_RETRY_MAX`, `S12_QUOTA_BACKOFF_S`, `S12_QUOTA_RETRY_AFTER_MS` (optional, M8a) | quota retry (defaults 3, 0.05, 1000) |
-| `S12_RECOVERY_SWEEP_INTERVAL_S` (optional, M19) | `recovery_sweep_interval_s` (default 10, must be < 30) |
+| `S12_RECOVERY_SWEEP_INTERVAL_S` (optional) | `recovery_sweep_interval_s` (default 10, must be < 30). **Not on `s12-work` yet: M19 adds it** (M21 then tests it) |
 
 Validation at construction raises `ValueError`:
 
@@ -87,5 +87,8 @@ The boundary (`lease_ttl_s == 3 × interval`) is allowed.
 ## Regression checklist
 
 - [ ] 18/18, five runs in a row; the 3 patches caught.
-- [ ] New durable writes in later batches go through `fenced_write` (M21 scans for SQL writes outside it, except
-      `admission.py` and `cancellation.py` by design).
+- [ ] New durable writes in later batches go through `fenced_write`. M21 scans for SQL writes on execution tables
+      outside it. The designed exceptions (no live owner to fence) are: `admission.py` (the §7.2 transaction creates
+      the ownership row), `cancellation.py` (C16, the user's request), M17 `create_rollback` and
+      `settle_dead_letter_reservation` (terminal run, D4/C27). Each still uses a tenant transaction and
+      `transitions.validate`.

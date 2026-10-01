@@ -82,7 +82,10 @@ ruling, a STOP. Never resolve it by editing a test or a pinned document.
      in `loop.py`, `adapters.postgres.database.Database` in `recovery.py`). It never calls a repository's SQL
      directly. Wiring happens through `LoopDeps`.
 7. **Every durable execution write goes through `fenced_write()`** (or a method that runs inside one fenced
-   transaction). M21 scans for SQL writes outside it.
+   transaction). M21 scans for SQL writes outside it. The only designed exceptions are writes with no live owner to
+   fence: `admission.py` (§7.2 creates the ownership row), `cancellation.py` (C16, the user's request),
+   `PostgresDeadLetters.create_rollback` and `budget_reserver.settle_dead_letter_reservation` (M17, terminal run,
+   D4/C27). They still run in a tenant transaction and validate every move. Add no others without a ruling.
 8. **Row-level security is never bypassed.** No `SET row_security = off`, no reset of `app.current_tenant`, no
    second "raw" connection. Cross-tenant facts come from constraints (a primary-key conflict) or from the one
    `SECURITY DEFINER` function of migration 017 (ids only, CONF-042/046).
@@ -99,7 +102,7 @@ Owner milestone = the milestone whose golden file first requires the file. "Ref"
 
 | Layer | Path | Owner | What it holds | Ref |
 |---|---|---|---|---|
-| contracts | `contracts/execution_states.py` | M3–M4, +M16 | Run/step/budget/lease/episode/dead-letter states and reasons; `ConsolidationOutcome` (M16) | yes |
+| contracts | `contracts/execution_states.py` | M1, +M4, +M16 | Run/step/budget/lease/episode/dead-letter states and reasons; `ConsolidationOutcome` (M16) | yes |
 | contracts | `contracts/confirmation_record.py` | M5 | `ConsumedConfirmation`, `ConsumedConfirmationReader` | live |
 | contracts | `contracts/step_admission.py` | M8 | `AdmissionStatus`, `AdmissionDecision` (WORKER_LIFECYCLE §11, CONF-015), `DecisionLedger` | live |
 | engine S12 entry | `engine/stages/s12_entry/{checks,admission,verifiers,confirmation}.py` | M5–M6, M8a | `check_entry` (§7.1 order), `admit_run`, `build_verifiers`, `confirmation_denial` | live |
@@ -108,9 +111,10 @@ Owner milestone = the milestone whose golden file first requires the file. "Ref"
 | engine S12 | `engine/stages/s12_execute/admission_control.py` | M8 | `AdmissionSnapshot`, `evaluate`, `admit_step`, `reject_outcome` | live |
 | engine S12 | `engine/stages/s12_execute/{selection,eligibility}.py` | M8, M8a, +M12 | `select_worker`, `lease_for_step`; `WorkerCandidate`, `SelectionContext`, `filter_workers` | live |
 | adapters pg | `adapters/postgres/{fencing,transition_log}.py` | M2, +M9 | `FenceHolder`, `check_fence`, `fenced_write`; `log_transition` | live |
+| adapters pg | `adapters/postgres/execution.py` | M2 (prototype, fenced), +M12 (`PostgresExecutionStore`), +M14 (`cancel_requested`), +M15 (verifiers on the loaded run) | the loop's store | live + ref |
 | adapters pg | `adapters/postgres/budget_reserver.py` | M9, +M10 (`reservation`), +M17 (`settle_dead_letter_reservation`) | `PostgresBudgetReserver`: the only budget writer (C31) | live |
 | adapters pg | `adapters/postgres/{admission,confirmation_records,selection}.py` | M5–M8a | durable admission (§7.2, quota), the C20 reader, the selection reader | live |
-| adapters pg | `adapters/postgres/migrations/015_s12_schema.sql` | M1 | the S12 schema (workers, leases, episodes, dead letters, ledger, checkpoints, C39) | live |
+| adapters pg | `adapters/postgres/migrations/015_s12_schema.sql` | M1 | the S12 schema (workers, leases, episodes, dead letters, ledger, checkpoints, C39); full as-built reference in [`B1_M01-M04/SCHEMA.md`](B1_M01-M04/SCHEMA.md). 001–015 are byte-identical in every reference layer: B3–B5 add only 016 and 017 | live |
 | contracts | `contracts/adapter_interface.py` | M10 | `CallMeta`, `GuardedCall`, `ErrorClass`, `RETRYABLE`, `BaseAdapter` (probe/observe defaults), `ProbeOutcome`, `Observation`, `BudgetStateError` | yes |
 | contracts | `contracts/idempotency.py` | M11 | `IdempotencyConflict`, ledger record types | yes |
 | contracts | `contracts/verification.py` | M15 | `Verdict`, `VerificationLayer`, `LayerResult`, `VerificationOutcome` | yes |

@@ -73,15 +73,27 @@ These later changes are **expected and additive**. The B3–B5 reference makes e
 | B2 file | Later change (owner milestone) | Keep |
 |---|---|---|
 | `leases.py` | `acquire(..., holder=None)` → `FencedOut` when ownership moved (M12, CONF-033); `acquire(..., skip_locked=False)` and `expire_lapsed(tenant_id, execution_id)` (M19) | Defaults keep M07 behaviour; the token comes from `fence_token_seq`; one owner at a time |
-| `budget_reserver.py` | `reservation(tenant_id, reservation_id)` read (M10, the guard's `BudgetTracker`); `settle_dead_letter_reservation(conn, …)` (M17) | One fenced write per move; the reserver stays the **only** budget writer (C31) |
+| `budget_reserver.py` | `ReservationRow` + `reservation(tenant_id, reservation_id)` read (M10, the guard's `BudgetTracker`); module function `settle_dead_letter_reservation(c, *, tenant_id, reservation_id, to, reason)` (M17) | One fenced write per move; the reserver stays the **only** budget writer (C31). **Designed exception:** `settle_dead_letter_reservation` writes without a fence, in the caller's (resolution) transaction, and only when the reservation is LOCKED, its step is DEAD_LETTER and its run is terminal (no runtime owns it any more; D4). Any other caller is a bug |
 | `eligibility.py` | `binding_requirements(reader, binding_ids)`, `step_context(...)` (M12) so the loop never names a runtime type | The filter order and reasons; `filter_workers` stays pure |
 | `admission_control.py` | none expected | **`s12-work`'s text is current**: gates 8, 9, 11 are DELAY (CONF-017, CONF-032) and exhausted admission keeps `admission_exhausted` (DEF-005). The B3–B5 reference copies carry older docstrings; do not copy them back |
 | `settings.py` | `recovery_sweep_interval_s` (M19) | C37 checks; defaults for every optional field |
-| `admission.py`, `s12_entry/*` | none expected | A denied entry writes zero rows; the binding is never re-resolved |
+| `admission.py`, `s12_entry/*`, `selection.py`, `confirmation_records.py` | none expected (the B3–B5 reference leaves them byte-identical) | A denied entry writes zero rows; the binding is never re-resolved |
+| `execution.py` (B1 prototype file) | `PostgresExecutionStore` (M12) | additive; every write fenced and validated |
 
 After any change to a B2 file, re-run M05–M09 (including the x5 concurrency rows) and their 21 patches.
 
-## 5. Conflict avoidance (B2-specific)
+## 5. What later batches import from B2 (contracts the M10–M21 golden files use)
+
+| Symbol | Used by | Must stay |
+|---|---|---|
+| `admission_control.AdmissionSnapshot` (the 11 gate booleans + `degrade`) | 10 imports in M12–M21 goldens (the `PASSING` snapshot, `circuit_open=True` …) | field names and their bool-only check |
+| `admission_control.admit_step`, `reject_outcome` | the loop (M12) | signatures and the outcome table |
+| `selection.lease_for_step`, `eligibility.filter_workers` | the loop (M12) | `"no_worker"` / `"lease_unavailable"` strings; filter order |
+| `PostgresLeaseManager`, `Lease` | the loop (M12, `acquire`/`release`); M19 golden (`release`, `expire_lapsed`) | defaults keep M07 behaviour |
+| `PostgresBudgetReserver` | M10 and M11 goldens call `reserve` and `lock(holder, id, reason="step_started")` directly to seed a LOCKED reservation; M10's `BudgetTracker` reads it through `reservation(...)`; the loop locks with `connection=` (M12, I-3) | idempotent per step; `connection=` joins the caller's transaction |
+| `PostgresSelectionReader`, `PostgresExecutionAdmission`, `s12_entry.admission.admit_run` | M12's `_admit` / `_deps` helpers (reused by M13–M21 goldens) admit every test run through them | the §7.1 order and §7.2 transaction |
+
+## 6. Conflict avoidance (B2-specific)
 
 | Risk | Rule |
 |---|---|
@@ -95,7 +107,7 @@ After any change to a B2 file, re-run M05–M09 (including the x5 concurrency ro
 | Frozen contracts | S12 uses `contracts.step_admission.AdmissionDecision` (CONF-015), not the frozen `contracts.worker.AdmissionDecision`. The frozen `AdmissionOutcome` has no `detail`: soft-quota upgrade text is S15's job (CONF-020) |
 | Budget outside the reserver | Only `PostgresBudgetReserver` writes `budget_reservations`; no `tenant_budget` table; per **step**, never per execution |
 
-## 6. Commands
+## 7. Commands
 
 ```bash
 export TEST_DATABASE_URL=postgresql://…/suprpg_test PYTHONPATH=$PWD/src
@@ -106,7 +118,7 @@ for f in M05_confirmation_store M06_entry M07_leases M08_admission M08a_worker_m
 python -m pytest -q tests_agent && python -m pytest -q tests_postgres    # 93 and 330 must hold
 ```
 
-## 7. Milestone files
+## 8. Milestone files
 
 | Milestone | Cases | Sabotage | x5 | File |
 |---|---|---|---|---|
@@ -117,5 +129,7 @@ python -m pytest -q tests_agent && python -m pytest -q tests_postgres    # 93 an
 | M8a worker management ★ | 49 | 3 | yes | [milestones/M08a_worker_mgmt.md](milestones/M08a_worker_mgmt.md) |
 | M9 budget | 17 | 4 | yes | [milestones/M09_budget.md](milestones/M09_budget.md) |
 
-Batch target (met): **174/174, 21/21**, plus the standing exit rules (S0–S11 19/19, frozen code unchanged,
-invariants I1, I2, I5, I7–I10, I12 (non-dead-letter parts), I17, I18 after every integration case).
+Batch target (met): **174/174, 21/21**, plus the standing exit rules (S0–S11 19/19, frozen code unchanged).
+`assert_system_invariants` checks I1, I2, I5, I7–I10 and I12 (non-dead-letter parts) after every integration case.
+I17 (quota never over-admits) and I18 (only eligible workers leased) are **not** in the shared checker: the M08a cases
+assert them directly (the 20-entries case and the live-lease case).

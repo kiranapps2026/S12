@@ -2,7 +2,8 @@
 
 > **Agents: start here.** Read [`../README.md`](../README.md) (rules for every batch, the S12→S15 module map, the
 > names the tests patch), then [`AGENT_GUIDE.md`](AGENT_GUIDE.md) (status, owner actions, files, rules for touching
-> this code later), then one milestone file at a time: [`M1`](milestones/M01_schema.md) · [`M2`](milestones/M02_fencing_core.md) · [`M3`](milestones/M03_machines_run_step_budget.md) · [`M4`](milestones/M04_machines_other.md).
+> this code later), [`SCHEMA.md`](SCHEMA.md) (the exact as-built schema, what the database vs the code enforces, column
+> usage per milestone, known gaps), then one milestone file at a time: [`M1`](milestones/M01_schema.md) · [`M2`](milestones/M02_fencing_core.md) · [`M3`](milestones/M03_machines_run_step_budget.md) · [`M4`](milestones/M04_machines_other.md).
 
 Every file the B1 golden tests depend on, found by tracing what the tests import when they run (a pytest plugin that
 records every loaded module), plus the migrations, the B1 sabotage patches and their helpers, and the reviews.

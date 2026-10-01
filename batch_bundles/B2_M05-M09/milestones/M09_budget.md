@@ -74,6 +74,11 @@ outcome (C14).
 - **I2:** no `reserved` reservation for a terminal run; a `locked` one only under D4.
 - **I12** (non-dead-letter parts): a non-terminal step has at most one live reservation.
 
+**Database guards** (see `../../B1_M01-M04/SCHEMA.md`): `uq_budget_reservation_open_step` (partial unique on
+`step_id WHERE status <> 'released'`) makes I12 a database rule: a step cannot hold two live reservations, so a retry
+after NOT_EXECUTED (M13) must release the old one first. `cost >= 0` is a CHECK. The pool ceiling (I1) and
+commit-only-from-LOCKED are enforced **only** in this code.
+
 **Concurrency:** 20 concurrent reservations against a small pool never over-reserve (5 runs). Released budget is
 available again. Only the current period counts (boundary test).
 
@@ -90,8 +95,10 @@ available again. Only the current period counts (boundary test).
 
 - M10: `reservation(tenant_id, reservation_id)`, a read used by the guard's `BudgetTracker` (C31: a read-only
   precondition, it never writes).
-- M17: `settle_dead_letter_reservation(conn, …)`, which settles a LOCKED reservation inside a dead-letter
-  resolution.
+- M17: the module function `settle_dead_letter_reservation(c, *, tenant_id, reservation_id, to, reason)`, which
+  settles a LOCKED reservation inside a dead-letter resolution. It is the **one unfenced budget write**, allowed only
+  for a DEAD_LETTER step of a terminal run (it raises `ValueError` otherwise and returns False when the reservation is
+  not LOCKED).
 - The reserver stays the only writer of `budget_reservations`.
 
 ## Traps

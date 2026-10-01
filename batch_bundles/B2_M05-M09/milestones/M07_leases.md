@@ -59,6 +59,11 @@ decrements `current_load` in the same transaction.
 | no `active` lease for a terminal run; no lease goes `expired → active` | I7 |
 | every lease move is logged with its reason | I5 |
 
+**Where "one owner at a time" is enforced:** there is **no** unique index on active leases per execution. The rule
+holds because `acquire` locks the ownership row (`FOR UPDATE`) and checks for a usable lease inside that lock, so two
+acquisitions for the same execution serialize. Any new code that inserts into `worker_leases` must go through
+`acquire`, or the rule fails silently (I7/I8 in the invariant checker are what would notice).
+
 ## Sabotage
 
 | Patch | Breaks |
