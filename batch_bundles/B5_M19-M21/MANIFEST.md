@@ -1,5 +1,10 @@
 # B5 dependency folder — M19–M21: crash recovery, real Worker Runtime processes, journeys and architecture
 
+> **Agents: start here.** Read [`../README.md`](../README.md) (rules for both batches, the S12→S15 module map, the
+> names the tests patch), then [`AGENT_GUIDE.md`](AGENT_GUIDE.md) (entry conditions, order, files you may change,
+> targets), then one milestone file at a time: [`M19`](milestones/M19_recovery.md) · [`M20`](milestones/M20_multiprocess.md) · [`M21`](milestones/M21_journeys.md).
+> This MANIFEST only lists the files the golden tests load and how to run the reference layer in a scratch checkout.
+
 Every file the B5 golden tests depend on, found by tracing what the tests import when they run (plus the migrations,
 which the test database applies, and the B5 sabotage patches). Snapshot of 2026-09-30, `s12-work` at
 `49d1538`.

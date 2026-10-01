@@ -1,5 +1,10 @@
 # B4 dependency folder — M15–M18: verification, consolidation, dead letters, S15 response
 
+> **Agents: start here.** Read [`../README.md`](../README.md) (rules for both batches, the S12→S15 module map, the
+> names the tests patch), then [`AGENT_GUIDE.md`](AGENT_GUIDE.md) (entry conditions, order, files you may change,
+> targets), then one milestone file at a time: [`M15`](milestones/M15_verification.md) · [`M16`](milestones/M16_consolidation.md) · [`M17`](milestones/M17_dead_letter.md) · [`M18`](milestones/M18_response.md).
+> This MANIFEST only lists the files the golden tests load and how to run the reference layer in a scratch checkout.
+
 Every file the B4 golden tests depend on, found by tracing what the tests import when they run (plus the migrations,
 which the test database applies, and the B4 sabotage patches). Snapshot of 2026-09-30, `s12-work` at
 `49d1538`.
