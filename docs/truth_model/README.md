@@ -57,7 +57,7 @@ Phase outputs go in `docs/truth_model/work/`. The assembled document is `docs/tr
 | Phase documents 1–7 | Written (this folder) |
 | `sql/step_evidence.sql` | Draft of the phase 5a evidence view (dimensions D1–D9); `sql/smoke_test.sql` (twelve evidence shapes) passes on PostgreSQL 16 with migrations 001–015 plus drafted 016–017, and each of five view mutations or a mutated expectation makes it fail |
 | Candidate observations C-1 … C-16 | Logged in phase 2, for phase 4 to judge. The most severe: C-9 (durable evidence recovery ignores), C-10 (a recorded FAIL re-run after a crash), C-11 and C-16 (LOCKED money nothing releases) |
-| Owner queue | Corrected in phase 6, including the STOP and DEF rows and the errors in a circulated analysis |
+| Owner queue | Corrected in phase 6, including the STOP and DEF rows and the errors in a circulated analysis. Phase 6 also recommends answers for C-16 (enablement rule), C-12 (CONF-043 A′) and C-11 (proposed CONF-049) |
 | [REVIEW_LOG.md](REVIEW_LOG.md) | What each review pass found and where it was fixed |
 | Phase outputs (`work/`) | None yet. Phase 1 is next |
 

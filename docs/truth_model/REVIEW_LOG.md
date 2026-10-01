@@ -40,3 +40,11 @@ means `docs/implementation/S12_S15_EXECUTION_GATE.md`. Issues are listed most se
 
 A separate analysis of "open items requiring owner approval" was checked against the records at `c505af0`. Its
 errors are listed in phase 6, "Corrections to the circulated analysis", so the owner does not act on them.
+
+## Pass 3 (2026-10-01): recommendations added
+
+Not a review: on the owner's request, phase 6 now carries this work's recommendations for C-16 (refuse unverifiable
+mutations at enablement; production read-only until 2c), C-12 (CONF-043 option A′: `retry_mode = NONE` and a recorded
+EXHAUSTED episode with 0 attempts) and their shared prerequisite C-11 (a proposed CONF-049 operator path for dead
+letters, pinned in M21), with draft record text, proposals to the test-author session and the order in the overall
+process. Nothing in `tests_golden/`, `src/` or the records was changed.

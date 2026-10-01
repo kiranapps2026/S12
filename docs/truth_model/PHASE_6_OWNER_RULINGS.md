@@ -8,6 +8,10 @@ Revised in review pass 2 (`REVIEW_LOG.md` P2-6, P2-18): recorded proposals versu
 (STOP and DEF rows included), the matrix checks C-12 and C-16, and the corrections to a circulated owner-approval
 analysis.
 
+Extended 2026-10-01 (pass 3): recommendations for C-12 and C-16 and their shared prerequisite C-11, with draft record
+text, proposals to the test-author session, and the order in the overall process. See "Recommendations: C-12, C-16
+and C-11".
+
 ## Purpose
 
 Let the matrix finish while rulings stay open. Each open ruling gets both branches written as matrix consequences
@@ -41,7 +45,7 @@ three rulings is **not** what the pack recommends.
 |---|---|---|---|---|---|---|
 | CONF-005 | M15 → | Source of AutonomyLevel for verification-layer selection | Owner must name a source or drop autonomy | A: drop autonomy this phase; deferred register (`:71`) | — | A: required layers by mutation and risk only (as the M15 draft and CONF-041). B: CONFIRM_ALL adds the human layer, so every such step ends `dead_letter (human_verification_pending)` with the budget LOCKED (D4) |
 | CONF-042 | M19 → | How the sweeper finds other tenants' orphaned runs under forced RLS | SECURITY DEFINER `s12_recovery_candidates(runtime_instance_id, limit)` | A, **with CONF-046's amendment**: signature `(runtime_instance_id, limit, orphan_after_s)`, `search_path` pinned with `pg_temp` last (`:105`) | No: the recorded signature lacks the grace and the hardening | Which runs reach the cold path at all; not step verdicts. Decides whether monitoring predicates (5a) may use the same pattern (C-7) |
-| CONF-043 | M19 → | In-flight step of a plan whose digest no longer matches | Never probe; `dead_letter (probe_exhausted)`, LOCKED, PROBE dead letter with evidence `plan_integrity` | A, as recorded (`:137`) | Yes | A: every R3 = mismatch row with a step in flight → `pending_probe → dead_letter`, LOCKED, `unknown_unresolved`/PROBE. B: probe from the admitted step row; verdicts as for a matching digest. C: as A with a new A.2 reason `plan_integrity`. **Check C-12 under A** (below) |
+| CONF-043 | M19 → | In-flight step of a plan whose digest no longer matches | Never probe; `dead_letter (probe_exhausted)`, LOCKED, PROBE dead letter with evidence `plan_integrity` | A, as recorded (`:137`) | Yes | A: every R3 = mismatch row with a step in flight → `pending_probe → dead_letter`, LOCKED, `unknown_unresolved`/PROBE. B: probe from the admitted step row; verdicts as for a matching digest. C: as A with a new A.2 reason `plan_integrity`. **This work recommends A′** (A with `retry_mode = NONE` and a recorded episode; see "Recommendations") because of C-12 |
 | CONF-044 | M19 → | Are checkpoints written, and are they evidence? | Written as a hint, **not pinned** | **A+**: as A, plus one M19 assertion that they are written (`:167`) | No | Under every option checkpoints stay off the evidence ladder and change no verdict. A+ makes M20's tenant-isolation check on `checkpoints` non-vacuous |
 | CONF-045 | M20 → | Lease renewal while a step runs | Renew; **"pinned when an owner assigns it"** (option C) | **A**: renew and pin it in M20 with two cases; reject C explicitly (`:199`) | No: the recorded proposal is the option the pack rejects | A: a long step keeps its lease; no mid-call takeover row. B: no renewal, long TTL; cold-path latency in 5b grows to minutes. C: unpinned concurrency code, and with the pinned M21 defaults (step timeout = lease TTL = 30 s) a mid-call takeover is reachable, so the fenced-out rows (principle 7) are live rows |
 | CONF-046 | M19 → | When is a run orphaned? | Judge by the latest lease; one TTL grace; `search_path` pinned | A, as recorded (`:231`) | Yes | R1 values map to taken over / not taken over as listed in the pack. Sets the detection term of every cold-path latency in 5b. Leaves open: `EXECUTE` on the function is not revoked from `PUBLIC` (B5 review, "checked and left"), a deployment decision |
@@ -77,21 +81,143 @@ There is no option "revert the predicate": the predicate does not exist today.
 
 These are matrix consequences the pack does not discuss. Each goes into the branch write-up.
 
-- **CONF-043 A, the dead letter's retry (C-12).** A PROBE-mode dead letter is retried by calling the provider probe
-  (D5). The probe needs the step's parameters, which live only in the plan that failed its digest. The B5 review
-  fixed the operation (read from `execution_steps`), not the parameters. Either the retry must refuse a
-  `plan_integrity` dead letter, or `retry_mode` should be NONE (human resolution only). Ask the owner which.
-- **CONF-043 A and seed rule m.** Under A the step reaches `dead_letter` without a probe. Rule m (a `dead_letter`
-  step's latest episode is closed EXHAUSTED) holds only if A opens and closes an episode, which neither the record nor
-  the golden says. Principle 5 also flags the reason `probe_exhausted` where no probe ran: cosmetic, or loud if an
-  operator reads it as "the provider was asked three times".
+- **CONF-043 A, the dead letter's retry (C-12), and seed rule m.** Resolved by the recommendation A′ below.
+  Background: a PROBE-mode dead letter is retried by calling the provider probe (D5), and the probe needs the step's
+  parameters, which live only in the plan that failed its digest. The B5 review fixed the operation (read from
+  `execution_steps`), not the parameters. Rule m (a `dead_letter` step's latest episode is closed EXHAUSTED) holds under
+  A only if an episode is recorded, which neither the record nor the golden says. And the reason `probe_exhausted` is
+  used where no probe ran.
 - **CONF-045 B or C and §14.** Under B every cold-path figure in 5b changes; under C a mid-call takeover row is
   reachable. Compute both before the owner decides.
 - **CONF-005 B and §13.** Under B, `human_verification_pending` becomes the most frequent dead letter for CONFIRM_ALL
   tenants, on top of C-16.
 - **C-16 is not a ruling, but the owner should see it here.** By design (C32), every mutation on an adapter without
   `observe()` ends DEAD_LETTER with the budget LOCKED. With no production path to resolve dead letters (C-11), the
-  question "should mutations run in production before real adapters exist?" is the owner's.
+  question "should mutations run in production before real adapters exist?" is the owner's. Recommendation below.
+
+## Recommendations: C-12, C-16 and C-11
+
+These are this work's recommendations, not decisions. They change no gate text and no pinned file. Each option is
+stated as an owner decision with its matrix effect, so it can be ruled in the same pass as the M19 rulings.
+
+### C-16: refuse unverifiable mutations at enablement, not at the end of the run
+
+**Recommendation.** Keep the gate's fail-closed rule unchanged. Move the refusal earlier: a W, D or IRREVERSIBLE
+operation may be `PRODUCTION_ENABLED` only if its adapter really verifies it. Until real adapters exist, production
+runs read operations only.
+
+Why:
+- The rule itself is right. C32 (`:1046-1050`) and FINAL_ARCHITECTURE §3 principle 8 make verification mandatory, and
+  it is certified spec. What is wrong is *when* the system says no. Today a mutation runs, its budget is LOCKED, and
+  only then does the system find it cannot verify the result. The step dead-letters and the money stays held (C-11).
+  Refusing at enablement gives the same safety without charging anyone.
+- The enablement check already half exists. `tools/registry_readiness.py` blocks a production-enabled mutation whose
+  catalog entry has no `observation_method`. It checks the **catalog**, though, not the **adapter**. An operation can
+  declare an observation method while its adapter still inherits `BaseAdapter.observe()`, which returns UNKNOWN. That
+  combination is C-16 exactly.
+- The real adapters are already specified with both paths. `batch_bundles/LAYER_A/ADAPTER_SPECS` (standard, GHL CRM,
+  Gmail) define `probe()` per operation (§3) and `observe()` per observation method (§4), with conformance cases.
+
+What it takes:
+
+| Item | Where | Pinned file touched? |
+|---|---|---|
+| Extend the readiness rule: a production-enabled mutation is BLOCKED unless the adapter bound to it overrides both `observe()` and `probe()` | `tools/registry_readiness.py` (or a sibling check) | No |
+| The same check when a Worker Runtime starts: refuse to start (not to run) when a production-enabled mutation is bound to an adapter that does not override `observe()` and `probe()` | Runtime start-up, M21 (alongside the superuser/BYPASSRLS refusal DEF-003 option B needs) | No; one M21 golden case if the owner wants it pinned |
+| Production read-only until 2c: mutations run in test tenants with the mock only | Catalog and `truth_state` (owner action) | No |
+| Enable each mutation one at a time after its adapter's conformance cases pass | Roadmap 2c; owner action per operation | No |
+
+Matrix effect: every row where D8 is W, D or IRREVERSIBLE and the adapter has no `observe()` becomes unreachable in
+production (status `ruled` once decided). Phase 5b's most frequent ending ("every change I make gets stuck") moves from
+"normal" to "cannot happen in production". Phase 7 adds the enablement rule to the shelf-life assumptions and lists
+2c as the event that reopens those rows.
+
+Alternatives, for the record:
+- **Accept C-16 as is**: mutations run and dead-letter. Every successful mutation holds its budget with no release
+  path (C-11). Not recommended.
+- **Relax verification for adapters without `observe()`**: contradicts C32 and principle 8, needs a gate change and a
+  re-pin, and breaks the safety claim. Not recommended.
+
+Draft decision text (owner, for the deferred register and the certification report):
+> Mutations (W, D, IRREVERSIBLE) are production-enabled only when their adapter implements `observe()` and `probe()`
+> for that operation and its conformance cases pass. Until roadmap 2c, production runs read operations only. The
+> readiness check and the Worker Runtime start-up check enforce this.
+
+### C-12: CONF-043 option A′ (A with `retry_mode = NONE` and a recorded episode)
+
+**Recommendation.** Accept CONF-043 option A with two amendments, applied to the M19 golden draft **before B5 is
+pinned**.
+
+1. **The dead letter's `retry_mode` is `NONE`, not `PROBE`.** A PROBE retry calls the provider probe with the step's
+   parameters, and they exist only in the plan that failed its digest check. The Layer A specs confirm the probe uses
+   "the step's params". Tampering also implies database write access, so `execution_steps` is not fully trusted either:
+   that is the pack's own argument against option B. `NONE` means "leaves pending only through human resolution" (D5),
+   which is the right owner for a suspected tampering incident. The schema already allows it (`015`,
+   `retry_mode IN ('PROBE', 'VERIFY', 'NONE')`).
+2. **Record the episode.** Open and close an EXECUTION episode in the same transaction as the step's move:
+   `none → pending_probe (opened)`, then closed with outcome EXHAUSTED, `attempts = 0`, evidence
+   `{"plan_integrity": true}`. Link it from the dead letter's `episode_id`. This is a legal A.7 path (an exhausted
+   episode keeps status `pending_probe` and gets `closed_at`; no attempt is needed). Seed rule m then holds for every
+   dead-letter step. The operator sees `attempts = 0` and `plan_integrity`, so the reason `probe_exhausted` (the only
+   A.2 edge into `dead_letter`) can no longer be read as "the provider was asked three times". That avoids option C's
+   change to Appendix A and its re-pin of the gate and B1.
+
+Matrix effect: every RC row with R3 = mismatch and a step in flight → step `pending_probe → dead_letter
+(probe_exhausted)`, budget LOCKED, dead letter `unknown_unresolved` / `NONE` / evidence `plan_integrity`, episode
+EXECUTION EXHAUSTED with 0 attempts. Rows without a step in flight are unchanged (CONF-034: every PENDING step
+`cancelled (run_dead_lettered)`, run DEAD_LETTER). Resolution is human only, and depends on C-11.
+
+Draft ruling text for the CONF-043 row (owner):
+> owner <date>: A as proposed, amended: the in-flight step's dead letter has `retry_mode = NONE` (no automated probe
+> from an untrusted plan; human resolution only), and an EXECUTION episode is opened and closed with it (outcome
+> EXHAUSTED, attempts 0, evidence `plan_integrity`, linked by `episode_id`). Golden M19 amended before the B5 pin.
+
+Proposal to the test-author session (this work never edits `tests_golden/`):
+
+| File | Change |
+|---|---|
+| `tests_golden/s12/M19_recovery.py:540-541` (`test_the_in_flight_step_of_a_tampered_plan_is_dead_lettered_never_probed`) | Expect `retry_mode == "NONE"` instead of `"PROBE"`; add: exactly one EXECUTION episode for the step, outcome EXHAUSTED, `attempts == 0`, `closed_at` set, and the dead letter's `episode_id` equal to it |
+| `tests_golden/s12/M19_recovery.py` (new case, C-10) | Crash at `after_verification_before_step_commit` with a FAIL recorded: recovery must not re-run the failed layer. The expected ending (step `failed (verification_failed)`, budget released, `data` dead letter, as §8 step 9) is itself an owner decision, because §13 as written opens a VERIFICATION episode. Record it as a CONF row first |
+| One sabotage patch | A recovery that writes `PROBE` for a `plan_integrity` dead letter |
+
+### C-11, the prerequisite for both: an operator path for dead letters
+
+Both recommendations end in "a human resolves it", and today nothing in production can (IMP-M17-2). The dead-letter
+adapter interface is fixed by the M17 golden draft (`resolve`, `start_retry`, `abandon`, `retry_dead_letter`); only an
+entry point and its authorization are missing.
+
+**Recommendation.** Record a new CONF row (proposed number CONF-049; the session with write rights assigns the
+number) and assign a minimal operator path to M21, pinned by golden cases:
+
+| Capability | Behaviour |
+|---|---|
+| List | A tenant's open dead letters (`pending`, `retrying`) with error type, retry mode, evidence and the held amount; tenant-scoped under RLS |
+| Resolve | Set the outcome (EXECUTED, NOT_EXECUTED, UNDETERMINED); settles a LOCKED reservation per C21; never changes the run or the step (D4) |
+| Retry | Start a retry for PROBE or VERIFY records only (D5); refused for NONE, which covers the C-12 dead letters |
+| Authorization | An admin role of the dead letter's tenant only, audited like the other admin API actions (Phase B4 admin API) |
+
+Draft CONF row (proposed):
+> CONF-049 | M21 | open | §11 and D5 define dead-letter retry and resolution, and the M17 draft fixes their adapter
+> interface, but no milestone builds an entry point (IMP-M17-2; B4 review "known gaps": "an operator entry point is
+> M21", not pinned). A LOCKED reservation therefore has no release path in production and counts against
+> `budget_pool` (I1) | proposal: an admin API to list, resolve and retry dead letters, tenant-scoped, audited, pinned in
+> M21 by golden cases (list under RLS; resolve settles LOCKED per C21 and moves neither run nor step; retry refused for
+> NONE)
+
+**If the owner does not assign it before certification:** the S12–S15 certification report states "LOCKED money has
+no release path" as a known limitation, and production stays read-only. The C-16 recommendation already gives that
+state.
+
+### Order in the overall process
+
+| When | Action | Who | Cost |
+|---|---|---|---|
+| Now, before the B5 pin | Amend the M19 draft for C-12; add the C-10 case once its CONF row is ruled; one sabotage patch | Test-author session, from this proposal | Edits to unpinned drafts only |
+| Owner ruling pass (the M19 rulings) | Rule CONF-043 as A′; record and rule CONF-049; decide the expected ending for C-10; take the C-16 decision | Owner | One pass, one document |
+| M21 | Build and pin the operator path (CONF-049); add the Worker Runtime start-up check (C-16) beside the DEF-003 role check | Implementation session | Small, already-shaped work |
+| Before certification | Extend `tools/registry_readiness.py` to check the adapter, not only the catalog | Implementation session | A tool change, no pinned file |
+| Certification | Report scope: mutations not production-enabled until a verifiable adapter exists; CONF-049 delivered or listed as a limitation | Owner | One section of the report |
+| Roadmap 2c | Enable mutations one operation at a time after their adapter's conformance cases pass (Layer A first) | Owner, per operation | One decision per operation |
 
 ## Corrections to the circulated owner-approval analysis
 
@@ -133,8 +259,8 @@ never probe) match the pack.
 
 1. From phase 3 onward, write the branch section as soon as a ruling's rows are mapped.
 2. Hand the owner one document, `work/P6_BRANCHES.md`, ordered by the milestone each item blocks: M1/M5/M10 (the
-   STOP close-outs, which need only the pins), M15 (005), M19 (042, 043, 044, 046, 047, 048), M20 (045), then DEF-003
-   and C-16.
+   STOP close-outs, which need only the pins), M15 (005), M19 (042, 043 as A′, 044, 046, 047, 048, and the C-10
+   ending), M20 (045), M21 (CONF-049), then DEF-003 and C-16.
 3. When the owner rules, they record it themselves (the pack's "How to apply"). This work then applies the chosen
    branch to the matrix, retires the other branch's rows in `tm_ids.json` (never deletes them), changes the affected
    tags from `unknown` or `proposed` to `ruled`, and logs it in the decision log.
@@ -143,7 +269,9 @@ never probe) match the pack.
 
 - Every ruling in the open set has a branch section, or a recorded ruling.
 - Every recorded ruling is applied to the matrix; no row is still tagged `ruling:<CONF>` for a ruled CONF.
-- Each of C-12 and C-16 has the owner's answer, or a TF entry carrying it as open.
+- Each of C-12, C-16 and C-11 (CONF-049) has the owner's answer, or a TF entry carrying it as open.
+- The M19 draft amendment (C-12) and the C-10 case are either in the B5 drafts before the pin, or recorded as
+  open with the owner's reason.
 - The owner was interrupted once, with one document.
 
 ## Can it split?
