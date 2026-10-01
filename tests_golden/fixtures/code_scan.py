@@ -23,10 +23,8 @@ PROTOTYPE = frozenset({
     "src/engine/stages/s14_verification/handler.py", "src/engine/stages/s15_final_state/handler.py",
     "src/adapters/postgres/admission.py", "src/adapters/postgres/execution.py",
     "src/adapters/postgres/budget_reserver.py", "src/adapters/postgres/live_authorization.py",
-    "src/adapters/postgres/confirmations.py",
     "src/adapters/runtime/circuit_breaker.py",
     "src/engine/execution/__init__.py", "src/engine/reliability/__init__.py",
-    "src/contracts/plan_hash.py",
 })
 
 S12_TABLES = ("execution_runs", "execution_steps", "execution_manifests", "execution_plans", "execution_ownership",

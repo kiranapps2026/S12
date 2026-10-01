@@ -217,7 +217,10 @@ def _row(schema, run, tenant, step_id):
                             step_id))[0]
 
 
-def _ledger_rows(schema, run, key):
+def _ledger_rows(schema, run, key, tenant=None):
+    if tenant is not None:
+        return run(schema.fetch("SELECT tenant_id, kernel_op_id, result FROM idempotency_ledger"
+                                " WHERE idempotency_key = $1 AND tenant_id = $2", key, tenant))
     return run(schema.fetch("SELECT tenant_id, kernel_op_id, result FROM idempotency_ledger WHERE idempotency_key = $1",
                             key))
 
@@ -457,9 +460,12 @@ def test_storing_the_same_result_twice_is_a_hit_and_a_different_one_is_a_conflic
     with pytest.raises(IdempotencyConflict):
         run(ledger.store(holder_a, idempotency_key="k-conflict", kernel_op_id="other.op", result=AdapterResult("ok"),
                          ttl_s=3600))
-    # Cross-tenant: RLS isolation means each tenant's ledger is private; same key across tenants is not a conflict
+    # Cross-tenant: same key across tenants is not a conflict (composite PK); each tenant sees its own row under RLS
     run(ledger.store(holder_b, result=AdapterResult("ok"), **store))
-    assert len(_ledger_rows(db_schema, run, "k-conflict")) == 1  # RLS: only current tenant's rows visible
+    rows_a = _ledger_rows(db_schema, run, "k-conflict", tenant="t-conflict-a")
+    rows_b = _ledger_rows(db_schema, run, "k-conflict", tenant="t-conflict-b")
+    assert len(rows_a) == 1 and rows_a[0]["tenant_id"] == "t-conflict-a"
+    assert len(rows_b) == 1 and rows_b[0]["tenant_id"] == "t-conflict-b"
 
 
 def test_a_fenced_out_runtime_can_neither_mark_nor_record(db_schema, run):

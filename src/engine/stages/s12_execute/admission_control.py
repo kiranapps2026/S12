@@ -25,6 +25,9 @@ DELAY_RETRY_AFTER_MS = 500
 DEGRADED_FEATURES = ("analytics", "notifications", "post_processing")   # WORKER_LIFECYCLE §11 DEGRADE_FEATURES
 LEDGER_KIND = "admission_decision"
 
+# The retry delays below are the phase defaults; the loop (M12) supplies them from the
+# settings object (gate §21 S1, IMP-X8). Keep the module constants as fallbacks.
+
 # REJECT paths (C30): the C23 revocation path, the C15 budget path, or cancel the remaining steps and consolidate.
 REVOCATION = "revocation"
 BUDGET = "budget"
@@ -68,8 +71,6 @@ _GATES = (
     ("10", "budget_available", False, "budget_exhausted", _A.REJECT),
     ("11", "system_overloaded", True, "system_overloaded", _A.DELAY),
 )
-_RETRY_AFTER_MS = types.MappingProxyType({_A.QUEUE: QUEUE_RETRY_AFTER_MS, _A.DELAY: DELAY_RETRY_AFTER_MS})
-
 _R = StepTerminalReason
 _REJECT_OUTCOMES = types.MappingProxyType({
     "1": (_R.KILL_SWITCH_ENGAGED, REVOCATION),
@@ -79,11 +80,17 @@ _REJECT_OUTCOMES = types.MappingProxyType({
 _OTHER_REJECT = (_R.ADMISSION_REJECTED, CONSOLIDATE)
 
 
-def evaluate(snapshot: AdmissionSnapshot) -> AdmissionDecision:
+def _retry_ms(queue_ms: int, delay_ms: int, status: str) -> int | None:
+    return {"QUEUE": queue_ms, "DELAY": delay_ms}.get(status)
+
+
+def evaluate(snapshot: AdmissionSnapshot, *, queue_retry_ms: int = QUEUE_RETRY_AFTER_MS,
+             delay_retry_ms: int = DELAY_RETRY_AFTER_MS) -> AdmissionDecision:
     for gate, field, fails_when, reason, status in _GATES:
         if getattr(snapshot, field) is fails_when:
             return AdmissionDecision(status, reason=reason, detail=f"admission gate {gate} ({field})",
-                                     retry_after_ms=_RETRY_AFTER_MS.get(status), gate_failed=gate)
+                                     retry_after_ms=_retry_ms(queue_retry_ms, delay_retry_ms, status),
+                                     gate_failed=gate)
     if snapshot.degrade:
         return AdmissionDecision(_A.DEGRADE, degraded_features=DEGRADED_FEATURES)
     return AdmissionDecision(_A.ACCEPT)
@@ -91,9 +98,14 @@ def evaluate(snapshot: AdmissionSnapshot) -> AdmissionDecision:
 
 async def admit_step(snapshot_source: Callable[[], Awaitable[AdmissionSnapshot]], *, ledger: DecisionLedger,
                      max_attempts: int, sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
-                     ) -> AdmissionDecision:
+                     queue_retry_ms: int = QUEUE_RETRY_AFTER_MS,
+                     delay_retry_ms: int = DELAY_RETRY_AFTER_MS) -> AdmissionDecision:
     """Evaluate a fresh snapshot up to ``max_attempts`` times, waiting ``retry_after_ms`` after each QUEUE/DELAY but
-    the last; then REJECT ``admission_exhausted``. Every decision, the final one included, is a ledger event."""
+    the last; then REJECT ``admission_exhausted``. Every decision, the final one included, is a ledger event.
+
+    The retry delays default to the module constants (the phase defaults) and may be overridden from
+    ``ExecutionSettings`` (gate §21 S1).
+    """
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts!r}")
     for attempt in range(1, max_attempts + 1):

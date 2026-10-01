@@ -101,6 +101,13 @@ class ReconciliationOutcome(StrEnum):
     EXHAUSTED = "EXHAUSTED"
 
 
+class ConsolidationOutcome(StrEnum):
+    """``execution_runs.consolidation`` (gate §10)."""
+    SUCCESS = "SUCCESS"
+    PARTIAL = "PARTIAL"
+    FAILURE = "FAILURE"
+
+
 class LeaseStatus(StrEnum):
     PENDING = "pending"            # only inside the acquisition transaction (C26)
     ACTIVE = "active"

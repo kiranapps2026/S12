@@ -184,6 +184,11 @@ BUDGET = types.MappingProxyType({**_targets("reservation"),
                                  _IN_MEMORY_PENDING: frozenset({B.RESERVED.value, B.RELEASED.value})})
 TERMINAL_STEP = frozenset(s.value for s in S) - frozenset(STEP)
 
+# Step states that represent an in-flight (not yet terminal) step (CONF-048, §13 step 3).
+# Recovery imports this tuple instead of constructing its own, keeping M03's C24 invariant
+# (UNKNOWN is never written outside this file and loop.py) intact.
+IN_FLIGHT_STEP_STATES = (S.RUNNING, S.TIMEOUT, S.UNKNOWN, S.PENDING_PROBE)
+
 
 def _check(table, kind: str, current: str, new: str) -> None:
     if new not in table.get(current, frozenset()):

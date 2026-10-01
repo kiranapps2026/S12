@@ -1,189 +1,120 @@
-"""Re-exports for S12 engine tests and consumers (gate C4).
-
-The canonical implementations live in ``adapters.runtime.reliability`` so that S8 can
-import them without a dependency from ``engine`` down to ``adapters``.  This module
-provides the ``engine.stages.s12_execute.reliability`` path the golden tests pin.
-"""
+"""Reliability guard around one adapter attempt (gate C4, C31, C32, C37; RELIABILITY §8 acquisition order)."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable
+from contextlib import asynccontextmanager
+from typing import Any
 
 from contracts.adapter_interface import (
-    AdapterResult,
+    RETRYABLE,
     BudgetStateError,
-    CallMeta,
     ErrorClass,
     GuardedCall,
     Observation,
     ProbeOutcome,
 )
-from contracts.execution_states import CircuitBreakerState, ReservationState
-from contracts.step_execution import StepAdapter
+from contracts.execution_states import ReservationState
+from contracts.step_execution import AdapterResult
 
 logger = logging.getLogger(__name__)
+_KNOWN = frozenset(ErrorClass)
 
-
-# ------------------------------------------------------------------ budget tracker ----------------------------------------------------------
 
 class BudgetTracker:
-    """Read-only precondition: the reservation for this call is LOCKED (C31).
-
-    ``reserver`` is either:
-      - a callable ``(tenant_id, reservation_id) -> awaitable row`` (legacy; tests),
-      - an object with an async ``.reservation(tenant_id, reservation_id)`` method
-        (the PostgresBudgetReserver / BudgetReserver protocol).
-    """
-
-    def __init__(self, reserver: Callable[[str, str], Awaitable[object | None]] | object) -> None:
-        self._reserver = reserver
-
-    async def _lookup(self, tenant_id: str, reservation_id: str) -> object | None:
-        reserver = self._reserver
-        if hasattr(reserver, "reservation"):
-            return await reserver.reservation(tenant_id, reservation_id)
-        if hasattr(reserver, "status"):
-            status = await reserver.status(tenant_id, reservation_id)
-            if status is None:
-                return None
-            return type("Row", (), {"status": status, "step_id": None})()
-        return await reserver(tenant_id, reservation_id)
+    def __init__(self, lookup) -> None:
+        self._lookup = lookup
 
     async def check(self, call: GuardedCall) -> None:
-        """Raise BudgetStateError when the reservation is absent or not LOCKED."""
-        row = await self._lookup(call.context.tenant_id, call.reservation_id)
-        if row is None:
-            raise BudgetStateError(f"reservation {call.reservation_id} not found")
-        # Row-like objects from the DB are dict-access (asyncpg Record); tests build attribute objects.
-        status = row["status"] if hasattr(row, "__getitem__") else getattr(row, "status", None)
-        step_id = row["step_id"] if hasattr(row, "__getitem__") else getattr(row, "step_id", None)
-        if step_id != call.step_id:
-            raise BudgetStateError(f"reservation {call.reservation_id} is not for step {call.step_id}")
-        if status != ReservationState.LOCKED:
-            raise BudgetStateError(
-                f"reservation {call.reservation_id} status={status} is not locked"
-            )
+        row = await self._lookup.reservation(call.context.tenant_id, call.reservation_id)
+        if row is None or row.step_id != call.step_id or row.status != ReservationState.LOCKED:
+            raise BudgetStateError(f"step {call.step_id} has no LOCKED reservation {call.reservation_id}")
 
 
-# ------------------------------------------------------------------ timeout manager ---------------------------------------------------------
+class InverseBudget:
+    """The budget layer for an explicit rollback's inverse calls (D2, ruling CONF-038): an inverse of a completed step
+    has no reservation in this phase, so a call passes only when it has none and is an inverse (its key ends
+    ``:inverse``); any other call is refused like a missing reservation."""
+    async def check(self, call: GuardedCall) -> None:
+        if call.reservation_id is not None or not call.call_meta.idempotency_key.endswith(":inverse"):
+            raise BudgetStateError(f"step {call.step_id}: only an inverse call may run without a reservation")
+
 
 class TimeoutManager:
-    """Wraps an awaitable with an asyncio timeout (C32).
-
-    ``timeout`` on the call wins over the step default.  ``0`` or ``None`` means no timeout.
-    A ``TimeoutError`` from asyncio is surfaced as-is so the guard can normalise it.
-    """
-
-    async def run(self, awaitable: Awaitable, timeout_s: float) -> object:
-        deadline = max(timeout_s, 0.0)
-        if deadline == 0:
+    async def run(self, awaitable: Awaitable, timeout_s: float):
+        async with asyncio.timeout(timeout_s):
             return await awaitable
-        try:
-            async with asyncio.timeout(deadline):
-                return await awaitable
-        except TimeoutError:
-            raise
 
 
-# ------------------------------------------------------------------ health / billing --------------------------------------------------------
-
-@dataclass
-class HealthEvent:
-    provider_id: str
-    status: str                  # "ok" | "error" | "timeout" | "circuit_open" | ...
-    latency_ms: float
-    attempt: int
+def _defect() -> AdapterResult:
+    return AdapterResult("error", False, ErrorClass.ADAPTER_DEFECT)
 
 
-@dataclass
-class BillingEvent:
-    provider_id: str
-    kernel_op_id: str
-    status: str                  # "ok" | "error" | ...
-    attempt: int
-    call_meta: CallMeta | None = None
+def _normalise(result: Any) -> AdapterResult:
+    if not isinstance(result, AdapterResult):
+        return _defect()
+    if result.status == "ok":
+        return AdapterResult("ok", False, None, result.data)
+    if result.status == "timeout":
+        return AdapterResult("timeout", False, ErrorClass.TIMEOUT)
+    if result.status == "error" and result.error_class in _KNOWN:
+        cls = ErrorClass(result.error_class)
+        return AdapterResult("error", cls in RETRYABLE, cls, result.data)
+    return _defect()
 
-
-class InProcessHealthMonitor:
-    """In-memory health event sink (S8 reads this after the guard returns)."""
-    def __init__(self) -> None:
-        self.events: list[HealthEvent] = []
-
-    def record(self, provider_id: str, status: str, latency_ms: float, attempt: int) -> None:
-        self.events.append(HealthEvent(provider_id=provider_id, status=status, latency_ms=latency_ms, attempt=attempt))
-
-
-class InProcessBilling:
-    """In-memory billing event sink."""
-    def __init__(self) -> None:
-        self.events: list[BillingEvent] = []
-
-    def record(self, call_meta: CallMeta, kernel_op_id: str, status: str, attempt: int) -> None:
-        self.events.append(BillingEvent(
-            provider_id="", kernel_op_id=kernel_op_id, status=status, attempt=attempt, call_meta=call_meta
-        ))
-
-
-# ------------------------------------------------------------------ bulkhead ---------------------------------------------------------------
 
 class InProcessBulkhead:
-    """Per-provider concurrency limiter (RELIABILITY §3).
-
-    ``slot(provider)`` returns an async context manager.  When the limit is reached
-    the next caller waits until a slot frees.
-    """
-
     def __init__(self, max_concurrent: int) -> None:
-        if max_concurrent < 1:
-            raise ValueError("max_concurrent must be >= 1")
         self._max = max_concurrent
-        self._sem = asyncio.Semaphore(max_concurrent)
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
         self._in_use: dict[str, int] = {}
-
-    def slot(self, provider: str):
-        class _Slot:
-            async def __aenter__(_self):
-                await self._sem.acquire()
-                self._in_use[provider] = self._in_use.get(provider, 0) + 1
-
-            async def __aexit__(_self, *exc):
-                self._in_use[provider] = max(0, self._in_use.get(provider, 1) - 1)
-                self._sem.release()
-
-        return _Slot()
 
     def in_use(self, provider: str) -> int:
         return self._in_use.get(provider, 0)
 
+    @asynccontextmanager
+    async def slot(self, provider: str):
+        semaphore = self._semaphores.setdefault(provider, asyncio.Semaphore(self._max))
+        async with semaphore:
+            self._in_use[provider] = self._in_use.get(provider, 0) + 1
+            try:
+                yield
+            finally:
+                self._in_use[provider] -= 1
 
-# ------------------------------------------------------------------ retry storm guard -------------------------------------------------------
 
 class InProcessRetryStormGuard:
-    """Bounded retries per (provider, operation) within a sliding window (RELIABILITY §6)."""
-
     def __init__(self, max_retries: int, window_s: float, monotonic: Callable[[], float] = time.monotonic) -> None:
-        if max_retries < 0:
-            raise ValueError("max_retries must be >= 0")
-        self._max = max_retries
-        self._window = window_s
-        self._clock = monotonic
-        self._hits: dict[tuple[str, str], list[float]] = {}
+        self._max, self._window, self._now = max_retries, window_s, monotonic
+        self._seen: dict[tuple[str, str], deque] = {}
 
     def allow_retry(self, provider: str, operation: str) -> bool:
-        key = (provider, operation)
-        now = self._clock()
-        window_start = now - self._window
-        self._hits[key] = [t for t in self._hits.get(key, []) if t > window_start]
-        if len(self._hits[key]) >= self._max:
+        now, seen = self._now(), self._seen.setdefault((provider, operation), deque())
+        while seen and now - seen[0] >= self._window:
+            seen.popleft()
+        if len(seen) >= self._max:
             return False
-        self._hits[key].append(now)
+        seen.append(now)
         return True
 
 
-# ------------------------------------------------------------------ reliability guard -------------------------------------------------------
+class InProcessHealthMonitor:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, float]] = []
+
+    def record(self, provider: str, status: str, latency_ms: float, attempt: int = 0) -> None:
+        self.events.append((provider, status, latency_ms))
+
+
+class InProcessBilling:
+    def __init__(self) -> None:
+        self.records: list = []
+
+    def record(self, meta, kernel_op_id: str, status: str, attempt: int = 0) -> None:
+        self.records.append((meta.attempt_id if meta else None, kernel_op_id, status, attempt))
+
 
 class ReliabilityGuard:
     """Orchestrates the 5 guard components around a single adapter call (C4, C37).
@@ -210,8 +141,8 @@ class ReliabilityGuard:
         adapter: StepAdapter,
         *,
         bulkhead: InProcessBulkhead,
-        breaker: Callable[[str], str] | None = None,
-        budget: Callable[[GuardedCall], Awaitable[None]] | None = None,
+        breaker: InProcessCircuitBreaker | None = None,
+        budget: BudgetTracker | None = None,
         retry_storm: InProcessRetryStormGuard | None = None,
         timeouts: TimeoutManager,
         health: InProcessHealthMonitor,
@@ -233,36 +164,24 @@ class ReliabilityGuard:
         attempt = call.attempt
         started = time.monotonic()
 
-        # 1. bulkhead
-        slot = self._bulkhead.slot(provider)
-        async with slot:
-            # 2. circuit breaker allow()
-            if self._breaker is not None:
-                if not self._breaker.allow(provider):
-                    self._breaker.record_ignored(provider)
-                    # No health/billing for a refused call: adapter never ran.
-                    return AdapterResult("error", False, ErrorClass.CIRCUIT_OPEN.value)
+        async with self._bulkhead.slot(provider):
+            if self._breaker is not None and not self._breaker.allow(provider):
+                self._breaker.record_ignored(provider)
+                return AdapterResult("error", False, ErrorClass.CIRCUIT_OPEN)
 
-            # 3. budget
             if self._budget is not None:
                 try:
-                    if hasattr(self._budget, "check"):
-                        await self._budget.check(call)
-                    else:
-                        await self._budget(call)
+                    await self._budget.check(call)
                 except BudgetStateError:
-                    # Release the breaker trial slot if we're in HALF_OPEN, then re-raise.
                     if self._breaker is not None:
                         self._breaker.record_ignored(provider)
                     raise
 
-            # 4. retry storm (attempt > 1 only)
             if attempt > 1 and self._retry_storm is not None:
                 if not self._retry_storm.allow_retry(provider, call.kernel_op_id):
                     self._record_outcome(provider, call, attempt, started, "retry_storm", ErrorClass.RETRY_STORM.value, False)
                     return AdapterResult("error", False, ErrorClass.RETRY_STORM.value)
 
-            # 5. call with timeout
             try:
                 inner = self._adapter.call(
                     call.kernel_op_id, call.params, call.binding, call.context, call_meta=call.call_meta
@@ -271,47 +190,27 @@ class ReliabilityGuard:
             except TimeoutError:
                 self._record_failure(provider, call, attempt, started, "timeout", ErrorClass.TIMEOUT.value, False)
                 return AdapterResult("timeout", False, ErrorClass.TIMEOUT.value)
+            except BudgetStateError:
+                if self._breaker is not None:
+                    self._breaker.record_ignored(provider)
+                raise
             except Exception as exc:  # noqa: BLE001 — C32 adapter defect
                 self._record_failure(provider, call, attempt, started, "adapter_defect", ErrorClass.ADAPTER_DEFECT.value, False)
                 logger.error("adapter defect", extra={"kernel_op_id": call.kernel_op_id, "attempt_id": call.call_meta.attempt_id, "exception_type": type(exc).__name__})
                 return AdapterResult("error", False, ErrorClass.ADAPTER_DEFECT.value)
 
-            # 6. normalise result
-            try:
-                status = raw.status
-                error_class = raw.error_class
-                retryable = raw.retryable
-                data = raw.data
-            except AttributeError:
-                self._record_failure(provider, call, attempt, started, "adapter_defect", ErrorClass.ADAPTER_DEFECT.value, False)
-                return AdapterResult("error", False, ErrorClass.ADAPTER_DEFECT.value)
-
-            if status == "ok":
+            result = _normalise(raw)
+            if result.status == "ok":
                 self._record_success(provider, call, attempt, started)
-                return AdapterResult("ok", False)
-
-            # Known non-error statuses from adapters: "timeout". Everything else is adapter_defect.
-            if status == "timeout":
-                self._record_failure(provider, call, attempt, started, "timeout", ErrorClass.TIMEOUT.value, False)
-                return AdapterResult("timeout", False, ErrorClass.TIMEOUT.value)
-
-            # Unknown/foreign status: normalize to adapter_defect.
-            if status != "error":
-                self._record_failure(provider, call, attempt, started, "error", ErrorClass.ADAPTER_DEFECT.value, False)
-                return AdapterResult("error", False, ErrorClass.ADAPTER_DEFECT.value)
-
-            if error_class not in {e.value for e in ErrorClass}:
-                error_class = ErrorClass.ADAPTER_DEFECT.value
-
-            retryable = error_class in {
-                ErrorClass.NOT_DISPATCHED.value,
-                ErrorClass.RATE_LIMITED.value,
-                ErrorClass.SERVER_ERROR.value,
-                ErrorClass.TIMEOUT.value,
-                ErrorClass.RETRY_STORM.value,
-            }
-            self._record_failure(provider, call, attempt, started, status, error_class, retryable)
-            return AdapterResult("error", retryable, error_class)
+            elif result.error_class == ErrorClass.CLIENT_ERROR.value:
+                if self._breaker is not None:
+                    self._breaker.record_ignored(provider)
+                self._health.record(provider, result.status, (time.monotonic() - started) * 1000, attempt)
+                self._billing.record(call.call_meta, call.kernel_op_id, result.status, attempt)
+            else:
+                self._record_failure(provider, call, attempt, started, result.status,
+                                     result.error_class or ErrorClass.ADAPTER_DEFECT.value, result.retryable)
+            return result
 
     async def probe(self, call: GuardedCall) -> ProbeOutcome:
         """Probe the provider without side effects (C37)."""
@@ -335,8 +234,7 @@ class ReliabilityGuard:
                 return raw
             return ProbeOutcome.INCONCLUSIVE
 
-    async def observe(self, kernel_op_id: str, observation_spec: dict, binding: FrozenBindingIdentity,
-                      context: ExecutionContext) -> Observation:
+    async def observe(self, kernel_op_id: str, observation_spec: dict, binding, context) -> Observation:
         """Observe provider state without side effects (C37)."""
         provider = binding.provider
         slot = self._bulkhead.slot(provider)
@@ -372,17 +270,11 @@ class ReliabilityGuard:
     def _record_failure(self, provider: str, call: GuardedCall, attempt: int, started: float,
                         status: str, error_class: str, retryable: bool) -> None:
         if self._breaker is not None:
-            if error_class == ErrorClass.CLIENT_ERROR.value:
-                # Client errors never open the breaker (C23): release trial slot but stay in current state.
-                self._breaker.record_ignored(provider)
-            else:
-                self._breaker.record_failure(provider)
+            self._breaker.record_failure(provider)
         self._health.record(provider, status, (time.monotonic() - started) * 1000, attempt)
         self._billing.record(call.call_meta, call.kernel_op_id, status, attempt)
 
     def _record_outcome(self, provider: str, call: GuardedCall, attempt: int, started: float,
                         status: str, error_class: str, retryable: bool) -> None:
-        if self._breaker is not None:
-            self._breaker.record_ignored(provider)
         self._health.record(provider, status, (time.monotonic() - started) * 1000, attempt)
         self._billing.record(call.call_meta, call.kernel_op_id, status, attempt)

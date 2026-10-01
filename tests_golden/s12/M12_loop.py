@@ -246,6 +246,32 @@ def _ops(state):
     return {s.id: s.kernel_op_id for s in state.plan.plan.steps}
 
 
+async def _snapshot(schema, tenant, execution):
+    """Everything the loop could write for this execution."""
+    counts = {}
+    for table in ("execution_events", "worker_leases", "budget_reservations", "idempotency_ledger",
+                  "step_reconciliations"):
+        counts[table] = await schema.fetchval(f"SELECT count(*) FROM {table} WHERE tenant_id = $1", tenant)
+    counts["state_transitions"] = await schema.fetchval(
+        "SELECT count(*) FROM state_transitions WHERE tenant_id = $1 AND entity_type <> 'lease'", tenant)
+    steps = await schema.fetch("SELECT step_id, status, terminal_reason FROM execution_steps"
+                               " WHERE execution_id = $1 ORDER BY step_id", execution)
+    run_row = await schema.fetch("SELECT status, terminal_reason FROM execution_runs"
+                                 " WHERE execution_id = $1", execution)
+    owner = await schema.fetch("SELECT runtime_instance_id, fencing_token, lease_id FROM execution_ownership"
+                               " WHERE execution_id = $1", execution)
+    return counts, [tuple(r) for r in steps], [tuple(r) for r in run_row], [tuple(r) for r in owner]
+
+
+async def _take_over(schema, execution):
+    rows = await schema.fetch("SELECT runtime_instance_id, fencing_token FROM execution_ownership"
+                              " WHERE execution_id = $1", execution)
+    owner = rows[0] if rows else None
+    new_token = await schema.fetchval("SELECT nextval('fence_token_seq')")
+    await schema.execute("UPDATE execution_ownership SET runtime_instance_id = 'runtime-B', fencing_token = $2"
+                         " WHERE execution_id = $1", execution, new_token)
+
+
 # --- the happy path ---------------------------------------------------------------------------------------------------
 
 def test_a_chain_runs_in_order_and_every_step_completes(db_schema, run):
@@ -558,6 +584,29 @@ def test_dispatch_goes_through_the_in_process_dispatcher():
         return await handle
 
     assert asyncio.run(scenario()) == "done" and seen == [("t", "e")]
+
+
+async def _force_plan_update(schema, execution, assignments):
+    """Tamper below the application: the table's immutability trigger is bypassed for this one superuser
+    transaction (``session_replication_role``), as a direct database write would."""
+    await schema.execute("SET LOCAL session_replication_role = replica;"
+                         f" UPDATE execution_plans SET {assignments} WHERE execution_id = $x${execution}$x$")
+
+
+async def _retamper(schema, execution, how):
+    from contracts import codec
+    from contracts.plan_hash import canonical_plan_digest
+    from contracts.stage_outputs import Plan
+    if how == "undecodable":
+        await _force_plan_update(schema, execution, """canonical_plan = '{"steps": "none"}'::jsonb""")
+        return
+    raw = await schema.fetchval("SELECT canonical_plan::text FROM execution_plans WHERE execution_id = $1", execution)
+    body = json.loads(raw)
+    body["steps"][0]["params"] = {**body["steps"][0]["params"], "tampered": True}
+    assignments = f"canonical_plan = $j${json.dumps(body)}$j$::jsonb"
+    if how == "plan_hash_rewritten":                     # the plan row is consistent again; the manifest is not
+        assignments += f", plan_hash = '{canonical_plan_digest(codec.decode(Plan, body))}'"
+    await _force_plan_update(schema, execution, assignments)
 
 
 def test_no_s12_to_s15_module_schedules_tasks_itself():

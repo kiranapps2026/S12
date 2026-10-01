@@ -34,25 +34,25 @@ class PostgresConfirmationStore:
         async with self._db.tenant_transaction(tenant_id) as connection:
             await connection.execute("""
                 UPDATE pending_confirmations SET status = 'expired'
-                 WHERE confirmation_id = $1 AND tenant_id = $4 AND status = 'pending' AND expires_at <= now()
-                   AND user_id = $2 AND plan_hash = $3""", confirmation_id, user_id, plan_hash, tenant_id)
+                 WHERE confirmation_id = $1 AND status = 'pending' AND expires_at <= now()
+                   AND user_id = $2 AND plan_hash = $3""", confirmation_id, user_id, plan_hash)
             done = await connection.execute("""
                 UPDATE pending_confirmations SET status = 'consumed', consumed_at = now()
-                 WHERE confirmation_id = $1 AND tenant_id = $4 AND user_id = $2 AND plan_hash = $3
+                 WHERE confirmation_id = $1 AND user_id = $2 AND plan_hash = $3
                    AND status = 'pending' AND expires_at > now()""",
-                confirmation_id, user_id, plan_hash, tenant_id)
+                confirmation_id, user_id, plan_hash)
             if done == "UPDATE 1":
                 return CONSUMED
             expired = await connection.fetchval("""
                 SELECT status = 'expired' FROM pending_confirmations
-                 WHERE confirmation_id = $1 AND tenant_id = $4 AND user_id = $2 AND plan_hash = $3""",
-                confirmation_id, user_id, plan_hash, tenant_id)
+                 WHERE confirmation_id = $1 AND user_id = $2 AND plan_hash = $3""",
+                confirmation_id, user_id, plan_hash)
         return EXPIRED if expired else MISMATCH
 
     async def reject(self, confirmation_id: str, *, tenant_id: str, user_id: str) -> bool:
         async with self._db.tenant_transaction(tenant_id) as connection:
             done = await connection.execute("""
                 UPDATE pending_confirmations SET status = 'rejected'
-                 WHERE confirmation_id = $1 AND tenant_id = $3 AND user_id = $2 AND status = 'pending'""",
-                confirmation_id, user_id, tenant_id)
+                 WHERE confirmation_id = $1 AND user_id = $2 AND status = 'pending'""",
+                confirmation_id, user_id)
         return done == "UPDATE 1"

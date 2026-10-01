@@ -12,7 +12,8 @@ SUCCESS, FAILURE = "success", "failure"
 _LOOKUP = ("SELECT kernel_op_id, result FROM idempotency_ledger WHERE tenant_id = $1 AND idempotency_key = $2"
            " AND expires_at > now()")
 _INSERT = ("INSERT INTO idempotency_ledger (idempotency_key, tenant_id, kernel_op_id, result, expires_at)"
-           " VALUES ($1, $2, $3, $4::jsonb, now() + make_interval(secs => $5)) ON CONFLICT (idempotency_key) DO NOTHING"
+           " VALUES ($1, $2, $3, $4::jsonb, now() + make_interval(secs => $5))"
+           " ON CONFLICT (tenant_id, idempotency_key) DO NOTHING"
            " RETURNING idempotency_key")
 _EXISTING = "SELECT kernel_op_id, result FROM idempotency_ledger WHERE tenant_id = $1 AND idempotency_key = $2"
 
