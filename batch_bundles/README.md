@@ -10,6 +10,7 @@ and a pinned document disagree, the pinned document wins and the agent STOPs (se
 | 2. `B1_M01-M04/`, `B2_M05-M09/`, `B3_M10-M14/`, `B4_M15-M18/` or `B5_M19-M21/` + `AGENT_GUIDE.md` | Batch entry conditions, order, per-file ownership, milestone targets, exit checks |
 | 3. `<batch>/milestones/Mxx_*.md` | One milestone: interface, logic and conditions, rulings, traps, done checklist |
 | 4. `<batch>/MANIFEST.md` | Every file the batch's golden tests load; for B3–B5, how to run the reference layer in a scratch checkout |
+| 5. [`IMPROVEMENT_GUIDE_B3-B5.md`](IMPROVEMENT_GUIDE_B3-B5.md) | Extra points for an existing B3–B5 implementation: fix method, agent tests, validation runbook, cross-stage dependency map (does not change the flow above) |
 
 ## Status of every batch (verified 2026-10-01 on `s12-work` `f4a8d5f`, PostgreSQL 16)
 
