@@ -1,13 +1,13 @@
 # Gmail: adapter specification (`mail`)
 
-> Read [`README.md`](README.md) first. Its contract (§1), error rules (§2), probe and observe rules (§3, §4),
+> Read [`README.md`](README.md) first, especially §1.1 (how S12 really calls the adapter). Its contract (§1), error rules (§2), probe and observe rules (§3, §4),
 > credentials (§5) and test plan (§6) apply unchanged. This file records only what is **specific** to the Gmail API.
 > Every fact about Gmail is marked **VERIFY** until it has been checked against Google's current documentation **and**
 > a recorded sandbox response.
 
 | | |
 |---|---|
-| Status | DRAFT (owner review). **Excluded from the launch allow-list** (see §1) |
+| Status | DRAFT (owner review). Rechecked against the B3–B5 reference code. **Excluded from the launch allow-list** (see §1) |
 | Provider API and version | Gmail API v1, base `https://gmail.googleapis.com/gmail/v1`, user `me` (the authenticated or impersonated mailbox) (VERIFY) |
 | Adapter class / module | `MailAdapter` in `src/engines/mail/adapter.py` (catalog `engine_module: engines.mail`, `adapter_class: MailAdapter`) |
 | Catalog provider id | `mail` (breaker and bulkhead key, CONF-022) |
@@ -40,8 +40,10 @@
 **Why excluded at launch:**
 
 - The standard launch rule allows no IRREVERSIBLE op.
-- The human verification layer that IRREVERSIBLE steps require has no channel yet (D4). Every send would therefore end
-  in a dead letter, or wait on a verification that cannot complete.
+- The human verification layer that IRREVERSIBLE steps require has no channel yet (D4). In the code
+  (`required_verification_layers`), an IRREVERSIBLE step needs the `semantic` and `human` layers; the human layer
+  returns UNKNOWN at once, so **every** send, even a perfect one, ends as a `human_verification_pending` dead letter
+  with its budget LOCKED (README §1.1 item 5).
 - **Enable it only when:**
   - the human channel exists (D4);
   - Q1–Q4 are answered;
@@ -63,6 +65,15 @@
   accepts padded input).
 
 **`data` on success:** `{id, threadId, message_id_header}`. Never the body, the recipients or the subject.
+
+**Credential document** (README §5). The `mail` credential provider returns this JSON string; the adapter parses it
+and treats the whole string as secret:
+
+```json
+{"token": "<OAuth access token, minted or refreshed by the credential provider>",
+ "settings": {"mailbox": "sender@example.com", "from_display_name": "…",
+              "message_id_domain": "mail.example.com", "allowed_from_aliases": []}}
+```
 
 ---
 
@@ -98,9 +109,10 @@ again. That is why the probe never trusts absence.
 | Step | Failure | Result |
 |---|---|---|
 | validate `params` | invalid input | `client_error` |
+| `context.connection_id` | `None` | `client_error`, `no_connection` |
+| fetch and parse the credential document | `credential()` raises (credential provider or Google token endpoint unreachable, or `invalid_grant` at refresh) | `not_dispatched` (README §5: M14's `credential_valid` already blocks revoked connections before the call) |
+| fetch and parse the credential document | `mailbox` or `message_id_domain` missing | `client_error`, `connection_incomplete` |
 | build the MIME message | any build error | `client_error` |
-| fetch the credential | credential provider or Google token endpoint unreachable | `not_dispatched` |
-| fetch the credential | `invalid_grant` | `client_error` |
 
 The send itself follows README §2.1. **`WriteTimeout` / `WriteError` after the body started → `timeout`**: with a large
 body, Google may already have accepted it.
@@ -117,7 +129,9 @@ mid_domain = connection.message_id_domain          # a domain the tenant control
 message_id = f"<{mid_local}@{mid_domain}>"
 ```
 
-- It is stable across attempts, so every attempt for the same step carries the same `Message-ID`.
+- It is derived from the step key (`spec["idempotency_key"]` in observe is the same key), so every attempt, probe
+  and observation for the step computes the same `Message-ID`. There is no inverse, so no `:inverse` key reaches this
+  adapter.
 - **Critical VERIFY (Q1):** Gmail must preserve a client-supplied `Message-ID` on `messages.send`. Record it with
   case L2.
   - If Gmail rewrites it, the probe has no reliable key. Every probe then returns INCONCLUSIVE, which is safe: after
@@ -125,27 +139,31 @@ message_id = f"<{mid_local}@{mid_domain}>"
 
 | Op | Lookup | Proves EXECUTED_SUCCESS | Proves NOT_EXECUTED | Otherwise |
 |---|---|---|---|---|
-| `email_send` | `GET /users/me/messages?q=rfc822msgid:{mid_local}@{mid_domain} in:sent&maxResults=2`, then `messages.get` (format `metadata`, `metadataHeaders=Message-ID`) on each hit to confirm the header | exactly one message in `SENT` whose `Message-ID` equals ours → return it; M13 records `data["id"]` | **never** (default, Q2). The search index lags, and a duplicate send is irreversible | INCONCLUSIVE. Two or more hits → INCONCLUSIVE plus an ERROR log (the message went out twice) |
+| `email_send` | `GET /users/me/messages?q=rfc822msgid:{mid_local}@{mid_domain} in:sent&maxResults=2`, then `messages.get` (format `metadata`, `metadataHeaders=Message-ID`) on each hit to confirm the header | exactly one message in `SENT` whose `Message-ID` equals ours. (The probe returns only the outcome; verification then observes with `identifier=None` and finds the message the same way, §4) | **never** (default, Q2). The search index lags, and a duplicate send is irreversible | INCONCLUSIVE. Two or more hits → INCONCLUSIVE plus an ERROR log (the message went out twice) |
 
 **Probe rules:**
 
 - `429` / `403` rate-limit / 5xx / timeout on the probe → INCONCLUSIVE, never raises.
-- `probe_backoff_s` for `mail` ≥ the measured index lag (L1). Start with **30 s**.
+- The probe schedule is global (immediately, then ~1×b and ~3×b, `b = probe_backoff_s`, default 1 s; README §1.1
+  item 4). A send that is still missing from the index after that ends as an `unknown_unresolved` dead letter with
+  `retry_mode PROBE`; M17's `retry_dead_letter` probes again later and resolves it EXECUTED once the index shows the
+  message. It never resolves NOT_EXECUTED from this adapter.
 - The probe needs the `q` parameter. The `gmail.metadata` scope **does not allow `q`** (VERIFY), so the probe needs
-  `gmail.readonly` (§5, Q3). Without it, the probe always returns INCONCLUSIVE.
+  `gmail.readonly` (§5, Q3). Without it, the probe always returns INCONCLUSIVE, and the probe-path observe
+  (`identifier=None`, §4) is UNKNOWN for the same reason.
 
 ---
 
 ## 4. Observe per `observation.method`
 
-| `observation.method` | Read | Compared fields and normalisation | `expects_absent` handling |
+| `observation.method` | Read | Compared fields and normalisation | `expected.exists = False` |
 |---|---|---|---|
-| `get_message` | `GET /users/me/messages/{identifier}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject` | `labelIds` contains `SENT`; `Message-ID` equals ours (from `spec["idempotency_key"]`, recomputed as in §3); `To` and `Cc` compared as sets of lower-cased addr-specs (`email.utils.getaddresses`, display names ignored); `Subject` compared after RFC 2047 decoding, whitespace-trimmed. **Never** read or compare the body | not used by any catalog op. If set: `404` → `True` |
+| `get_message` | `identifier` set: `GET /users/me/messages/{identifier}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject`. `identifier` `None` (probe path): the §3 `rfc822msgid:` search, then the same `GET`; zero or several hits → `None`, `observe_no_identifier` | `expected = {"exists": True, "properties": <params>}`. Always: `labelIds` contains `SENT`; `Message-ID` equals ours (recomputed from `spec["idempotency_key"]`). From `properties`, if present: `to` and `cc` as sets of lower-cased addr-specs (`email.utils.getaddresses`, display names ignored); `subject` after RFC 2047 decoding, whitespace-trimmed. Ignored: `body`, `html`, every other key. **Never** read the body | not used (`mail.email_send` is not a D op). If `expected.exists` is `False`: `404` → `True` |
 | any other method | — | — | `None`, `error="observe_not_supported"` |
 
 **Observe rules for this provider:**
 
-- `404` on `get_message` without `expects_absent` → `None`, `error="message_not_found"` (**UNKNOWN, not FAIL**). The
+- `404` on `get_message` with `expected.exists = True` → `None`, `error="message_not_found"` (**UNKNOWN, not FAIL**). The
   user can delete a sent message from the mailbox, so its absence says nothing about the send.
 - `observed_state` holds only booleans: `{"sent_label": bool, "message_id_ok": bool, "recipients_ok": bool,
   "subject_ok": bool}`. Never the addresses or the subject (M15 / M18 evidence rule).
@@ -179,7 +197,8 @@ mailboxes only.
 **Scrubbing:** besides README §6, scrub `raw` from recorded requests completely. Keep only its decoded header *names*
 and the `Message-ID` value.
 
-**Standard matrix (README §6):**
+**Standard matrix (README §6):** rows 1–16, P1–P5, O1, O2, O4–O6 and S1–S3 apply; O3 and I1–I3 do not (no delete,
+no inverse).
 
 | Row | Gmail case to record |
 |---|---|
@@ -197,6 +216,8 @@ and the `Message-ID` value.
 | P2 | `probe/no_hit.json` → **INCONCLUSIVE** (not NOT_EXECUTED; the default rule) |
 | P3–P5 | as README; P4 = `probe/two_hits.json` |
 | O1–O4 | `observe/match.json`, `observe/subject_differs.json`, (O3 not applicable), `observe/500.json` |
+| O5 | `observe/by_message_id.json`: `identifier=None`, the search finds one message → compared as usual |
+| O6 | `properties` holds `body` and unknown keys → ignored |
 | S1–S3 | S3 = the same `Message-ID` header in every attempt's `raw` (decode it in the test) |
 
 **Provider-specific cases:**
@@ -216,21 +237,24 @@ and the `Message-ID` value.
 
 | # | Measure | Used for |
 |---|---|---|
-| L1 | send to self; poll `messages.list?q=rfc822msgid:…` every 2 s until found (20 runs; p99) | `probe_backoff_s` |
+| L1 | send to self; poll `messages.list?q=rfc822msgid:…` every 2 s until found (20 runs; p99) | documents when a timed-out send can be resolved by `retry_dead_letter`; input to any owner discussion of the global `probe_backoff_s` |
 | L2 | send with our `Message-ID`; `messages.get` the sent copy and a received copy (another sandbox mailbox); compare `Message-ID` | Q1: does Gmail preserve it? Without it, the probe is INCONCLUSIVE forever |
 | L3 | 5 sends in 1 s from one mailbox | the real per-user rate response (403 vs 429, reason codes) |
 
 ---
 
-## 7. Open questions for the owner
+## 7. Open questions for the owner (each has a safe default)
 
 | # | Question | Default if unanswered |
 |---|---|---|
 | Q1 | Does Gmail preserve our `Message-ID` (L2)? | Assume no until L2 proves it. The probe returns INCONCLUSIVE |
 | Q2 | May the probe ever return NOT_EXECUTED for a send (e.g. after N searches spaced over 5 min)? | **Never.** A duplicate e-mail is irreversible; a dead letter is recoverable by a human |
-| Q3 | Grant `gmail.readonly` (enables the probe, a restricted scope with Google verification) or only `gmail.metadata` (observe only)? | `gmail.metadata` until the send goes on the allow-list |
+| Q3 | Grant `gmail.readonly` (enables the probe, a restricted scope with Google verification) or only `gmail.metadata` (observe only)? With `gmail.metadata` both the probe and the probe-path observe (`identifier=None`) return INCONCLUSIVE / UNKNOWN | `gmail.metadata` until the send goes on the allow-list |
 | Q4 | Workspace service account with delegation, or per-user OAuth? | Service account for Workspace tenants; per-user OAuth deferred |
 | Q5 | Allow `Bcc` and attachments? | No in this phase |
 | Q6 | Which domain is `message_id_domain`: the tenant's sending domain or ours? | The tenant's sending domain (keeps headers consistent with DKIM/SPF alignment) |
 | Q7 | What carries the human verification for IRREVERSIBLE (D4), and when? | Not before the operator console; the op stays off the allow-list |
-| Q8 | MC-058: credential storage and tenancy | **Blocking.** No real customer credential is stored until it is resolved |
+
+**None of these blocks building and testing the adapter in the sandbox.** Go-live gates (not questions): MC-058
+resolved before any customer credential is stored; the D4 human channel; every VERIFY checked by a recording (README
+§8).

@@ -46,7 +46,41 @@ class XAdapter(BaseAdapter):                      # contracts.adapter_interface.
 | `data` on failure | at most `{"provider_status": <int>, "provider_code": <short code>}`. **Never** the provider's error body (M18 `ledger_keeps_bodies`; bodies can carry tokens and PII) |
 | Idempotency key | `call_meta.idempotency_key` (`{request_id}:{plan_step_id}`) is stable across attempts and recovery. Send it to the provider when the provider supports idempotency; otherwise **stamp it on the created resource** so `probe` can find it (§4) |
 | Params | never mutate the `params` dict (contract test `test_adapter_does_not_mutate_params`) |
+| Cancellation | catch `Exception`, **never** `BaseException` or `asyncio.CancelledError`. The guard enforces the step deadline by cancelling the call (`TimeoutManager`, `asyncio.timeout`); swallowing the cancellation breaks the deadline |
+| Guard normalisation | the guard (`reliability._normalise`) recomputes `retryable` from `RETRYABLE`, drops `data` on `timeout`, and turns an unknown `error_class` or a non-`AdapterResult` into `adapter_defect`. Your `retryable` flag is ignored; your `error_class` must be one of the five adapter classes (`not_dispatched`, `rate_limited`, `server_error`, `client_error`, `adapter_defect`) or `status="timeout"`. `circuit_open` and `retry_storm` belong to the guard |
 | Isolation | no calls to the control plane, other adapters or S12 code; no authorization decisions (S8 and M14's live check own those) |
+
+### 1.1 How S12 actually calls the adapter (checked against the B3–B5 reference code)
+
+Every rule in the provider files depends on these four call paths. Each was read from the code, not the docs.
+
+| Path | Code | Key in `call_meta` | `params` | Timing and limits |
+|---|---|---|---|---|
+| **Call** (the step) | `s12_execute/loop.py` → `ReliabilityGuard.call` | `{request_id}:{plan_step_id}` (the step key) | the step's params | deadline `step.timeout_s` (cancellation); attempts ≤ `retry_policy.ceiling` (1 for every mutation) |
+| **Probe** (M13) | `s13_reconciliation/probe.py` `resolve_execution` → `guard.probe` | the same step key | the step's params | the **first probe runs immediately** after the timeout; then `sleep(probe_backoff_s × n)`; `probe_max_attempts` = 3; each probe bounded by `probe_timeout_s`; an exception becomes INCONCLUSIVE. Returns only a `ProbeOutcome`: **no `data`, no identifier** |
+| **Observe** (M15) | `s13_reconciliation/verification.py` `_provider_state` → `guard.observe` | `spec["idempotency_key"]` = the step key | — | `spec = {"method", "identifier", "expected", "idempotency_key"}` (shape in §4); `verification_max_attempts` = 3, 1 s apart; bounded by `probe_timeout_s` |
+| **Inverse** (explicit rollback, D2, CONF-024, CONF-038) | `s14_dead_letter/rollback.py` `rollback_execution` → `guard.call` with `InverseBudget` | `{request_id}:{plan_step_id}:inverse` | **the original step's params**, not the created resource's id | one attempt, no reservation, no probe; any non-`ok` result becomes a `rollback` dead letter (`retry_mode NONE`). Never called automatically; never for IRREVERSIBLE |
+
+**Consequences every adapter must handle:**
+
+1. **Observe without an identifier.** After a probe returned `EXECUTED_SUCCESS`, verification has no adapter result,
+   so `spec["identifier"]` is `None`. `observe` must then find the resource from `spec["idempotency_key"]` (the same
+   key or stamp lookup the probe used). If it cannot, return `None` with `error="observe_no_identifier"` (UNKNOWN).
+2. **Inverse calls carry the original params.** An inverse (e.g. `crm.contact_delete` undoing `crm.contact_create`)
+   receives the create's params and an `…:inverse` key. It must locate its target from the **original** key
+   (strip the `:inverse` suffix) and the original params, confirm the target carries that key, and only then act. If
+   it cannot locate exactly one target, return `client_error`, `provider_code: "inverse_target_not_found"` or
+   `"inverse_target_ambiguous"`: a human resolves the rollback dead letter. Never delete by a natural key alone.
+3. **No dispatch time.** `ExecutionContext` and `CallMeta` carry no dispatch timestamp. No probe or observe rule may
+   depend on "created after the dispatch".
+4. **One probe schedule for all providers.** `probe_backoff_s` is a single `LoopSettings` value (default 1.0 s). With
+   3 attempts the probes run at about t, t+1×b and t+3×b after the timeout (t = when the timeout surfaced). A
+   provider whose index lags longer than 3×b cannot be settled by the probe; it ends INCONCLUSIVE → dead letter
+   (`retry_mode PROBE`), and M17's `retry_dead_letter` probes again later. That is safe. Raise `probe_backoff_s` only
+   with the owner (it slows every provider).
+5. **IRREVERSIBLE always reaches the human layer.** `required_verification_layers` adds `semantic` and `human` for
+   IRREVERSIBLE; the human layer has no channel (D4), so every such step ends as a `human_verification_pending` dead
+   letter with its budget LOCKED, even when the provider succeeded.
 
 ---
 
@@ -130,13 +164,14 @@ always the same: **did the call identified by `call_meta.idempotency_key` take e
    `<{idempotency_key}@{our-domain}>`).
 3. **Stamped marker:** write the key into a dedicated, non-user-facing field (a custom field, metadata, an external
    id), then read by it.
-4. **Natural key plus time window:** search by the operation's unique business field (e.g. contact e-mail) created
-   after the dispatch time. Use it only where the provider guarantees uniqueness; otherwise it is at best a
-   candidate for EXECUTED_SUCCESS, **never** a basis for NOT_EXECUTED.
+4. **Natural key:** search by the operation's unique business field (e.g. contact e-mail). There is no dispatch time
+   to bound it (§1.1 item 3), so a match is at most a candidate that must still be proven ours (1–3), and an empty
+   result is **never** a basis for NOT_EXECUTED. Never use a natural key alone to choose an inverse target.
 
 **Search indexes are eventually consistent.** A search returning nothing proves nothing. NOT_EXECUTED needs a read by
-id, or by a strongly consistent index; or the provider file documents the delay and the probe waits for it. M13
-spaces probe attempts by `probe_backoff_s`. Set it at least as large as the provider's lag.
+id, or by a strongly consistent index (a list proven read-your-writes by a live measurement). Do not rely on M13's
+spacing to outwait an index: the first probe runs immediately and the whole schedule is about 3 × `probe_backoff_s`
+(§1.1 item 4). The adapter cannot sleep inside a probe either (`probe_timeout_s`).
 
 A probe is read-only, takes its own bulkhead slot and `probe_timeout_s`, bypasses the breaker, and never raises.
 
@@ -148,9 +183,22 @@ M15's `provider_state` layer calls `guard.observe(kernel_op_id, spec, binding, c
 `spec = {"method", "identifier", "expected", "idempotency_key"}`. `method` comes from the catalog's
 `observation.method` (`get_contact`, …).
 
+**The exact shape (from `s12_entry/verifiers.py` `build_verifier` and `verification.py` `_spec`):**
+
+| Key | Value |
+|---|---|
+| `identifier` | `result.data[observation.identifier_field]` from the call's result; **`None`** after the probe path (§1.1 item 1) |
+| `expected` (W, IRREVERSIBLE) | `{"exists": True, "properties": <the step's full params>}` |
+| `expected` (D, `expects_absent`) | `{"exists": False}`: **no properties**. A D op whose resource is addressed under a parent (e.g. a note under a contact) must therefore put the parent into its identifier (provider file) |
+| `idempotency_key` | the step key `{request_id}:{plan_step_id}` |
+
+`properties` is the **whole** params dict, including keys that are not resource fields (a parent id, paging, a
+stray `locationId`). Each provider file lists, per op, the fields that are compared; every other key is ignored. The
+adapter decides presence from `expected["exists"]`; it never sees the catalog's `expects_absent`.
+
 | Result | `matches_expected` | Verdict |
 |---|---|---|
-| resource read, fields equal `expected` (or absent when `expects_absent`) | `True` | PASS |
+| resource read, fields equal `expected.properties` (or absent when `expected.exists` is `False`) | `True` | PASS |
 | resource read, fields differ (or present when it should be absent) | `False`, with `error=None` | **FAIL** (the step fails; the budget is released) |
 | read failed, timed out, 5xx, 429, permission error | `None`, with `error` set | UNKNOWN (VERIFICATION episode, re-observed; never FAIL) |
 | `method` not implemented | `None`, `error="observe_not_supported"` | UNKNOWN |
@@ -170,6 +218,13 @@ M15's `provider_state` layer calls `guard.observe(kernel_op_id, spec, binding, c
 
 - Every call, probe and observe asks `CredentialProvider.credential(tenant_id, context.connection_id)`. One connection
   is one provider account of one tenant (C34, MC-058).
+- **`credential()` returns one `str`** (the protocol in `contracts/adapter_interface.py`). Per-connection settings
+  (a GHL `locationId`, a field id, a sender mailbox) therefore travel **inside that string**: the provider's
+  credential provider returns a JSON document, `{"token": …, "settings": {…}}`, and the adapter parses it. The whole
+  string is secret: never log it, never put any part of it in `data`. This needs no change to the frozen protocol.
+- `context.connection_id` may be `None`. The adapter then returns `client_error`, `provider_code: "no_connection"`,
+  before send. Any exception from `credential()` → `not_dispatched` (nothing was sent; M14's `credential_valid`
+  already blocked revoked connections before the call).
 - `credential_valid(tenant_id, connection_id)` (CONF-030) answers M14's live check before every call. Make it a cheap
   local check (token present, not expired or revoked, refreshable), not a provider round trip on every step.
 - Token refresh happens inside the credential provider, not the adapter, and never logs the token.
@@ -216,6 +271,9 @@ M15's `provider_state` layer calls `guard.observe(kernel_op_id, spec, binding, c
 | 11 | `ConnectError`, `ConnectTimeout`, `PoolTimeout` | `not_dispatched` |
 | 12 | `WriteTimeout`, `ReadTimeout`, `ReadError`, `RemoteProtocolError` | `timeout` |
 | 13 | unexpected exception inside the adapter | never raises; `adapter_defect`, or `timeout` if after the send |
+| 14 | the guard's deadline cancels the call mid-request | `asyncio.CancelledError` propagates (the adapter does not swallow it); the guard reports `timeout` |
+| 15 | `context.connection_id` is `None` | `client_error`, `no_connection`; zero requests sent |
+| 16 | `credential()` raises | `not_dispatched`; zero requests sent |
 | P1 | probe: resource with our key exists | `EXECUTED_SUCCESS` |
 | P2 | probe: authoritative read shows absence | `NOT_EXECUTED` |
 | P3 | probe: search empty, but only an eventually consistent index exists | `INCONCLUSIVE` |
@@ -223,8 +281,13 @@ M15's `provider_state` layer calls `guard.observe(kernel_op_id, spec, binding, c
 | P5 | probe: read fails (5xx, 429, timeout) | `INCONCLUSIVE`, never raises |
 | O1 | observe: fields match | `matches_expected=True` |
 | O2 | observe: a field differs | `matches_expected=False`, `error=None` |
-| O3 | observe: delete, resource gone (404) | `True` when `expects_absent` |
+| O3 | observe: delete, resource gone (404) | `True` when `expected.exists` is `False` |
 | O4 | observe: read error | `matches_expected=None`, `error` set |
+| O5 | observe with `identifier=None` (probe path) | the resource is found from `idempotency_key` and compared; if it cannot be found, `None`, `observe_no_identifier` |
+| O6 | `expected.properties` holds non-resource keys (parent id, paging, `locationId`) | ignored; only the op's compared fields count |
+| I1 | inverse: exactly one target carries the original key | `ok`; the request addresses that target |
+| I2 | inverse: no target found | `client_error`, `inverse_target_not_found`; no destructive request sent |
+| I3 | inverse: two targets, or the target lacks the original key | `client_error`, `inverse_target_ambiguous`; no destructive request sent |
 | S1 | secrets: run every case with a credential containing `SECRET-TOKEN` | the string appears in no result, no `data`, no log record |
 | S2 | params unchanged | `params` deep-equals its copy after every case |
 | S3 | key propagation | the key reaches the provider request (header or stamped field) on every attempt, unchanged |
@@ -237,7 +300,9 @@ M15's `provider_state` layer calls `guard.observe(kernel_op_id, spec, binding, c
 | `fail_500_then_success` | 9 (R) |
 | `rate_limit_429` | 8 |
 | `auth_401`, `validation_422` | 4, 3 |
+| `slow` | 14 |
 | `timeout_executed` | 12 + P1 |
+| `timeout_failed` | 12 + `EXECUTED_FAILURE` (only where the provider has an operation log; otherwise not applicable) |
 | `timeout_not_executed` | 12 + P2 |
 | `connect_refused` | 11 |
 | `verify_mismatch` | O2 |
@@ -259,3 +324,23 @@ Run the M12–M21 journeys once with the real adapter wired in and recorded tran
 - [ ] M10–M21 golden still green, and the IMPROVEMENT_GUIDE scans pass (no exception text in logs, no unfenced
       writes, no direct adapter calls outside the guard).
 - [ ] Owner sign-off on the launch allow-list for this provider.
+- [ ] Inverse ops handle the rollback call shape (§1.1 item 2; rows I1–I3), and observe handles `identifier=None`
+      (row O5).
+
+---
+
+## 8. Blocker check: what can start now, and what gates go-live
+
+Nothing in these specs blocks **building and testing** an adapter against a sandbox. Each open item has a safe
+default; the defaults only make the system dead-letter more often, never act wrongly.
+
+| Item | Blocks building? | Blocks go-live? | Why / safe default |
+|---|---|---|---|
+| VERIFY marks (paths, bodies, limits) | no | yes, until each is checked | resolved by the recording step of §6 itself; the first recording session clears most of them |
+| Provider choice (`crm` = GHL, `mail` = Gmail) | no | yes | a proposal; another provider reuses this standard and the template |
+| Owner questions in each provider file | no | no | every one has a default in its table; the defaults are the conservative choice |
+| Catalog change for parent-addressed ops (`identifier_field: ref`, see `ghl_crm.md` §1) | no | yes | a starter-catalog edit at Layer A time; until then the notes/tasks observe path returns UNKNOWN (safe) |
+| MC-058 credential storage and tenancy | no (sandbox tokens live in the test environment) | **yes** | no real customer secret is stored before it is resolved |
+| Human verification channel (D4) | no | yes, **for IRREVERSIBLE only** | Gmail send stays off the allow-list; CRM launch ops are not IRREVERSIBLE |
+| Frozen S12 code | no | no | nothing here needs a change to frozen or golden code: every adaptation sits inside the adapter or the credential provider |
+
