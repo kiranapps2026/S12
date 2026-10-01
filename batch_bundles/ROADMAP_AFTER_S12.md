@@ -189,3 +189,63 @@ These columns exist and nothing reads or writes them. Each belongs to the phase 
 | `dead_letters.is_idempotent`, `next_retry_at` | 3.4 (operator retry, HITL) |
 
 `state_transitions.reason` is nullable; making it NOT NULL is a 016+ migration and needs a ruling (3.1).
+
+---
+
+## When each deferred workstream happens (and what it reopens)
+
+None of these is built now. Gate §14 says "Still deferred (record; do not implement)", and §22 forbids crossing the
+phase boundary before the `s12-s15-certified` tag. Each one goes into the M21 deferred register with the phase below.
+
+| Workstream | Gate phase | Earliest start | Forces S0–S11 re-certification? |
+|---|---|---|---|
+| **2a** step-to-step data flow (roadmap D2, register P0-B): `StepOutputReference` / `StepParameterBinding`; `input_schema`/`output_schema` with a `secret` flag (D2a); the six S9 validation rules; `plan_hash` over references (R-AG), C36 replacement (R-AH), secret classification (R-AI); S12 resolves references at run time; S10 shows them | LLM layer / planning (C36's target) | after the S12–S15 tag | **yes**: S4, S9, S10 change (§19.3). It also **re-certifies S12–S15**, because entry check 5a, the loop, recovery and idempotency change |
+| **2b** branching graphs (roadmap D3): DAGs, fan-out/fan-in, `join_mode` `any`/`threshold`, parallel steps, S7 routing for `complex` | after 2a ("after S15") | after 2a ships | yes (S7 routing, S9 planning) |
+| **2c** real provider adapters (register RES-5, MC-048): one adapter per provider behind `BaseAdapter`; per-kernel `probe()` and `observe()`; error classification; the D1d observation catalog | adapter packaging (9th in the gate order) | after the tag; the owner may move it earlier | no: it plugs in behind `BaseAdapter`, and the guard contains failures |
+| **2d** memory / RAG (ADR-14 decided): pgvector, per-tenant partitions, `MemoryScope`, tier-2 object store | LLM layer | after MR-3 (embedding contract), MR-4 (pipeline rulings), MR-9 (`MemoryWriteBarrier`) are ruled | only if MR-4 puts vector discovery into S3, or counts embeddings against I-011 |
+| **2e** LayaDecisionAdapter (LB1–LB11): REFLEX choice steps in S12 and event noise filtering before S0 only | LLM layer | after the LB rulings | yes for LB1 (`decide()`), LB2, LB6, LB7, LB8, LB10 (frozen contracts) |
+| **2f** multi-node fleet: ADR-5 breaker persistence (PostgreSQL + advisory locks); P1-C queue, fairness and backpressure; a dispatcher beyond `InProcessDispatcher`; ADR-6; worker version and drain lifecycle; the M21 p50/p95 as baseline | multi-node fleet | after the tag | no: behind the §21 S2, S3, S4 seams |
+| **2g** HITL channel, notifications and alert delivery, automatic rollback triggers (open question D4) | HITL and notifications | after the tag | no |
+| **2h** worker management beyond C39 and the product layer (worker quotas, `execution_policy` keys, sub-agents and `worker_spawn_audit`, batch C40, replanning C41, groups, config versioning, webhooks, L2 memory, progressive autonomy, PolicyEngine, browser/RPA, templates, entitlements, marketplace, `skills_prompt`/`llm_model` at S2, tenant model allow-list) | AI Worker product layer | after the tag | partly: progressive autonomy, PolicyEngine and the S2 consumption change certified code |
+
+**Cross-cutting rule.** 2a, 2b, 2d (MR-4), 2e and parts of 2h modify certified S0–S11 code. Each goes through gate
+§19.3:
+
+- name the insufficient frozen contract;
+- say why it cannot be solved inside the later phase;
+- propose the smallest extension;
+- state the re-certification impact.
+
+Never edit certified code inline.
+
+**Two corrections to earlier drafts of this list:**
+
+- **2c:** in this phase adapters return `contracts.step_execution.AdapterResult`, not `KernelResult` (ruling CONF-021).
+  The default probe is INCONCLUSIVE, so today every uncertainty dead-letters after three probes. Real `probe()` and
+  `observe()` methods are what make the UNKNOWN path useful in production.
+- **2g:** verification already has a human layer (M15). It is UNKNOWN at once and dead-letters as
+  `human_verification_pending` (D4). What is missing is the HITL **channel** that lets a person answer it.
+
+### What belongs to now, without starting deferred work
+
+1. **Keep the seams intact during M10–M21:**
+   - frozen binding at S5 and entry check 5a → 2a;
+   - `ExecutionDispatcher` → 2f;
+   - breaker behind an interface → ADR-5;
+   - `MetricsHook` → observability;
+   - step 4 of the loop left empty → Laya (LB9);
+   - `rollback_execution()` explicit only → 2g.
+
+   Breaking a seam now means rework later.
+2. **Record each workstream** in the M21 deferred register with the phase above.
+3. **Owner work that needs no code:**
+   - D1d, the real observation-metadata catalog (2c depends on it; `tools/registry_readiness.py` exits 1 until it is
+     filled);
+   - B8, revoke the DeepSeek test key;
+   - the design rulings MR-3/4/9 and LB1–LB11 (they gate 2d and 2e).
+
+### A sequencing decision for the owner
+
+The gate's order puts real adapters (2c) 9th, after the fleet and observability. Without them, and without D1d,
+nothing real executes or verifies. If production use matters before the fleet, move adapter packaging and D1d earlier
+in the deferred register; the owner orders those phases. 2a must stay in its phase, because it reopens S0–S11.
