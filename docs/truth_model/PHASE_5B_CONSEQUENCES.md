@@ -4,6 +4,9 @@ Part of the [S12 truth model](README.md). Input: the validated rows (phase 4). I
 operator action → budget → customer message), §14 (cost and latency per path) and the cost column of §9. It runs
 beside phase 5a and needs no database.
 
+Revised in review pass 2 (`REVIEW_LOG.md` P2-3, P2-4, P2-17): no production path to release LOCKED money, the
+default `observe()`, run-level endings, and four missing symptoms.
+
 ## Purpose
 
 Every row of the matrix ends in something a customer sees and an operator has to handle. This phase writes, for every
@@ -38,7 +41,9 @@ wording and a resolution time, not a fix.
 | Lease TTL, renewal interval | From the environment, no default; TTL ≥ 3 × renewal | `settings.py:6`, `:55-56`; CONF-045 (renewal during a step) |
 | Recovery sweep interval | Default 10 s, must be under 30 s | §13; M19 draft (`S12_RECOVERY_SWEEP_INTERVAL_S`) |
 | Orphan grace for a never-leased run | One lease TTL | CONF-046 (open) |
-| Dead-letter retries | `max_retries` 3, then abandoned UNDETERMINED (budget COMMITTED) | `015` (`dead_letters.max_retries`); M17 draft; D4 |
+| Dead-letter retries | `max_retries` 3, then abandoned UNDETERMINED (budget COMMITTED) — **but no production entry point triggers a retry or a resolution** | `015` (`dead_letters.max_retries`); M17 draft; D4; IMP-M17-2 |
+| Admission DELAY loop | Gates 8, 9 and 11 DELAY with `retry_after_ms`, bounded by `admission_max_attempts`, then `admission_exhausted` | §8 step 1; CONF-017, CONF-032; M12 `LoopSettings` |
+| Lease acquisition retries | `lease_max_attempts`, then `lease_unavailable` | §8 step 3; M12 `LoopSettings` |
 
 Because several values have no default, §14 states the values it assumes and gives every figure as a formula of the
 parameters as well as a number.
@@ -69,11 +74,23 @@ parameters as well as a number.
 
    Give each as a formula, then a number under the stated assumptions.
 4. **Compute how long money stays LOCKED** for each path ending in a dead letter. Under D4/D5, a dead letter with
-   `retry_mode = NONE` leaves `pending` only by human resolution. The M17 draft names no automatic caller of
-   `retry_dead_letter` for PROBE and VERIFY either. Establish who triggers retries; if nobody does, LOCKED time is
-   unbounded and the resolution-time column carries the commitment.
-5. **Flag product gaps** separately from wording: no HITL channel (`human_verification_pending` can only be resolved
-   by an operator), no post-execution human-approval run state (D4 open question).
+   `retry_mode = NONE` leaves `pending` only by human resolution. No production entry point calls
+   `retry_dead_letter` or `resolve` at all (IMP-M17-2: the retry takes injected callables, and no golden pins an
+   operator path). Today LOCKED time is therefore unbounded, and the resolution-time column carries the commitment.
+   State the cost plainly: a LOCKED reservation counts against `budget_pool` like a committed one (I1), so the tenant
+   pays for the action whether or not it happened (C-11).
+5. **Compute the frequency of the dead-letter endings under the default adapter.** By design, an adapter without
+   `observe()` makes provider_state verification UNKNOWN, so every W, D and IRREVERSIBLE step on it ends DEAD_LETTER
+   even when the call succeeded (C32 `:1046-1050`; C-16). Until real adapters (roadmap 2c), "budget held, nothing
+   reported as done" is the normal ending of a mutation, not an edge case. Every frequency in step 2 states which
+   adapter regime it assumes.
+6. **Run-level endings.** Write the run's ending from the phase 2 `RO` rules, including the one that surprises
+   everyone: a tampered plan with no step in flight ends DEAD_LETTER with every remaining step
+   `cancelled (run_dead_lettered)` and no dead letter to resolve (CONF-034). The customer gets `error`, not
+   recoverable, and the operator has nothing to act on except the `plan_integrity` alert.
+7. **Flag product gaps** separately from wording: no HITL channel (`human_verification_pending` can only be resolved
+   by an operator), no post-execution human-approval run state (D4 open question), no operator entry point for dead
+   letters (IMP-M17-2), and dead-letter records that may show the wrong operation class (C-15).
 
 ## Symptoms to cover first
 
@@ -88,7 +105,12 @@ Ranked by how often they will occur and how badly they read. The first three are
 | Nothing came back at all | A run left non-terminal | Critical | Every row that can leave a run non-terminal, with its detection query from 5a |
 | Waiting on a human, forever | `human_verification_pending` with no HITL channel | High | Product gap, plus an interim operator procedure |
 | Support cannot explain it | Redaction removes provider bodies from the envelope, logs and persisted rows (M18) | Medium | What support may see, and where |
-| Everything broke at once | A registry version bump denies every earlier plan (CONF-008, ruled fail-closed for this phase) | Critical, correlated | Call it out separately: the only failure that hits every tenant at once |
+| Everything broke at once | A registry version bump denies every earlier plan (CONF-008, ruled fail-closed for this phase) | Critical, correlated | Call it out separately: one of two failures that hit every tenant at once (the other is the default `observe()`, C-16) |
+| Every change I make gets stuck | Default `observe()`: every mutation dead-letters even on success (C-16) | Critical, frequent until real adapters | Whether to ship mutations at all before 2c; the message; the operator procedure |
+| I cancelled, but it still happened | C16 never interrupts an in-flight call; the step completes and the run is CANCELLED with that step listed | Medium | The wording for "completed before cancellation" (§12 lists those steps) |
+| Access was revoked, but it still happened | A step whose call preceded the revocation completes (`M19_recovery.py:546`, the `after_adapter_call_before_ledger` case) | High | Same: the envelope lists completed steps; support must be able to show when the call happened versus when access was revoked |
+| It failed, and nobody can fix it | DEAD_LETTER run with no dead letter (CONF-034, tampered plan) | Medium, rare | Who investigates a `plan_integrity` alert, and what the customer is told |
+| I keep paying for things that did not happen | LOCKED reservations never released (C-11) | High, cumulative | The refund policy until an operator path exists |
 
 State two framings plainly, because they change how the product is sold. The system is built to hold money and stop
 rather than guess. And it says when it does not know. Both are the right engineering choice, and both look like

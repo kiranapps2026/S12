@@ -3,6 +3,9 @@
 Part of the [S12 truth model](README.md). Input: the frozen rows of phase 2. It fills §4 (master matrix) and §9
 (disposal), and checks the §3 writer table.
 
+Revised in review pass 2 (`REVIEW_LOG.md` P2-4, P2-5, P2-8): M14's cancellation role, attempt numbering, run outcome,
+two probe regimes.
+
 ## Purpose
 
 For every frozen row, record what each milestone does with that evidence, with a citation. Then classify the row by
@@ -21,9 +24,9 @@ One worker owns one milestone column. A worker writes only its own column file.
 | Column | Milestone role | Sources, in reading order | Module owners (from the golden interface docstrings) |
 |---|---|---|---|
 | M11 | Produces the marker and the ledger | `tests_golden/s12/M11_idempotency_retry.py` docstring and cases; 10 `M11_*` sabotage patches; plan card `S12_S15_IMPLEMENTATION_PLAN.md:277` | `contracts.idempotency`; `adapters.postgres.idempotency`; `adapters.postgres.step_attempts`; `engine.stages.s12_execute.retry_policy`; `engine.stages.s12_execute.attempts` |
-| M12 | Orders the writes | `M12_loop.py`; `M12_*` patches; card `:287`; DEF-002, DEF-004 | `engine.stages.s12_execute.loop`; `adapters.postgres.execution`; `adapters.postgres.execution_events` |
+| M12 | Orders the writes | `M12_loop.py`; 8 `M12_*` patches; card `:287`; DEF-002, DEF-004 | `engine.stages.s12_execute.loop`; `adapters.postgres.execution`; `adapters.postgres.execution_events` |
 | M13 | Interprets live, after a timeout | `M13_probe.py`; 4 `M13_*` patches; card `:296`; CONF-028, 029 | `engine.stages.s13_reconciliation.probe`; `adapters.postgres.reconciliation` |
-| M14 | Supplies the live-authorization input | `M14_revocation_cancel.py`; card `:304` | `adapters.postgres.live_authorization`; `adapters.postgres.cancellation` |
+| M14 | Supplies the live-authorization input (R2) and cancellation (R5) | `M14_revocation_cancel.py`; 7 `M14_*` patches; card `:304`; CONF-030–032 | `adapters.postgres.live_authorization`; `adapters.postgres.cancellation` |
 | M15 | Interprets live, after a result | `M15_verification.py`; 3 `M15_*` patches; card `:320`; CONF-036, 040, 041, 005 | `engine.stages.s13_reconciliation.verification`; `contracts.verification` |
 | M16 | Consumes: consolidation | `M16_consolidation.py`; 3 `M16_*` patches; card `:329`; CONF-034, 037 | `engine.stages.s13_reconciliation.consolidation`; `adapters.postgres.consolidation` |
 | M17 | Consumes: dead letters, settlement | `M17_dead_letter.py`; 3 `M17_*` patches; card `:338`; CONF-038 | `adapters.postgres.dead_letters`; `engine.stages.s14_dead_letter.retry`, `.rollback` |
@@ -41,6 +44,8 @@ For each row a milestone reaches, the cell holds:
 | Field | Content |
 |---|---|
 | verdict | executed / not executed / failed / unknown, or `n/a` |
+| attempt | The attempt number after the row's transitions, and whether it was reused or incremented |
+| probe regime | For rows that probe: the outcome with the golden mock's answering probe **and** with the production default (INCONCLUSIVE, C32). Golden crash cases program the mock to answer, so they all end `completed`; production would dead-letter |
 | episode | kind, transitions with reasons, close status, outcome, evidence key |
 | step | `from → to (reason)`, one entry per transition, in order |
 | budget | `from → to (reason)`, plus "new reservation" where C35 allows one |
@@ -58,12 +63,15 @@ Blank cells are not allowed.
 
 | ID | Evidence | Verdict | Episode | Step | Budget | Dead letter |
 |---|---|---|---|---|---|---|
-| EX-1 | running; reservation locked; marker `null` or `below`; no ledger row; no open episode; retry allowed | not executed, no probe | EXECUTION opened and closed in one transaction: `none → pending_probe (opened) → reconciling (attempt_started) → confirmed_failure (not_executed)`, outcome NOT_EXECUTED, evidence `no_dispatch_marker` | `running → pending_probe (recovery) → pending (no_dispatch_marker)`, then retried as the next attempt | `locked → released (no_dispatch_marker)`; a new reservation for the retry | none |
-| EX-1b | as EX-1, but no retry allowed (IRREVERSIBLE, `retry_safety = never`, non-idempotent D, or ceiling reached) | not executed | as EX-1 | as EX-1, then `pending → cancelled (not_executed_no_retry)` | `locked → released (no_dispatch_marker)` | none |
+| EX-1 | running; reservation locked; marker `null` or `below`; no ledger row; no open episode; retry allowed; no revocation, no cancellation | not executed, no probe | EXECUTION opened and closed in one transaction: `none → pending_probe (opened) → reconciling (attempt_started) → confirmed_failure (not_executed)`, outcome NOT_EXECUTED, evidence `no_dispatch_marker` | Cold: `running → pending_probe (recovery) → pending (no_dispatch_marker)`; live (a revocation before an attempt, M14): `running → pending_probe (execution_uncertain)`. The retry **reuses** the undispatched attempt's number (C35 counts dispatched attempts) | `locked → released (no_dispatch_marker)`; a new reservation for the retry | none |
+| EX-1b | as EX-1, but no retry allowed (IRREVERSIBLE, `retry_safety = never`, non-idempotent D, or ceiling reached), or the run is RECONCILING (CONF-047) | not executed | as EX-1 | as EX-1, then `pending → cancelled (not_executed_no_retry)` | `locked → released (no_dispatch_marker)` | none |
+| EX-1c | as EX-1, with R2 revoked or R5 cancellation requested | not executed | as EX-1 | as EX-1, then `pending → cancelled (<revocation reason> or user_cancelled)`; remaining PENDING steps cancelled with the same reason; run CANCELLED | `locked → released (no_dispatch_marker)`; no new reservation | none |
 | EX-2 | marker `current`; no ledger row; probe EXECUTED_SUCCESS; required layers PASS (after a probe: provider_state, semantic and human as required; never schema or deterministic, CONF-040) | executed | EXECUTION `reconciling → confirmed_success (executed_success)` | `pending_probe → completed (probe_executed_success)` | `locked → committed (step_completed)` | none |
 | EX-3 | marker `current`; no ledger row; probe INCONCLUSIVE three times | unknown | EXECUTION stays `pending_probe`, gets `closed_at` and outcome EXHAUSTED; event `episode_closed` | `pending_probe → dead_letter (probe_exhausted)`; remaining PENDING steps `cancelled (run_dead_lettered)` | stays `locked` (D4) | `unknown_unresolved` / PROBE, carrying the episode and the reservation |
 
-Sources: EX-1 C35 `:1164-1170`, §13 `:1773-1778`, A.2 `:2378`, A.3 `:2398`, A.7 `:2450`; EX-2 §9, CONF-040; EX-3
+Sources: EX-1 C35 `:1164-1170`, §13 `:1773-1778`, A.2 `:2378`, A.3 `:2398`, A.7 `:2450`, `S12_B5_REVIEW.md`
+(attempt reuse), M14 docstring; EX-1c C16, C23, `M19_recovery.py:546` (`REVOKED_IN_RECOVERY`); EX-2 after a dispatched
+attempt the retry is n + 1 (`M19_recovery.py:203`, `att-0-2`); EX-2 §9, CONF-040; EX-3
 §9, A.7 `:2446-2448`, D4, M17 docstring.
 
 ## Worked trace per row
@@ -93,8 +101,10 @@ writes share a transaction?
    without a row means the enumeration missed a dimension; log it in the row-change log.
 3. A merge step (one person or a script) joins the column files into `work/P3_MATRIX.csv` and writes the class of
    each row.
-4. Fill the disposal columns (§9) from M16 and M17: run outcome per §10, settlement of the reservation, and whether
-   the run can still consolidate.
+4. Fill the disposal columns (§9) from M16 and M17: the run outcome by the phase 2 `RO` rules (§10 as overridden by
+   CONF-034, C15, C16 and M14, with their precedence), settlement of the reservation, the quota refund (CONF-037),
+   whether the run can still consolidate, and **who can ever release a LOCKED reservation** (today nobody in
+   production: C-11).
 5. Check the §3 writer table from phase 1 against the module owners above, and record any evidence with two writing
    modules (principle 7 input for phase 4).
 
@@ -130,3 +140,8 @@ person, after every column is complete.
   EXECUTION episode only ever closes with an EXECUTED_* outcome.
 - M19 resumes a retried step "at the attempt after its last dispatched one". The attempt number is evidence too:
   record it in the trace.
+- Golden crash and probe cases program the mock probe to give an answer. The production default probe returns
+  INCONCLUSIVE (C32), so the same evidence ends in a dead letter in production. Fill the probe-regime field for both;
+  a row that is only ever tested with an answering probe is `untested` for the default.
+- Event-driven entries (`entry_channel = event`) and API entries reach the same loop. Nothing in the matrix depends
+  on the channel, except that `request_id` is generated by S0 for both (C-14).

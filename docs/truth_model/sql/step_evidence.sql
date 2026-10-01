@@ -13,7 +13,13 @@
 -- Assumptions to re-check when the code exists (each is marked ASSUMPTION below):
 --   * the ledger body carries {"status": "ok" | ...} (reference implementation; the golden M11 fixes only the kind);
 --   * a verification_layer event carries payload {"layer", "verdict"} and the step_id column (golden M15 draft);
---   * "after a probe" means the step has an EXECUTION episode with outcome EXECUTED_SUCCESS (CONF-040).
+--   * "after a probe" means the step has an EXECUTION episode closed EXECUTED_SUCCESS, or VERIFIED_FAIL (a probe
+--     confirmed the call and verification then failed; M13 draft) (CONF-040);
+--   * attempt_id is "att-{step_index}-{attempt}" (golden M11 attempt_id()), and ProviderReturned carries
+--     payload {"status"} (golden M11 draft). D9 reads the events of the step's current attempt.
+--
+-- Revised in review pass 2 (REVIEW_LOG.md P2-1, P2-9, P2-15): D4 'foreign', D9 attempt events, the after-probe test,
+-- and the open episode preferred as the latest one.
 
 CREATE SCHEMA IF NOT EXISTS truth_model;
 
@@ -32,7 +38,8 @@ base AS (
            k.retry_safety,
            EXISTS (SELECT 1 FROM step_reconciliations p
                     WHERE p.tenant_id = s.tenant_id AND p.step_id = s.step_id
-                      AND p.kind = 'EXECUTION' AND p.outcome = 'EXECUTED_SUCCESS') AS after_probe  -- ASSUMPTION
+                      AND p.kind = 'EXECUTION'
+                      AND p.outcome IN ('EXECUTED_SUCCESS', 'VERIFIED_FAIL')) AS after_probe     -- ASSUMPTION
       FROM execution_steps s
       JOIN execution_runs r ON r.execution_id = s.execution_id AND r.tenant_id = s.tenant_id
       LEFT JOIN kernel_ops k ON k.kernel_op_id = s.kernel_op_id
@@ -64,8 +71,10 @@ SELECT
          WHEN b.dispatched_attempt = b.attempt THEN 'current'
          ELSE 'above' END AS d3_marker,
 
-    -- D4 ledger; key = request_id:plan_step_id (C9, CONF-024); an expired row authorises nothing
+    -- D4 ledger; key = request_id:plan_step_id (C9, CONF-024); an expired row authorises nothing. The key is the
+    -- table's primary key across tenants, so a row of another tenant or operation is 'foreign' (IdempotencyConflict)
     CASE WHEN led.idempotency_key IS NULL THEN 'none'
+         WHEN led.tenant_id <> b.tenant_id OR led.kernel_op_id <> b.kernel_op_id THEN 'foreign'
          WHEN led.expires_at <= now() THEN 'expired'
          WHEN led.result->>'status' = 'ok' THEN 'success'                -- ASSUMPTION (ledger body shape)
          ELSE 'failure' END AS d4_ledger,
@@ -91,7 +100,15 @@ SELECT
 
     -- D8 operation class, raw: phase 2 decides what "retry allowed" means (candidate C-8)
     b.effective_mutation AS d8_mutation,
-    b.retry_safety AS d8_retry_safety
+    b.retry_safety AS d8_retry_safety,
+
+    -- D9 events of the current attempt (each event is its own fenced write; recovery does not read them, C-9)
+    CASE WHEN ev.n = 0 THEN 'none'
+         WHEN ev.hit THEN 'hit'
+         WHEN ev.returned_status = 'ok' THEN 'returned_ok'                  -- ASSUMPTION (ProviderReturned payload)
+         WHEN ev.returned_status IS NOT NULL THEN 'returned_error'
+         WHEN ev.called THEN 'called'
+         ELSE 'started' END AS d9_events
 FROM base b
 LEFT JOIN LATERAL (
     SELECT count(*) AS n, max(br.status) FILTER (WHERE br.status <> 'released') AS live_status
@@ -99,7 +116,7 @@ LEFT JOIN LATERAL (
      WHERE br.tenant_id = b.tenant_id AND br.step_id = b.step_id
 ) res ON true
 LEFT JOIN idempotency_ledger led
-       ON led.tenant_id = b.tenant_id AND led.idempotency_key = b.request_id || ':' || b.plan_step_id
+       ON led.idempotency_key = b.request_id || ':' || b.plan_step_id          -- the key alone: see 'foreign'
 LEFT JOIN LATERAL (
     SELECT count(*) AS recorded,
            count(*) FILTER (WHERE ll.verdict = 'FAIL') AS failed,
@@ -115,7 +132,7 @@ LEFT JOIN LATERAL (
     SELECT e.kind, e.status, e.outcome, e.closed_at
       FROM step_reconciliations e
      WHERE e.tenant_id = b.tenant_id AND e.step_id = b.step_id
-     ORDER BY e.opened_at DESC, e.episode_id DESC
+     ORDER BY (e.closed_at IS NULL) DESC, e.opened_at DESC, e.episode_id DESC   -- the open episode, if any, first
      LIMIT 1
 ) ep ON true
 LEFT JOIN LATERAL (
@@ -125,4 +142,14 @@ LEFT JOIN LATERAL (
        AND d.error_type = 'unknown_unresolved' AND d.origin = 'execution'
      ORDER BY d.created_at DESC, d.dead_letter_id DESC
      LIMIT 1
-) dl ON true;
+) dl ON true
+LEFT JOIN LATERAL (
+    SELECT count(*) AS n,
+           bool_or(v.event_type = 'idempotency_hit') AS hit,
+           bool_or(v.event_type = 'ProviderCalled') AS called,
+           max(v.payload->>'status') FILTER (WHERE v.event_type = 'ProviderReturned') AS returned_status
+      FROM execution_events v
+     WHERE v.tenant_id = b.tenant_id AND v.step_id = b.step_id
+       AND v.event_type IN ('step_attempt', 'idempotency_hit', 'ProviderCalled', 'ProviderReturned')
+       AND split_part(v.attempt_id, '-', 3) = b.attempt::text              -- ASSUMPTION (attempt_id format)
+) ev ON true;

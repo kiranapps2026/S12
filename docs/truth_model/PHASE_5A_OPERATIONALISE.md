@@ -3,6 +3,9 @@
 Part of the [S12 truth model](README.md). Input: the validated rows and rules (phases 2 and 4). It produces §10
 (reverse index) and §11 (impossible states as SQL). It runs beside phase 5b.
 
+Revised in review pass 2 (`REVIEW_LOG.md` P2-1, P2-9, P2-15): the view now reads D9 and D4 `foreign`, and the smoke
+test covers them.
+
 ## Purpose
 
 Turn the matrix into queries an operator and a monitor can run. One view maps the tables to the phase 2 dimensions.
@@ -18,11 +21,12 @@ gets a query that tells its candidate rows apart.
 
 | File | What it is | State |
 |---|---|---|
-| `sql/step_evidence.sql` | View `truth_model.step_evidence`: one row per step with D1–D8 | Draft. Checked by the smoke test on migrations 001–015 plus drafted 016–017 |
-| `sql/smoke_test.sql` | Seeds eight steps, one per evidence shape; checks every dimension and one seed rule (d); rolls back | Passes. A mutated expectation and a mutated view each make it fail |
+| `sql/step_evidence.sql` | View `truth_model.step_evidence`: one row per step with D1–D9 | Draft. Checked by the smoke test on migrations 001–015 plus drafted 016–017 |
+| `sql/smoke_test.sql` | Seeds twelve steps, one per evidence shape; checks D1–D7 and D9 and one seed rule (d); rolls back | Passes. Each of five mutations of the view (no `foreign`, events of any attempt, hits ignored, the after-probe test narrowed, expiry ignored) and a mutated expectation make it fail |
 
-The view marks three assumptions to re-check once M11, M15 and M13 are implemented: the ledger body shape, the
-`verification_layer` payload, and what counts as "after a probe".
+The view marks five assumptions to re-check once M11, M13 and M15 are implemented: the ledger body shape, the
+`verification_layer` payload, what counts as "after a probe", the `attempt_id` format, and the `ProviderReturned`
+payload. It joins the ledger on the key alone, because the key is the primary key across tenants (C-14).
 
 ## Environment
 
@@ -60,7 +64,9 @@ CONF-042):
 |---|---|
 | `sql/impossible_states.sql` | One query per `IS-nnn`, over `truth_model.step_evidence`, returning offending steps |
 | `sql/row_coherence.sql` | One query per row-level rule that is not a dimension rule (for example, an episode closed ⇔ outcome set; EXHAUSTED ⇒ status `pending_probe`) |
-| `sql/history_predicates.sql` | One query per `IH-nnn` over `state_transitions` and `execution_events` (I5, I6, I14, I16 and phase 2 additions) |
+| `sql/history_predicates.sql` | One query per `IH-nnn` over `state_transitions` and `execution_events` (I5, I6, I14, I16 and phase 2 additions, including the write-order pairs of phase 4) |
+| `sql/run_outcome.sql` | One query per `RO-nnn` over `execution_runs` and `execution_steps`: a terminal run whose status contradicts its steps (for example a run with a DEAD_LETTER step that is not DEAD_LETTER, or a RESERVED reservation after consolidation) |
+| `sql/ignored_evidence.sql` | Steps whose durable evidence recovery would not read: a `ProviderReturned` with no ledger row (C-9), a recorded FAIL with no terminal step (C-10). Not violations: a monitoring list of rows likely to end in a needless dead letter |
 | `sql/reverse_index.sql` | One query per symptom, parameterised by `tenant_id` and `execution_id` |
 | `sql/controls/IS-nnn.sql` | Positive control per predicate: plants exactly one violation, expects exactly one row, rolls back |
 | `work/P5A_RUN.md` | Run log: commit, schema version, per-predicate counts on each data set |
@@ -102,7 +108,7 @@ told apart from the database, that is a principle 1 finding (see the `after_disp
 
 ## Procedure
 
-1. Re-check the three assumptions in `step_evidence.sql` against the current golden drafts. Change the view only if
+1. Re-check the five assumptions in `step_evidence.sql` against the current golden drafts. Change the view only if
    a draft changed, and log the change in `P5A_RUN.md`.
 2. Generate `impossible_states.sql` from the phase 2 rule definitions. Hand-write `row_coherence.sql` and
    `history_predicates.sql`.
@@ -116,7 +122,7 @@ told apart from the database, that is a principle 1 finding (see the `after_disp
 
 ## Exit criteria
 
-- Every `IS-nnn` and `IH-nnn` has a query and a positive control.
+- Every `IS-nnn`, `IH-nnn` and `RO-nnn` has a query and a positive control.
 - On the clean fixture every predicate returns 0; on its control, exactly 1.
 - Every reverse-index entry runs, and on the clean fixture it names the right candidate.
 - `P5A_RUN.md` records the commit, the schema version and every count, including the reference-run result.

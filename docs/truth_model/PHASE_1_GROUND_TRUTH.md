@@ -2,6 +2,8 @@
 
 Part of the [S12 truth model](README.md). It feeds phase 2 and draft sections §1, §3 and §12 of the final document.
 
+Revised in review pass 2 (`REVIEW_LOG.md` P2-1, P2-11): storage facts from golden docstrings, D9 inputs, prose rules, case counts.
+
 ## Purpose
 
 Extract, with citations, everything the later phases treat as given: the legal transitions and their reasons, the
@@ -27,7 +29,7 @@ In phase 1:
 | Records (`docs/gates/S12_RECORDS.md`, `S12_DEFECTS.md`, `S12_STOPS.md`) | Status and one-line effect only | 1 |
 | `docs/gates/S12_RULING_PACK.md` | Both sides of each open CONF (needed for phase 6) | 1 |
 | Golden files and sabotage patches | **Names only** (the index); not case bodies | 3 |
-| Golden module docstrings | Interface names only (modules, functions), for the writer table | 3 (behaviour) |
+| Golden module docstrings | Interface and storage facts only: modules, functions, tables, columns, event names, and which writes are separate transactions (for the writer table and dimension D9). Never what a milestone does in a given state | 3 (behaviour) |
 | Milestone cards (`S12_S15_IMPLEMENTATION_PLAN.md:277-361`) | Not opened | 3 |
 | `S12_B4_REVIEW.md`, `S12_B5_REVIEW.md`, `batch_bundles/IMPROVEMENT_GUIDE_B3-B5.md` | Not opened | 3, 4 |
 | Reference code in `batch_bundles/B*/src/` | Not opened | 3, last |
@@ -61,7 +63,8 @@ All gate line numbers are for `S12_S15_EXECUTION_GATE.md` at `638c519`.
 | Schema: drafted, not on `s12-work` | `batch_bundles/B5_M19-M21/src/adapters/postgres/migrations/016_execution_events.sql`, `017_recovery_candidates.sql` |
 | Implemented transition tables (built in M3/M4, golden B1 pinned) | `src/engine/stages/s12_execute/transitions.py` |
 | Invariant checker (active subset) | `tests_golden/fixtures/invariants.py` |
-| Open records today | CONF-005, 042–047; STOP-002, 004, 005; DEF-002, 003, 004 |
+| Execution events (evidence dimension D9) | Drafted `016_execution_events.sql`; CONF-026 (the table), CONF-036 (layer results as events); golden M12 docstring `M12_loop.py:15-21` (one `fenced_write` per event) |
+| Open records at `c505af0` | CONF-005, 042–047 (plus proposed 048); STOP-001 (`ruled`, still blocks the certifier), 002, 004, 005; DEF-002, 003, 004. Re-check at the start of the phase: the owner may have ruled since |
 
 ## Procedure
 
@@ -78,16 +81,24 @@ All gate line numbers are for `S12_S15_EXECUTION_GATE.md` at `638c519`.
    - Ledger-hit and no-dispatch-marker episodes open and close in one transaction (A.7 `:2450-2451`).
    - C35: the marker commits before the call; a new reservation is created only for a retry after NOT_EXECUTED.
    - C14: a LOCKED reservation is resolved only by the probe outcome.
-   - D4: an unresolved UNKNOWN and the human layer give DEAD_LETTER with the budget LOCKED.
+   - D4: an unresolved UNKNOWN and the human layer give DEAD_LETTER with the budget LOCKED; resolving a dead letter
+     never changes the run or the step.
+   - §8 step 8: layer results are persisted through `fenced_write()` before the step commit; an expired ledger row
+     never authorises a call (`:1618-1621`); a verification FAIL is not retryable (step 9, `:1634`).
+   - §8 steps 3 and 11: a lease is held per step and released when the step commits (`:1589`, `:1639`).
+   - C16: cancellation is checked before each step, never interrupts a call, and is applied after uncertainty is
+     resolved; DEAD_LETTER takes precedence (`:511-517`).
+   - §10 and its overrides: CONF-034 (`run_dead_lettered` → DEAD_LETTER), C15 (`budget_exhausted` → CANCELLED).
 3. **Schema bounds.** For each evidence table, list CHECK value sets, NOT NULL columns, unique and partial-unique
    indexes, foreign keys and triggers. Each later becomes a pruning rule of basis `schema`.
 4. **Ruling status.** One row per CONF, DEF and STOP that names M11–M19 or the evidence tables: ID, status, one-line
    effect, and the edge or dimension it touches. Include CONF-040 (ruled), CONF-028 and CONF-029 (ruled, cite as
    settled), and proposed CONF-048 (from the ruling pack, not yet recorded).
 5. **Case index (names only).** For M11, M12, M13, M14, M15, M16, M17 and M19, list every `test_*` function and every
-   sabotage patch file. Today there are 25 cases in M11, 13 in M13, 29 in M15, 15 in M16, 27 in M17 and 25 in M19
-   (before parametrisation), plus 27 sabotage patches across those milestones. Record pin status per file (all B3–B5
-   files are unpinned drafts today).
+   sabotage patch file. At `c505af0` there are 25 test functions in M11, 30 in M12, 13 in M13, 18 in M14, 29 in M15,
+   15 in M16, 27 in M17 and 25 in M19 (before parametrisation; M19 expands to 40 cases), and 42 sabotage patches
+   (M11 10, M12 8, M13 4, M14 7, M15 3, M16 3, M17 3, M19 4). Record pin status per file (all B2–B5 files are
+   unpinned drafts today).
 6. **Vocabulary (§12 draft).** For each enumerated type, list the values and the gate line or schema CHECK that
    defines them: step and run states; reservation, lease, dead letter and episode statuses; episode outcomes
    (`015`: 7 values); `retry_mode`; `resolution_outcome`; dead-letter `error_type` and `origin`; step terminal
@@ -97,7 +108,8 @@ All gate line numbers are for `S12_S15_EXECUTION_GATE.md` at `638c519`.
 7. **Writer table (§3 draft, from the gate only).** For each piece of evidence: the §8 step that writes it, whether
    the gate says it goes through `fenced_write()`, and what it must precede (for example, the marker precedes the
    call). Module names are added in phase 3.
-8. **Glossary.** Fix one definition each for: attempt (`execution_steps.attempt`; a retry increments it), episode
+8. **Glossary.** Fix one definition each for: attempt (`execution_steps.attempt`; a retry after a dispatched attempt
+   increments it, while after a crash an undispatched attempt's number is reused, C35), episode
    (one `step_reconciliations` row), in flight (a step in running, timeout, unknown or pending_probe; §13 step 3),
    evidence (a durable row or event a later reader can query), marker (`dispatched_attempt`), holder (the
    runtime and fence token a write is made under), fence token (from `fence_token_seq`, C25), usable lease

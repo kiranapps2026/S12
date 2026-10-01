@@ -2,7 +2,8 @@
 
 Owner: @Kiran. Brief dated 2026-10-01; this corrected version and the phase documents were written 2026-10-01 against
 `s12-work` at `638c519`. This file replaces `batch_bundles/Handoff brief — S12 truth model document.md` (v1) and
-the later upload (v2). The corrections are listed at the end, each with its source.
+the later upload (v2). The corrections are listed at the end, each with its source. Review pass 2 (same day, at
+`c505af0`) found missed issues and inconsistencies in these documents themselves; see [REVIEW_LOG.md](REVIEW_LOG.md).
 
 ## What is being built
 
@@ -17,24 +18,29 @@ Cells that come out empty, or filled twice with different answers, mark where th
 
 In scope: M11 produces the evidence (the dispatch marker and the idempotency ledger), M12 orders the writes, M13 and
 M15 interpret evidence live, M19 interprets it cold, and M16 and M17 consume the verdicts (consolidation, dead letters
-and the LOCKED reservations they hold). M14 is cited only for the live-authorization input.
+and the LOCKED reservations they hold). M14 supplies two run-level inputs: live authorization and cancellation.
 
 The safety claim the matrix has to prove: **an action is never silently repeated, and money is never settled for an
 action whose outcome is unknown.** The codebase does not state this claim in one place, and nothing proves it. Each
 matrix row is a case the claim must survive. A row where it fails is either a defect or an exception that nobody has
 written down.
 
+Two facts already strain the claim, and the document must face them rather than discover them late. A LOCKED
+reservation is not "settled", but it counts against the tenant's budget exactly like a committed one (I1). Today
+nothing in production releases it (C-11). And by design (C32), every mutation on an adapter without `observe()` ends
+in that state even when it succeeded (C-16).
+
 ## Phases (one scheme; v2 carried three)
 
 | Phase | Document | Output | Needs | Can it split? |
 |---|---|---|---|---|
 | 1 Ground truth | [PHASE_1_GROUND_TRUTH.md](PHASE_1_GROUND_TRUTH.md) | Edge table, ruling status, case index, vocabulary | Repository only | No |
-| 2 Enumerate and prune | [PHASE_2_ENUMERATE_AND_PRUNE.md](PHASE_2_ENUMERATE_AND_PRUNE.md) | Frozen row list (TM-nnn) and impossible set (IS-nnn) | Phase 1 | No: one minting authority |
+| 2 Enumerate and prune | [PHASE_2_ENUMERATE_AND_PRUNE.md](PHASE_2_ENUMERATE_AND_PRUNE.md) | Frozen row list (TM-nnn), impossible set (IS-nnn), run context (RC-nnn), run-outcome rules (RO-nnn) | Phase 1 | No: one minting authority |
 | 3 Map and classify | [PHASE_3_MAP_AND_CLASSIFY.md](PHASE_3_MAP_AND_CLASSIFY.md) | Each row mapped and classified, per milestone | Frozen rows | Yes: one worker per milestone column |
 | 4 Validate | [PHASE_4_VALIDATE.md](PHASE_4_VALIDATE.md) | Findings register (TF-nnn), three derived views | All of phase 3 | No |
 | 5a Operationalise | [PHASE_5A_OPERATIONALISE.md](PHASE_5A_OPERATIONALISE.md) | Evidence view, reverse-index SQL, zero-row predicates | Validated rows, PostgreSQL 16 | Runs beside 5b |
 | 5b Consequences | [PHASE_5B_CONSEQUENCES.md](PHASE_5B_CONSEQUENCES.md) | Terminal reason table, latency and LOCKED-time figures | Validated rows | Runs beside 5a |
-| 6 Owner rulings | [PHASE_6_OWNER_RULINGS.md](PHASE_6_OWNER_RULINGS.md) | Branch write-ups, rulings recorded | Phase 3 onward | Owner only |
+| 6 Owner rulings | [PHASE_6_OWNER_RULINGS.md](PHASE_6_OWNER_RULINGS.md) | Corrected owner queue (CONF, STOP, DEF), branch write-ups, rulings applied | Phase 3 onward | Owner only |
 | 7 Freeze | [PHASE_7_FREEZE.md](PHASE_7_FREEZE.md) | `S12_TRUTH_MODEL.md`: provenance, decision log, shelf life | Everything | No |
 
 Phases 1–4 and 5b need no database. Phase 5a needs one (a local PostgreSQL 16 cluster is enough). Phase 6 needs the
@@ -49,8 +55,10 @@ Phase outputs go in `docs/truth_model/work/`. The assembled document is `docs/tr
 | Item | State |
 |---|---|
 | Phase documents 1–7 | Written (this folder) |
-| `sql/step_evidence.sql` | Draft of the phase 5a evidence view (dimensions D1–D8); `sql/smoke_test.sql` passes on PostgreSQL 16 with migrations 001–015 plus drafted 016–017, and a mutated expectation or view makes it fail |
-| Candidate observations C-1 … C-8 | Logged in phase 2, for phase 4 to judge |
+| `sql/step_evidence.sql` | Draft of the phase 5a evidence view (dimensions D1–D9); `sql/smoke_test.sql` (twelve evidence shapes) passes on PostgreSQL 16 with migrations 001–015 plus drafted 016–017, and each of five view mutations or a mutated expectation makes it fail |
+| Candidate observations C-1 … C-16 | Logged in phase 2, for phase 4 to judge. The most severe: C-9 (durable evidence recovery ignores), C-10 (a recorded FAIL re-run after a crash), C-11 and C-16 (LOCKED money nothing releases) |
+| Owner queue | Corrected in phase 6, including the STOP and DEF rows and the errors in a circulated analysis |
+| [REVIEW_LOG.md](REVIEW_LOG.md) | What each review pass found and where it was fixed |
 | Phase outputs (`work/`) | None yet. Phase 1 is next |
 
 ## Coordination rules
@@ -155,3 +163,7 @@ Each fact was checked against the repository at `638c519`. Gate means `docs/impl
 | 13 | Phase 1 reads the milestone cards, reviews and reference code, and the cards must not be read before the rows are frozen | Phase 1 reads the gate, schema and records, and indexes golden cases by name only. Cards, reviews, guides and reference code are read in phase 3 | Phase 1, "Contamination rule" |
 | 14 | Phases 5a/5b: "every predicate runs and returns zero" | Zero on an empty database proves nothing. Each predicate must return 0 on a clean fixture and exactly 1 on its own planted violation | Phase 5a |
 | 15 | The ruling write-ups are produced in phase 6 | `docs/gates/S12_RULING_PACK.md` already has both sides and a recommendation for each open CONF. Phase 6 adds only the matrix consequences | Phase 6 |
+| 16 | Evidence dimensions: reservation, step, marker, ledger, layers, episode, lease, digest, authorization, operation | Execution events are evidence too (`ProviderReturned`, `idempotency_hit`, …): each is its own fenced write, and recovery ignores them (D9, C-9). Cancellation requests and run status are run context (R4, R5) | Pass 2, P2-1, P2-5 |
+| 17 | Evidence ladder: ledger → marker → layer events → open episode → reservation → nothing | That list ranks answers to different questions against each other. Phase 2 uses one ladder per question (dispatched? provider acted? effect verified? money settled?) | Pass 2, P2-10 |
+| 18 | "The default `probe()` returns INCONCLUSIVE, so every real uncertainty dead-letters" | Also: the default `observe()` returns UNKNOWN, so every **certain** success of a mutation dead-letters too (C32 `:1046-1050`) | Pass 2, C-16 |
+| 19 | "Budget held, nothing happened": wording and an SLA | No production path releases the money at all (IMP-M17-2). An SLA needs an operator entry point first | Pass 2, P2-3 |
