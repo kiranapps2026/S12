@@ -8,6 +8,7 @@ dead-letter generator. One file per provider. Every file follows [`TEMPLATE.md`]
 | [`ghl_crm.md`](ghl_crm.md) | GoHighLevel (LeadConnector API v2) as the `crm` provider | `crm.contact_*`, `crm.note_*`, `crm.task_*` | reads and reversible creates on the launch allow-list |
 | [`gmail_mail.md`](gmail_mail.md) | Gmail API as the `mail` provider | `mail.email_send` | **excluded at launch** (IRREVERSIBLE; see the file) |
 | [`TEMPLATE.md`](TEMPLATE.md) | any further provider (Notion, Airtable, Google Calendar/Sheets, browser/RPA) | — | copy, fill, review |
+| [`AGENT_PROMPT.md`](AGENT_PROMPT.md) | ready-to-paste prompt for the implementing agent (phases, stop points, report format) | — | — |
 
 **Status of this folder:**
 
