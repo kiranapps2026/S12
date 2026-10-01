@@ -86,7 +86,7 @@ REQUIRED_COLUMNS = {
                      "status": "text", "resolved": "boolean", "retry_mode": "text", "episode_id": "text",
                      "resolution_outcome": "text", "origin": "text", "attempt_id": "text"},
     "idempotency_ledger": {"idempotency_key": "text", "tenant_id": "text", "kernel_op_id": "text",
-                           "expires_at": "timestamp with time zone"},
+                           "result": "jsonb", "created_at": "timestamp with time zone", "expires_at": "timestamp with time zone"},
     "checkpoints": {"checkpoint_id": "text", "tenant_id": "text", "execution_id": "text"},
     "workers": {"worker_id": "text", "tenant_id": "text", "capability_profile": "jsonb", "state": None,
                 "capacity": "integer", "current_load": "integer", "lease_epoch": "bigint", "workspace_id": "text",

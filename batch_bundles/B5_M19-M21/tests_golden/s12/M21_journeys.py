@@ -1,0 +1,355 @@
+"""M21 golden — S0→S15 journeys, the architecture suite, the §21 seams (gate commit M). ★ Owner-pinned.
+
+Gate v10: suite 15 (the eight journeys, S0 → S15), suite 2 (architecture: no resolver, risk or mutation
+recomputation; no S8 stage handler import, only the shared check library of C23; no direct adapter call outside the
+reliability guard; no durable execution write outside ``fenced_write()``; no filesystem checkpoint code; fault injection
+inert outside test mode), the M21 card (no hard-coded hosts, no Laya code), §17 (the invariant checker after every
+journey), §21 S1 (settings, no hard-coded infrastructure), S5 (a metrics hook with counters for step outcomes, probes,
+dead letters and fenced-out writes; a no-op implementation), the performance baseline (p50 / p95 per-step overhead over
+at least 200 steps, recorded, no threshold).
+
+Every journey starts from a state the real S0–S11 pipeline certified (``fixtures/certified.py``), is admitted by the S12
+entry (M06), runs the S12 loop with every B3–B4 component (M17's dependencies: guard, verification, consolidation,
+dead letters), and ends with the S15 envelope (M18). The S5 resolver is never called after S11.
+
+Interface this file fixes:
+  * ``contracts.metrics``: ``MetricsHook`` (``increment(name, **labels)``, ``timing(name, value, **labels)``),
+    ``NoMetrics``; names ``STEP_OUTCOME`` ("step_outcome", label ``status``, once per step reaching a terminal
+    state), ``PROBE`` ("probe", once per provider probe attempt), ``DEAD_LETTER`` ("dead_letter", label
+    ``error_type``, once per record), ``FENCED_OUT`` ("fenced_out", once per loop stopped by ``FencedOut``),
+    ``STEP_DURATION_MS`` ("step_duration_ms", once per step the loop runs). ``LoopDeps.metrics`` (default
+    ``NoMetrics()``).
+"""
+from __future__ import annotations
+
+import ast
+import dataclasses
+import re
+import statistics
+
+import pytest
+
+from tests_golden.fixtures.invariants import assert_system_invariants
+from tests_golden.s12.M12_loop import _admit, _order, _ops, _state
+
+
+class Metrics:
+    def __init__(self):
+        self.counts, self.timings = [], []
+
+    def increment(self, name, **labels):
+        self.counts.append((name, dict(labels)))
+
+    def timing(self, name, value, **labels):
+        self.timings.append((name, value))
+
+    def count(self, name, **labels):
+        return sum(1 for n, got in self.counts if n == name and all(got.get(k) == v for k, v in labels.items()))
+
+
+def _mocked(**programs):
+    from tests_golden.s12.M12_loop import _mock as mock
+    return mock(**programs)
+
+
+def _deps(schema, mock, *, metrics=None, faults=None, runtime="runtime-A"):
+    from engine.stages.s12_execute.fault_injection import NoFaults
+    from tests_golden.s12.M17_dead_letter import _dl_deps
+    return dataclasses.replace(_dl_deps(schema, mock), metrics=metrics or Metrics(), faults=faults or NoFaults(),
+                               runtime_instance_id=runtime)
+
+
+def _envelope(schema, run, tenant, execution):
+    from adapters.postgres.run_summary import PostgresRunSummaries
+    from engine.stages.s15_final_state.response import build_envelope
+    return build_envelope(run(PostgresRunSummaries(schema.database()).load(tenant, execution)))
+
+
+class _Trap:
+    """After S11 nothing may resolve again (suite 2). Armed once the fixture certified the state (S0–S11 runs S5)."""
+    def __init__(self, monkeypatch):
+        self.monkeypatch, self.calls = monkeypatch, []
+
+    def arm(self):
+        def refuse(*args, **kwargs):
+            self.calls.append(args)
+            raise AssertionError("S5 re-resolution after S11")
+        self.monkeypatch.setattr("engine.stages.s5_provider_resolution.handler.handle", refuse)
+
+
+@pytest.fixture
+def no_reresolution(monkeypatch):
+    return _Trap(monkeypatch)          # an armed trap fails the journey by raising where the call happens
+
+
+def _journey(schema, run, name, *, trap, programs=None, budget_pool=1000, retry_safety="safe", metrics=None):
+    from engine.stages.s12_execute.loop import run_execution
+    state = _state(f"golden-journey-{name}", f"journey{name}")
+    trap.arm()
+    tenant, execution = _admit(schema, run, state, budget_pool=budget_pool, retry_safety=retry_safety)
+    mock = _mocked(**{_ops(state)[sid]: p for sid, p in (programs or {}).items()})
+    result = run(run_execution(_deps(schema, mock, metrics=metrics), tenant, execution))
+    return state, tenant, execution, mock, result
+
+
+# --- the eight journeys (suite 15) -----------------------------------------------------------------------------------
+
+def test_journey_happy_path_with_dependencies(db_schema, run, no_reresolution):
+    state, tenant, execution, mock, _ = _journey(db_schema, run, "happy", trap=no_reresolution)
+    env = _envelope(db_schema, run, tenant, execution)
+    assert env.status == "ok" and [s["position"] for s in env.data["steps"]] == [1, 2, 3]
+    assert all(s.depends_on for s in state.plan.plan.steps[1:])                     # a chain: each needs the last
+    called = [m.idempotency_key.split(":")[-1] for m in mock.calls]
+    assert called == _order(state)                                                   # in dependency order
+    run(assert_system_invariants(db_schema))
+
+
+def test_journey_retry_then_success(db_schema, run, no_reresolution):
+    state = _state("golden-journey-retry", "journeyretry")
+    second = _order(state)[1]
+    state, tenant, execution, mock, _ = _journey(db_schema, run, "retry", trap=no_reresolution,
+                                                 programs={second: {"call": "fail_500_then_success", "n": 1}})
+    assert _envelope(db_schema, run, tenant, execution).status == "ok"
+    ids = [m.attempt_id for m in mock.calls if m.idempotency_key.endswith(f":{second}")]
+    assert ids == ["att-1-1", "att-1-2"]
+    run(assert_system_invariants(db_schema))
+
+
+def test_journey_timeout_executed_resolved_by_the_probe(db_schema, run, no_reresolution):
+    state = _state("golden-journey-texec", "journeytexec")
+    first = _order(state)[0]
+    state, tenant, execution, mock, _ = _journey(db_schema, run, "texec", trap=no_reresolution,
+                                                 programs={first: {"call": "timeout_executed"}})
+    assert _envelope(db_schema, run, tenant, execution).status == "ok"
+    assert len(mock.probes) == 1 and mock.side_effects(f"{state.execution_context.request_id}:{first}") == 1
+    run(assert_system_invariants(db_schema))
+
+
+def test_journey_timeout_not_executed_then_retry(db_schema, run, no_reresolution):
+    state = _state("golden-journey-tnot", "journeytnot")
+    first = _order(state)[0]
+    state, tenant, execution, mock, _ = _journey(db_schema, run, "tnot", trap=no_reresolution,
+                                                 programs={first: {"call": "timeout_not_executed", "n": 1}})
+    assert _envelope(db_schema, run, tenant, execution).status == "ok"
+    ids = [m.attempt_id for m in mock.calls if m.idempotency_key.endswith(f":{first}")]
+    assert ids == ["att-0-1", "att-0-2"] and len(mock.probes) == 1
+    run(assert_system_invariants(db_schema))
+
+
+def test_journey_verification_mismatch_leads_to_partial(db_schema, run, no_reresolution):
+    state = _state("golden-journey-mismatch", "journeymismatch")
+    second = _order(state)[1]
+    state, tenant, execution, _, _ = _journey(db_schema, run, "mismatch", trap=no_reresolution,
+                                              programs={second: {"call": "verify_mismatch"}})
+    env = _envelope(db_schema, run, tenant, execution)
+    assert env.status == "partial"
+    assert env.error.details["failed_steps"] == [{"position": 2, "operation": _ops(state)[second], "status": "failed"}]
+    letters = run(db_schema.fetch("SELECT error_type, retry_mode FROM dead_letters WHERE execution_id = $1",
+                                  execution))
+    assert [tuple(r) for r in letters] == [("data", "NONE")]
+    run(assert_system_invariants(db_schema))
+
+
+def test_journey_budget_exhaustion_mid_plan(db_schema, run, no_reresolution):
+    state = _state("golden-journey-budget", "journeybudget")
+    pool = state.plan.plan.steps[0].cost
+    state, tenant, execution, _, result = _journey(db_schema, run, "budget", trap=no_reresolution, budget_pool=pool)
+    assert (result.run_status, result.reason) == ("cancelled", "budget_exhausted")
+    env = _envelope(db_schema, run, tenant, execution)
+    assert (env.status, env.error.type) == ("error", "budget_exceeded")
+    assert env.error.details["completed_steps"] == [{"position": 1, "operation": _ops(state)[_order(state)[0]],
+                                                     "status": "completed"}]
+    run(assert_system_invariants(db_schema))
+
+
+def test_journey_inconclusive_probe_leads_to_dead_letter(db_schema, run, no_reresolution):
+    state = _state("golden-journey-dl", "journeydl")
+    first = _order(state)[0]
+    metrics = Metrics()
+    state, tenant, execution, _, _ = _journey(db_schema, run, "dl", trap=no_reresolution, metrics=metrics, programs={
+        first: {"call": "timeout_executed", "probe": "inconclusive"}})
+    env = _envelope(db_schema, run, tenant, execution)
+    assert env.status == "error" and env.error.recoverable is False
+    assert run(db_schema.fetchval("SELECT status FROM execution_runs WHERE execution_id = $1", execution)) == \
+        "dead_letter"
+    assert metrics.count("probe") == 3 and metrics.count("dead_letter", error_type="unknown_unresolved") == 1
+    assert metrics.count("step_outcome", status="dead_letter") == 1
+    assert metrics.count("step_outcome", status="cancelled") == len(_order(state)) - 1
+    run(assert_system_invariants(db_schema))
+
+
+def test_journey_crash_mid_plan_then_resume_to_completed(db_schema, run, no_reresolution):
+    from tests_golden.s12.M19_recovery import CrashAt, _crash, _sweep, _time_passes
+    state = _state("golden-journey-crash", "journeycrash")
+    no_reresolution.arm()
+    tenant, execution = _admit(db_schema, run, state)
+    mock = _mocked()
+    _crash(db_schema, run, _deps(db_schema, mock, faults=CrashAt("after_commit_before_checkpoint", nth=2)), tenant,
+           execution)
+    _time_passes(db_schema, run, execution)
+    _sweep(db_schema, run, _deps(db_schema, mock, runtime="runtime-B"))
+    assert _envelope(db_schema, run, tenant, execution).status == "ok"
+    for sid in _order(state):
+        assert mock.side_effects(f"{state.execution_context.request_id}:{sid}") == 1, sid
+    run(assert_system_invariants(db_schema))
+
+
+# --- metrics seam and the performance baseline (§21 S5, performance baseline) ----------------------------------------
+
+def test_a_fenced_out_loop_is_counted(db_schema, run):
+    from engine.stages.s12_execute.admission_control import AdmissionSnapshot
+    from engine.stages.s12_execute.loop import run_execution
+    from tests_golden.s12.M12_loop import PASSING, _take_over
+    state = _state("golden-journey-fenced", "journeyfenced")
+    tenant, execution = _admit(db_schema, run, state)
+    second = _order(state)[1]
+    moved = []
+
+    async def take_over_at_second(tenant_id, execution_id, plan_step_id):
+        if plan_step_id == second and not moved:
+            await _take_over(db_schema, execution)
+            moved.append(True)
+        return AdmissionSnapshot(**PASSING)
+
+    metrics = Metrics()
+    deps = dataclasses.replace(_deps(db_schema, _mocked(), metrics=metrics), admission=take_over_at_second)
+    assert run(run_execution(deps, tenant, execution)).reason == "fenced_out"
+    assert metrics.count("fenced_out") == 1 and metrics.count("step_outcome", status="completed") == 1
+
+
+def test_the_metrics_hook_is_a_no_op_by_default():
+    from contracts.metrics import NoMetrics
+    from engine.stages.s12_execute.loop import LoopDeps
+    default = {f.name: f for f in dataclasses.fields(LoopDeps)}["metrics"].default
+    assert isinstance(default, NoMetrics)
+    assert default.increment("step_outcome", status="completed") is None and default.timing("x", 1.0) is None
+
+
+def test_the_per_step_overhead_baseline_can_be_recorded_over_200_steps(db_schema, run, capsys):
+    """Record only (no threshold): p50 / p95 of the loop's per-step time with a zero-delay mock (gate §21)."""
+    from engine.stages.s12_execute.loop import run_execution
+    metrics = Metrics()
+    for i in range(70):
+        state = _state(f"golden-journey-perf-{i}", f"journeyperf{i}")
+        tenant, execution = _admit(db_schema, run, state)
+        run(run_execution(_deps(db_schema, _mocked(), metrics=metrics), tenant, execution))
+    samples = [v for name, v in metrics.timings if name == "step_duration_ms"]
+    assert len(samples) >= 200 and all(v > 0 for v in samples)
+    p50, p95 = statistics.median(samples), statistics.quantiles(samples, n=20)[-1]
+    assert p95 >= p50 > 0
+    with capsys.disabled():
+        print(f"\nS12 per-step overhead baseline over {len(samples)} steps: p50 {p50:.1f} ms, p95 {p95:.1f} ms")
+
+
+# --- the architecture suite (suite 2, M21 card) ----------------------------------------------------------------------
+
+def _s12_sources():
+    from tests_golden.fixtures.code_scan import ROOT, s12_files
+    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in s12_files()}
+
+
+def _imports(text):
+    out = set()
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            out.add(node.module)
+            out.update(f"{node.module}.{a.name}" for a in node.names)
+        elif isinstance(node, ast.Import):
+            out.update(a.name for a in node.names)
+    return out
+
+
+ALLOWED_OUTSIDE = (          # every engine import of S12–S15 code outside S12–S15, with its reason
+    "engine.stages.plan_steps",              # the step → binding index S4 recorded (no resolution)
+    "engine.control_plane.scope",            # the run scope LiveAuthorizationCheck reads (C23)
+    "engine.stages.s8_safety_gate.checks",   # the shared check library (C23), the only S8 code allowed
+    "engine.stages.s8_safety_gate.dependencies",   # the S8 CircuitBreaker protocol the breaker implements
+    "engine.stages.s0_entry.activation",     # the pause / activation check the S12 entry repeats (C39)
+)
+
+
+def test_s12_to_s15_code_never_re_resolves_and_imports_no_stage_handler():
+    offenders = []
+    for path, text in _s12_sources().items():
+        for module in _imports(text):
+            if not module.startswith("engine."):
+                continue
+            if module.startswith(("engine.stages.s12", "engine.stages.s13", "engine.stages.s14",
+                                  "engine.stages.s15")):
+                continue
+            if module == "engine.stages.s8_safety_gate" or module.startswith(ALLOWED_OUTSIDE):
+                continue
+            offenders.append(f"{path}: {module}")
+    handler = [f"{p}: {m}" for p, t in _s12_sources().items() for m in _imports(t) if "s8_safety_gate.handler" in m]
+    assert offenders == [] and handler == []
+
+
+def test_no_adapter_is_called_outside_the_reliability_guard():
+    guards = ("src/engine/stages/s12_execute/reliability.py",
+              "src/engine/stages/s12_execute/guard.py")          # the prototype guard (CONF-011) is a guard too
+    direct = re.compile(r"\b\w*adapter\w*\.(call|probe|observe)\(", re.I)
+    offenders = [p for p, t in _s12_sources().items()
+                 if p not in guards and p.startswith("src/engine/") and direct.search(t)]
+    concrete = [f"{p}: {m}" for p, t in _s12_sources().items() if p.startswith("src/engine/")
+                for m in _imports(t) if m.startswith(("adapters.runtime.mock_adapter", "engine.providers"))]
+    assert offenders == [] and concrete == []
+
+
+_WRITE = re.compile(r"(?<!FOR )\b(INSERT INTO|UPDATE|DELETE FROM)\s+([a-z_]+)\b", re.I)
+EXECUTION_TABLES = ("execution_runs", "execution_steps", "budget_reservations", "step_reconciliations",
+                    "dead_letters", "idempotency_ledger", "execution_events", "checkpoints")
+UNFENCED_BY_DESIGN = {
+    "src/adapters/postgres/admission.py": "the §7.2 admission transaction creates the ownership row: no fence yet",
+    "src/adapters/postgres/cancellation.py": "C16: the user's cancellation request, recorded without a lease",
+}
+
+
+def test_no_durable_execution_write_happens_outside_fenced_write():
+    offenders = []
+    for path, text in _s12_sources().items():
+        tables = {m.group(2).lower() for m in _WRITE.finditer(text)} & set(EXECUTION_TABLES)
+        if not tables:
+            continue
+        if path.startswith("src/engine/"):
+            offenders.append(f"{path}: SQL writes belong to the adapters")
+        elif path not in UNFENCED_BY_DESIGN and "fenced_write" not in text and "check_fence" not in text:
+            offenders.append(f"{path}: writes {sorted(tables)} without fenced_write")
+    assert offenders == []
+
+
+def test_no_filesystem_checkpoints_no_hard_coded_hosts_and_no_laya():
+    banned = {
+        "filesystem": re.compile(r"(?<![.\w])(?<!def )open\(|\.write_text\(|\.write_bytes\(|\bpickle\b|\bshelve\b"),
+        "host": re.compile(r"localhost|127\.0\.0\.1|postgres(ql)?://|https?://|:5432\b"),
+        "laya": re.compile(r"laya", re.I),
+    }
+    offenders = [f"{kind}: {path}" for path, text in _s12_sources().items()
+                 for kind, pattern in banned.items() if pattern.search(text)]
+    assert offenders == []
+
+
+def test_fault_injection_has_no_switch_outside_the_tests():
+    text = _s12_sources()["src/engine/stages/s12_execute/fault_injection.py"]
+    assert "environ" not in text and "getenv" not in text
+    from engine.stages.s12_execute.fault_injection import NoFaults
+    from engine.stages.s12_execute.loop import LoopDeps
+    assert isinstance({f.name: f for f in dataclasses.fields(LoopDeps)}["faults"].default, NoFaults)
+
+
+def test_infrastructure_settings_come_from_the_environment_and_are_validated():
+    from engine.stages.s12_execute.settings import ExecutionSettings
+    env = {"S12_ADAPTER_CLIENT_TIMEOUT_S": "5", "S12_STEP_TIMEOUT_S": "30", "S12_PROBE_TIMEOUT_S": "5",
+           "S12_LEASE_TTL_S": "30", "S12_LEASE_RENEWAL_INTERVAL_S": "10"}
+    settings = ExecutionSettings.from_env(env)
+    assert (settings.step_timeout_s, settings.lease_ttl_s) == (30.0, 30.0)
+    with pytest.raises(ValueError):
+        ExecutionSettings.from_env({**env, "S12_STEP_TIMEOUT_S": "4"})         # inverted timeouts (C37)
+    assert 0 < settings.recovery_sweep_interval_s < 30                           # §13: under 30 seconds
+    assert ExecutionSettings.from_env({**env, "S12_RECOVERY_SWEEP_INTERVAL_S": "5"}).recovery_sweep_interval_s == 5
+    for bad in ("30", "0", "soon"):
+        with pytest.raises(ValueError):
+            ExecutionSettings.from_env({**env, "S12_RECOVERY_SWEEP_INTERVAL_S": bad})
+
+
+def test_every_move_on_these_paths_is_legal(db_schema, run):
+    run(assert_system_invariants(db_schema))

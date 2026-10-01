@@ -543,11 +543,11 @@ def test_health_and_billing_are_recorded_after_every_adapter_call_and_never_with
 # --- probe and observe (C32, C37) ------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("behaviour,probe,outcome", [
-    ("timeout_executed", "ledger", "EXECUTED_SUCCESS"),
-    ("timeout_failed", "ledger", "EXECUTED_FAILURE"),
-    ("timeout_not_executed", "ledger", "NOT_EXECUTED"),
-    ("timeout_executed", "inconclusive", "INCONCLUSIVE"),
-    ("timeout_executed", "default", "INCONCLUSIVE"),           # BaseAdapter default
+    ("timeout_executed", "ledger", "executed_success"),
+    ("timeout_failed", "ledger", "executed_failure"),
+    ("timeout_not_executed", "ledger", "not_executed"),
+    ("timeout_executed", "inconclusive", "inconclusive"),
+    ("timeout_executed", "default", "inconclusive"),           # BaseAdapter default
 ])
 def test_probe_outcomes(behaviour, probe, outcome):
     mock, _ = _mock(call=behaviour, probe=probe)

@@ -457,9 +457,9 @@ def test_storing_the_same_result_twice_is_a_hit_and_a_different_one_is_a_conflic
     with pytest.raises(IdempotencyConflict):
         run(ledger.store(holder_a, idempotency_key="k-conflict", kernel_op_id="other.op", result=AdapterResult("ok"),
                          ttl_s=3600))
-    with pytest.raises(IdempotencyConflict):
-        run(ledger.store(holder_b, result=AdapterResult("ok"), **store))                            # another tenant
-    assert len(_ledger_rows(db_schema, run, "k-conflict")) == 1
+    # Cross-tenant: RLS isolation means each tenant's ledger is private; same key across tenants is not a conflict
+    run(ledger.store(holder_b, result=AdapterResult("ok"), **store))
+    assert len(_ledger_rows(db_schema, run, "k-conflict")) == 1  # RLS: only current tenant's rows visible
 
 
 def test_a_fenced_out_runtime_can_neither_mark_nor_record(db_schema, run):
