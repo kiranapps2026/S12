@@ -29,6 +29,11 @@ change.
 Expected certifier result **today** for `--milestone M10 --fast`: S12-PIN FAIL and S12-REC FAIL, G-M10 FAIL; the other
 13 rows PASS. Expected after Part O: **15/16, only G-M10 FAIL.**
 
+**S12-S011 also FAILs whenever the S0–S11 code is not importable.** `chk_s011` runs `tools/owner_certify.py` without
+setting `PYTHONPATH` (`owner_certify_s12.py:185-190`). Either `pip install -e ".[dev]"` in the venv, or set
+`PYTHONPATH=src` in the shell **before** any certifier run (`batch_bundles/README.md`: "18/21 … plus S12-S011 when
+the package is not importable").
+
 ---
 
 ## Part O — owner close-out rows (B1, B2, and the B3 gate)
@@ -45,7 +50,7 @@ git status --porcelain                                              # must print
 
 | # | Row | Command / edit | Done when |
 |---|---|---|---|
-| O1 | **Decide the `batch_bundles/` rule** (decision) | Recommended: the agent may **read** it for orientation but never copies a file or a block into `src/`; every module is written against the golden docstring. Record it as one line in `s12_autopilot_log.md` (append-only), or move the folder out of the repository. Note: the reference was written by the same author as the goldens, so copying it removes the only independent check that the goldens are satisfiable by someone else's code. | A log line or a commit removing the folder |
+| O1 | **Confirm the `batch_bundles/` rule** (decision) | Already written in `batch_bundles/README.md` rule 10 ("The reference `src/` is read, not copied … Never `cp -r` the layer over `s12-work`"). That README is not pinned and not named by `S12_AUTOPILOT.md`, so the owner confirms it with one line in `s12_autopilot_log.md` (append-only) or in the hand-off message. Reason: the reference was written by the same author as the goldens, so copying it removes the only independent check that the goldens are satisfiable by someone else's code. | A log line, or the rule quoted in O8 |
 | O2 | *(optional)* Refresh the README counts | Edit `tests_golden/README.md`: M08 40, M14 28, M01–M09 490, M01–M14 674. Commit. | Commit exists **before** O3 (pinning freezes the README) |
 | O3 | **Re-pin** (closes STOP-001's "pin before the checkpoint" and makes B2/B3 pinned) | `python tools\owner_certify_s12.py --selftest` (every row OK), then `powershell -ExecutionPolicy Bypass -File tools\owner_pin_s12.ps1`. It refuses if `tests_golden` or `tools` is dirty. It pins **every** file under `tests_golden/`, B4/B5 drafts included: S12-PIN fails on any unpinned file in a pinned area, so there is no B3-only pin. That is safe, because the open M15/M19/M20 CONF rows still block those milestones through S12-REC. The ruling pack's golden amendments (M18, M19, M20, M21) then need one more re-pin later. | Commit "Owner: pin S12 golden set…" pushed. `python tools\owner_certify_s12.py --milestone M10 --fast` shows S12-PIN PASS |
 | O4a | **STOP rows → applied** | Edit `docs/gates/S12_STOPS.md` (owner columns only), Status cell (third column) → `applied`:<br>• **STOP-001**: Ruling "owner 2026-09-30: start M1 unpinned; pinned abfff2f, re-pinned <O3 commit>"; Applied `<O3 commit>`<br>• **STOP-002**: "B2 drafted (f40a5a6…9f30cef), built M5–M9, pinned <O3>"; Applied `<O3 commit>`<br>• **STOP-004**: see `S12_RULING_PACK.md` § STOP-004; Applied `<O3 commit>`<br>• **STOP-005**: see § STOP-005; Applied `150a668, <O3 commit>`<br>Commit and push. | `python tools\s12_tracker.py check` prints no STOP for M1–M10 |
@@ -129,7 +134,7 @@ Stop there and hand the FAIL lines to an agent session as a defect (DEF-nnn), no
 |---|---|---|---|
 | Python | 3.11+, `.venv` in the repo, `pip install -e ".[dev]"` | `python3.11 -m pip install -e ".[dev]"` | `pyproject.toml:7` |
 | `PYTHONUTF8` | `1` | `1` | the certifiers set it for their children; set it for manual runs too |
-| `PYTHONPATH` | `src;.` | `src:.` | identical to what `owner_certify_s12.py:125` sets: `src` for `contracts.*`/`engine.*`/`adapters.*`, root for `tests_golden.fixtures.*` |
+| `PYTHONPATH` | `$env:PYTHONPATH="src;."` | `export PYTHONPATH=src:.` | identical to what `owner_certify_s12.py:125` sets for golden runs. It must also be set **in the shell** for the certifier itself, because its S12-S011 sub-run of `owner_certify.py` does not set it (unless the package is pip-installed) |
 | `TEST_DATABASE_URL` | from `.env` | export it | **superuser** connection (the golden harness refuses otherwise; code under test runs as `golden_app`), database name **must end in `_test`**, PostgreSQL 16 |
 | Database | the master's `suprpg_test` | `createdb supragents_test` | each golden module creates, migrates and drops its own schema |
 
@@ -172,7 +177,7 @@ Run each file alone: `python -m pytest -q -p no:cacheprovider tests_golden/s12/<
 | `M12_loop.py` | M12 · sonnet | 33 | **29 failed, 4 passed** | 8 (2 are `.sql`) | prototype topological order + standing rules |
 | `M13_probe.py` | M13 · opus | 13 | **13 failed** | 4 | — |
 | `M14_revocation_cancel.py` | M14 ★ · opus | **28** | **28 failed** | 7 | — (27 in the README + `test_a_persistent_provider_outage_ends_as_admission_exhausted_never_cancelled`, `150a668`) |
-| **B3 total** | | **184** | **178 failed, 6 passed** | **39** | |
+| **B3 total** | | **184** | **178 failed, 6 passed** | **39** | reference passes 184/184 (`batch_bundles/README.md`, verified 2026-10-01) |
 
 **Red for the right reason:** every failure must be a missing module or attribute (`ModuleNotFoundError` /
 `ImportError` / `AttributeError` raised inside the test body). The goldens import inside each case, so the cases fail
