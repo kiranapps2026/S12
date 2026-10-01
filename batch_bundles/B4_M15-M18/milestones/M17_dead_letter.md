@@ -18,6 +18,7 @@
 | `src/engine/stages/s14_dead_letter/retry.py` | **new**: `retry_dead_letter` |
 | `src/engine/stages/s14_dead_letter/rollback.py` | **new**: `rollback_execution`, `RollbackStep`, `RollbackReport(compensated, skipped, failed)` |
 | `src/engine/stages/s12_execute/reliability.py` | add `InverseBudget` (no adapter imports, no SQL) |
+| `src/adapters/postgres/budget_reserver.py` | add `settle_dead_letter_reservation(conn, *, ...)`: settles a LOCKED reservation on the caller's connection, inside the resolution transaction |
 | `src/engine/stages/s12_execute/loop.py` | additive: `LoopDeps.dead_letters=None`; create records at the points below |
 
 The table `dead_letters` exists in migration 015 (`retry_mode`, `resolution_outcome`, `origin`, and the

@@ -16,6 +16,7 @@
 | `src/contracts/verification.py` | **new**: `Verdict`, `VerificationLayer`, `LayerResult`, `VerificationOutcome` |
 | `src/engine/stages/s13_reconciliation/verification.py` | **new**: `required_verification_layers`, `parse_semantic`, `StepVerifier` |
 | `src/engine/stages/s12_execute/loop.py` | additive: `LoopSettings.verification_max_attempts=3`, `verification_backoff_s=1.0`; `LoopDeps.verification=None`; the verification step and episode paths |
+| `src/adapters/postgres/execution.py` | additive, if not already there: the loaded run carries `verifiers` (plan step id → `Verifier`, D1), decoded from `execution_plans.verifiers` |
 | `src/adapters/postgres/reconciliation.py` | `PostgresEpisodes.close` raises `ValueError` (nothing written) for NOT_EXECUTED on a VERIFICATION episode |
 | `src/adapters/runtime/mock_adapter.py` | additive: success `data["id"]`; `program(..., observe="inconclusive", observe_unknown=k)`; `observations` list |
 

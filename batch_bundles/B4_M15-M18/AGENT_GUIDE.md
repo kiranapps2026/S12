@@ -58,8 +58,10 @@ src/engine/stages/s15_final_state/response.py          M18  new
 src/engine/stages/s12_execute/loop.py                  M15–M17  additive fields and paths
 src/engine/stages/s12_execute/reliability.py           M17  add InverseBudget
 src/adapters/postgres/reconciliation.py                M15  close() guard
+src/adapters/postgres/execution.py                     M15  the loaded run carries its persisted verifiers (D1)
 src/adapters/postgres/consolidation.py                 M16  new
 src/adapters/postgres/dead_letters.py                  M17  new
+src/adapters/postgres/budget_reserver.py               M17  add settle_dead_letter_reservation (A.3 dead_letter_* reasons)
 src/adapters/postgres/run_summary.py                   M18  new
 src/adapters/postgres/idempotency.py                   M18  only if failure bodies are still stored
 src/adapters/runtime/mock_adapter.py                   M15  additive programme options
@@ -77,8 +79,9 @@ the dead-letter, quota and summary tables already exist (015). If you think a ta
 - `s12_execute/guard.py` (prototype). B4 verification uses `ReliabilityGuard.observe` in `reliability.py`.
 - Any signature fixed by M10–M14. Everything B4 adds to `LoopDeps` defaults to `None`, so the earlier golden files
   build `LoopDeps` unchanged.
-- S12 entry (`s12_entry/*`), admission, leases, budget reserver: B4 calls them and does not change them. The one
-  allowed exception is a bug a B4 case proves. Commit that fix on its own.
+- S12 entry (`s12_entry/*`), admission and leases: B4 calls them and does not change them. The budget reserver gains
+  only `settle_dead_letter_reservation` (M17). The one allowed exception is a bug a B4 case proves. Commit that fix
+  on its own.
 
 ## Conflict avoidance (B4-specific)
 
