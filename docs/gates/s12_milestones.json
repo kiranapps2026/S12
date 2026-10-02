@@ -154,7 +154,7 @@
       "batch": "B3",
       "prototype_state": "not done",
       "scope": "Retry matrix, same key per attempt, no retry of irreversible",
-      "status": "in_progress",
+      "status": "green",
       "notes": ""
     },
     {
