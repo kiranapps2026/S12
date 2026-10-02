@@ -34,7 +34,7 @@
       "batch": "B1",
       "prototype_state": "partial",
       "scope": "Settings object, fenced_write, transition-log writer, FencedOut",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
