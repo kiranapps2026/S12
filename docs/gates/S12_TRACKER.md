@@ -2,24 +2,24 @@
 
 Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 21 not_started, 0 red_confirmed, 1 in_progress, 0 green, 1 reviewed of 23 milestones. Open: 7 conflicts, 4 stops, 3 defects.
+**Summary:** 21 not_started, 0 red_confirmed, 0 in_progress, 1 green, 1 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
 
-**Next:** M1 Schema: migrations (model: sonnet, complexity: medium-high, status: in_progress)
+**Next:** M1 Schema: migrations (model: sonnet, complexity: medium-high, status: green)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
 | M0 Preflight | B0 | reviewed | low | sonnet | ★ | not done | 2 | 0 | 0 | 0 |
-| M1 Schema: migrations | B1 | in_progress | medium-high | sonnet | ★ | partial | 4 | 0 | 1 | 0 |
+| M1 Schema: migrations | B1 | green | medium-high | sonnet | ★ | partial | 4 | 0 | 0 | 0 |
 | M2 fenced_write(), repositories, transition log | B1 | not_started | medium | sonnet |  | partial | 2 | 0 | 0 | 0 |
 | M3 State machines I: run, step, budget | B1 | not_started | medium | sonnet |  | prototype | 2 | 0 | 0 | 0 |
 | M4 State machines II: lease, worker, dead letter, episode, confirmation, breaker | B1 | not_started | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
-| M5 PostgreSQL confirmation store | B2 | not_started | medium | sonnet |  | built (S0-S11) | 2 | 0 | 1 | 0 |
+| M5 PostgreSQL confirmation store | B2 | not_started | medium | sonnet |  | built (S0-S11) | 2 | 0 | 0 | 0 |
 | M6 S12 entry and durable admission | B2 | not_started | medium-high | sonnet |  | prototype | 2 | 0 | 0 | 0 |
 | M7 Leases, fencing, ownership | B2 | not_started | very high | opus |  | not done | 2 | 0 | 0 | 0 |
 | M8 Admission controller and worker selection | B2 | not_started | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
 | M8a Worker management: entry checks, eligibility, operation quota | B2 | not_started | high | sonnet | ★ | quota built | 3 | 0 | 0 | 0 |
 | M9 BudgetReserver | B2 | not_started | high | opus |  | prototype | 2 | 0 | 0 | 0 |
-| M10 Mock adapter, adapter interface, reliability guard | B3 | not_started | high | opus |  | guard built | 2 | 0 | 2 | 0 |
+| M10 Mock adapter, adapter interface, reliability guard | B3 | not_started | high | opus |  | guard built | 2 | 0 | 0 | 0 |
 | M11 Idempotency ledger and retry | B3 | not_started | very high | opus |  | not done | 0 | 0 | 0 | 0 |
 | M12 S12 loop, dependents, terminal reasons | B3 | not_started | high | sonnet |  | prototype | 0 | 0 | 0 | 2 |
 | M13 Probe path and EXECUTION episodes | B3 | not_started | very high | opus |  | not done | 0 | 0 | 0 | 0 |
@@ -83,10 +83,6 @@ None.
 - CONF-045 (M20, open): §8 step 8: "Renew the lease in the background at TTL/3"; no milestone card or golden exercises renewal during a step, and a step longer than the TTL would otherwise be taken over while it runs (the new owner then fences the old one out, C25)
 - CONF-046 (M19, open): §13: the sweeper takes runs "whose ownership lease is expired or absent". Read literally, "absent" also covers two live states: a run its admitting runtime is about to lease (entry, §7.2, commits the RUNNING run and its ownership before the first lease), and a run between two steps (the loop releases its lease when a step commits and leases the next step at once). Another runtime's sweeper would take either at once: safe under fencing (C25), but a needless takeover that fences out a live loop, and it made golden M20's "claimed exactly once" nondeterministic. Separately, a `SECURITY DEFINER` function (CONF-042) resolves a caller's temporary table before its schema's table unless `pg_temp` is listed last
 - CONF-047 (M19, open): C13: a run is RECONCILING only when every other step is terminal and one is UNKNOWN or PENDING_PROBE, and "from RECONCILING the run must go to a terminal state"; §9's NOT_EXECUTED path returns the step to PENDING for a retry, which a RECONCILING run cannot perform (A.1 has no RECONCILING → RUNNING)
-- STOP-001 (M1, ruled): S12-PIN (`owner_certify_s12.py --milestone M1 --fast`: 4/6 PASS)
-- STOP-002 (M5, open): G-M5: no golden file `tests_golden/s12/M05_*.py`
-- STOP-004 (M10, open): G-M10: no golden file `tests_golden/s12/M10_*.py` (batch B3 = M10–M14 not drafted)
-- STOP-005 (M10, open): S12-REC: CONF-021, CONF-022, CONF-023 open (M10); session start step 5 before the first M10 code change (`owner_certify_s12.py --milestone M10 --fast`: 13/16, G-M10 63/64 failing as expected)
 - DEF-002 (M12, open): M4 (reading prototype)
 - DEF-003 (no milestone, open): B2 drafting (M5)
 - DEF-004 (M12, open): M9 (adapting the prototype loop to the BudgetReserver interface)

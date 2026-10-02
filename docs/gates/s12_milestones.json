@@ -22,7 +22,7 @@
       "batch": "B1",
       "prototype_state": "partial",
       "scope": "fence_token_seq, execution_plans, step_reconciliations, state_transitions, CHECKs from enums, trigger, RLS, C39 columns, operation_quotas",
-      "status": "in_progress",
+      "status": "green",
       "notes": ""
     },
     {
