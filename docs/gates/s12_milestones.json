@@ -94,7 +94,7 @@
       "batch": "B2",
       "prototype_state": "not done",
       "scope": "Per-execution token sequence, capacity, takeover",
-      "status": "in_progress",
+      "status": "green",
       "notes": ""
     },
     {
