@@ -51,8 +51,9 @@ plan therefore pins twice: once for B1–B3 (with B4/B5 pinned as drafts), and a
 | B-3 | Review the golden diff since the last pin: `git diff <last pin commit> -- tests_golden tools/owner_pin_s12.ps1 docs/gates/S12_AUTOPILOT.md`, where `<last pin commit>` is `git log -1 --format=%h -- docs/gates/s12_pins.sha256`. Read B2 and B3 closely; B4/B5 are pinned as drafts and amended in sitting 3 |
 | B-4 | Pin: `powershell -ExecutionPolicy Bypass -File tools\owner_pin_s12.ps1` (it checks the certifier hash, runs the self-test, pins, commits, pushes) |
 | B-5 | Close the STOPs (Part C-table below), one commit, records only |
-| B-6 | **Unattended:** `python tools/owner_certify_s12.py --milestone M14` (full mode: golden, sabotage, 5× concurrency for every milestone up to M14; one run certifies M1–M14). It writes `docs/gates/S12_PROGRESS.md`; commit it |
-| B-7 | Tracker, in order. The tracker refuses to move a milestone while an earlier ★ milestone is below `reviewed` (★: M0, M1, M8a, M14, M21). So: `set M1 green` → review M1 → `set M1 reviewed` → `set M2 green` … `M8a green` → review → `M8a reviewed` → `M9` … `M14 green` → review → `M14 reviewed`. ★ reviews: **M1** the schema (migrations 015–018), **M8a** worker eligibility and quota, **M14** live revalidation and cancellation, including CONF-032 (gate 8 is a delay) |
+| B-6 | **Unattended:** `python tools/owner_certify_s12.py --milestone M14 --progress` (full mode: golden, sabotage, 5× concurrency for every milestone up to M14; one run proves M1–M14; writes `docs/gates/S12_PROGRESS.md`) |
+| B-7 | Tracker, in order, citing the B-6 run. The tracker refuses to move a milestone while an earlier ★ milestone is below `reviewed` (★: M0, M1, M8a, M14, M21). So: `python tools/s12_tracker.py set M1 green` → review M1 → `set M1 reviewed` → `set M2 green` … `M8a green` → review → `M8a reviewed` → `M9` … `M13 green`. Commit. ★ reviews: **M1** the schema (migrations 015–018), **M8a** worker eligibility and quota, **M14** live revalidation and cancellation, including CONF-032 (gate 8 is a delay) |
+| B-7a | Formal checkpoint: `powershell -ExecutionPolicy Bypass -File tools\owner_verify_s12.ps1 M14`. It checks the certifier hashes and a clean tree, re-runs the full certifier, sets M14 green, commits and pushes. Then review M14 (★) and `set M14 reviewed` |
 
 ### Sitting 2: ruling pass (60–90 min)
 
@@ -65,7 +66,7 @@ Part F checks.
 |---|---|
 | B-8 | Review the B4/B5 amendments the test-author session drafted from Part G. They must be **red** on the current code (red-first) |
 | B-9 | Pin again (B-4). Pin **before** the implementation: the pinned, failing cases are the target. Never pin after the code passes, which would let tests bend to code |
-| B-10 | After the implementation session reports them green: **unattended** `python tools/owner_certify_s12.py --milestone M21`, then the tracker M15 … M21 in order, with the ★ review of M21 |
+| B-10 | After the implementation session reports them green: **unattended** `python tools/owner_certify_s12.py --milestone M21 --progress`; tracker M15 … M20 green in order; then `tools\owner_verify_s12.ps1 M21` (the formal checkpoint, which offers the `s12-s15-certified` tag: answer **n** until the certification report and deferred register are written), ★ review of M21, `set M21 reviewed`, then tag |
 
 ---
 
@@ -343,3 +344,4 @@ directly.
 | 9 | Part F's commit message mixed sitting 1 and 2 items | Part F step 2 |
 | 10 | `certify_batch.ps1` line 75 was assumed fixed; `certify_milestone.ps1` problems not listed | Part H |
 | 11 | CI does not run on `s12-work` | B-0 |
+| 12 | Bypassed `tools/owner_verify_s12.ps1`, the official owner checkpoint (hash checks, clean tree, full re-run, tracker, commit, tag offer after M21) | B-7a, B-10 |
