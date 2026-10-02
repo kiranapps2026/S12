@@ -745,14 +745,6 @@ async def _layers_passed(state: _Run, step, row, binding) -> bool:
     return bool(latest) and all(latest.get(layer) == Verdict.PASS for layer in required)
 
 
-async def _layer_failures(state: _Run, step, row, binding) -> dict[str, str]:
-    """Required layers whose latest persisted verdict is FAIL (D6: FAIL is final, never re-verified)."""
-    from engine.stages.s13_reconciliation.verification import required_verification_layers
-    latest = await state.deps.events.layer_verdicts(state.loaded.tenant_id, row.step_id)
-    required = required_verification_layers(step.mutation, binding.effective_risk)
-    return {layer: verdict for layer, verdict in latest.items() if layer in required and verdict == Verdict.FAIL}
-
-
 async def _resolve_in_flight(state: _Run, step):
     """§13 step 3, the single recovery decision rule. The existing reservation is reused (C35); a new one is created
     only for a retry after NOT_EXECUTED."""
@@ -770,15 +762,6 @@ async def _resolve_in_flight(state: _Run, step):
             await episodes.inconclusive(state.holder, open_episode["episode_id"])
         spent = int(open_episode["attempts"])
         if open_episode["kind"] == K.VERIFICATION:
-            fails = await _layer_failures(state, step, row, binding)
-            if fails:                                               # D6: FAIL is final
-                await episodes.close(open_episode["episode_id"], state.holder, E.CONFIRMED_FAILURE,
-                                     O.LEDGER_HIT, evidence={"failed_layers": fails})
-                await _dead_letter_record(state, step, row, rid, error_type=ErrorType.DATA,
-                                          retry_mode=RetryMode.NONE, error="verification_fail_on_recovery",
-                                          episode_id=open_episode["episode_id"],
-                                          evidence={"layers": [{"layer": k, "verdict": v} for k, v in fails.items()]})
-                return await _settle_failure(state, step, row, rid, "ledger_hit_verification_fail")
             record = await deps.idempotency.lookup(loaded.tenant_id, step_idempotency_key(loaded.request_id, step.id))
             return await _verification_episode(
                 state, step, row, binding, rid, record.result if record is not None else None,
@@ -794,16 +777,6 @@ async def _resolve_in_flight(state: _Run, step):
             await episodes.open_and_close(state.holder, step_id=row.step_id, kind=K.VERIFICATION,
                                           status=E.CONFIRMED_SUCCESS, outcome=O.LEDGER_HIT, reason="ledger_hit")
             return await _commit(state, step, row, binding, rid, "ledger_hit_success")
-        fails = await _layer_failures(state, step, row, binding)
-        if fails:                                               # D6: FAIL is final, dead-letter the step
-            await episodes.open_and_close(state.holder, step_id=row.step_id, kind=K.EXECUTION,
-                                          status=E.CONFIRMED_FAILURE, outcome=O.LEDGER_HIT,
-                                          reason="ledger_hit_verification_fail",
-                                          evidence={"failed_layers": fails})
-            await _dead_letter_record(state, step, row, rid, error_type=ErrorType.DATA,
-                                      retry_mode=RetryMode.NONE, error="verification_fail_on_recovery",
-                                      evidence={"layers": [{"layer": k, "verdict": v} for k, v in fails.items()]})
-            return await _settle_failure(state, step, row, rid, "ledger_hit_verification_fail")
         return await _verification_episode(state, step, row, binding, rid, record.result,
                                            VerificationOutcome(Verdict.UNKNOWN, ()), "verification_passed")
     if record is not None:                                         # a definitive failure
