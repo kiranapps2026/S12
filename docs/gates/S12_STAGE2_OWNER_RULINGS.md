@@ -235,6 +235,11 @@ the order. The milestone column above is what the certifier gates on.
 - **Alternative that lets you pin today:** revert migration 018 and the ledger code for this phase (original M11
   passes), and record this as a post-S15 item.
 - **Row text.** `ruled <date> (owner): ledger key (tenant_id, idempotency_key); migration 018 without BEGIN/COMMIT; M11 re-made by the test-author session; same-tenant foreign kernel_op_id still raises IdempotencyConflict`
+- **Taken (2026-10-02): the alternative.** Commit `ce47e30` removed migration 018; the ledger key stays global and a key
+  held by a row this tenant cannot see raises `IdempotencyConflict` (the silent drop 018 was written for is gone).
+  Golden M11 is the pinned `f192b67` version; M1–M14 were certified on it. Nothing is left for the test-author or the
+  implementation session. Row text for the fallback (milestone column M11, status `ruled`):
+  `ruled 2026-10-02 (owner): alternative; migration 018 reverted for S12 (ce47e30); the ledger key stays global (gate §8, C9) and a key held by another tenant's row raises IdempotencyConflict; a composite (tenant_id, idempotency_key) key is a post-S15 item, with the M11 change made by the test-author session then`
 
 ### D-12 new CONF-052 (M21): production enablement of mutations
 
@@ -294,7 +299,8 @@ the order. The milestone column above is what the certifier gates on.
 
 | File | Change | From |
 |---|---|---|
-| `M11_idempotency_retry.py` | Composite-key behaviour, re-made against the ruling (sitting 1, before the first pin) | D-11 |
+| ~~`M11_idempotency_retry.py`~~ | None: D-11 took the alternative (no composite key in S12) | D-11 |
+| `M10_guard.py` (`test_probes_and_observations_take_their_own_bulkhead_slot`) | Wait for an event set when the slow call has entered the adapter, instead of a fixed `asyncio.sleep(0.03)`; same assertion (`peak == [1]`). The fixed sleep fails on a loaded Windows machine whose event loop wakes 250 ms late (owner run, 2026-10-02) | Owner run |
 | `M19_recovery.py:540-541` | Tampered-plan dead letter: `retry_mode == "NONE"`; one EXECUTION episode, outcome EXHAUSTED, `attempts == 0`, linked by `episode_id` | D-3 |
 | `M19_recovery.py` (new) | Crash at `after_verification_before_step_commit` with a FAIL recorded, with and without an open episode, and with the ledger row expired | D-10 |
 | `M19_recovery.py` | Checkpoint assertion | D-4 |
@@ -303,7 +309,7 @@ the order. The milestone column above is what the certifier gates on.
 | `M21_journeys.py` | Operator endpoint; real admission and pre-flight sources; Worker Runtime role check; enablement check | D-9, CONF-027, D-13, D-12 |
 | Sabotage | A recovery that writes PROBE for a `plan_integrity` dead letter; a FAIL re-run after a crash; a dead-letter retry allowed for NONE | D-3, D-10, D-9 |
 
-**Implementation session (after the second pin):** implement D-3, D-4, D-5, D-8, D-9, D-10, D-11 (migration fix),
+**Implementation session (after the second pin):** implement D-3, D-4, D-5, D-8, D-9, D-10,
 D-12, D-13's role check, and the CONF-020 and CONF-027 amendments; then review the reference-derived `src/` (security
 review, fenced-write registry IMP-X2, redaction IMP-X5).
 
@@ -345,3 +351,4 @@ directly.
 | 10 | `certify_batch.ps1` line 75 was assumed fixed; `certify_milestone.ps1` problems not listed | Part H |
 | 11 | CI does not run on `s12-work` | B-0 |
 | 12 | Bypassed `tools/owner_verify_s12.ps1`, the official owner checkpoint (hash checks, clean tree, full re-run, tracker, commit, tag offer after M21) | B-7a, B-10 |
+| 13 | D-11 was decided as the alternative (018 reverted, `ce47e30`) but D-11 and Part G still described the composite key; CONF-051 was left out of the sitting 2 commit | D-11 "Taken", Part G (M11 row struck, M10 row added), Part G implementation list |
