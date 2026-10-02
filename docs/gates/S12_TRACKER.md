@@ -2,14 +2,14 @@
 
 Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 21 not_started, 0 red_confirmed, 0 in_progress, 1 green, 1 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
+**Summary:** 21 not_started, 0 red_confirmed, 0 in_progress, 0 green, 2 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
 
-**Next:** M1 Schema: migrations (model: sonnet, complexity: medium-high, status: green)
+**Next:** M2 fenced_write(), repositories, transition log (model: sonnet, complexity: medium, status: not_started)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
 | M0 Preflight | B0 | reviewed | low | sonnet | ★ | not done | 2 | 0 | 0 | 0 |
-| M1 Schema: migrations | B1 | green | medium-high | sonnet | ★ | partial | 4 | 0 | 0 | 0 |
+| M1 Schema: migrations | B1 | reviewed | medium-high | sonnet | ★ | partial | 4 | 0 | 0 | 0 |
 | M2 fenced_write(), repositories, transition log | B1 | not_started | medium | sonnet |  | partial | 2 | 0 | 0 | 0 |
 | M3 State machines I: run, step, budget | B1 | not_started | medium | sonnet |  | prototype | 2 | 0 | 0 | 0 |
 | M4 State machines II: lease, worker, dead letter, episode, confirmation, breaker | B1 | not_started | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
