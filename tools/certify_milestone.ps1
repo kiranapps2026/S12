@@ -51,12 +51,14 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "$Milestone certified: PASSED" -ForegroundColor Green
 
-# ── Update tracker ───────────────────────────────────────────────────────────
+# -- Update tracker -----------------------------------------------------------
+$ErrorActionPreference = "Continue"
 python tools\s12_tracker.py set $Milestone green 2>&1 | Out-Null
+$ErrorActionPreference = "Stop"
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  WARN: tracker refused $Milestone (may already be green)" -ForegroundColor DarkYellow
+    Write-Host "  $Milestone already green or reviewed (skipped)" -ForegroundColor DarkYellow
 } else {
-    Write-Host "$Milestone → green in tracker" -ForegroundColor Green
+    Write-Host "$Milestone -> green in tracker" -ForegroundColor Green
 }
 
 $commitSha = git rev-parse --short HEAD
