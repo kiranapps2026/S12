@@ -265,7 +265,6 @@ ALLOWED_OUTSIDE = (          # every engine import of S12–S15 code outside S12
     "engine.stages.s8_safety_gate.checks",   # the shared check library (C23), the only S8 code allowed
     "engine.stages.s8_safety_gate.dependencies",   # the S8 CircuitBreaker protocol the breaker implements
     "engine.stages.s0_entry.activation",     # the pause / activation check the S12 entry repeats (C39)
-    "engine.stages.s10_confirmation.store",  # S10 status constants used by the B3 confirmation adapter
 )
 
 

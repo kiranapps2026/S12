@@ -42,6 +42,17 @@ Interface this file fixes:
       ``verification_failed``) with it released (``step_failed``); ``undo_token`` for a completed W/D step whose
       binding has an inverse; lease released ``work_complete``; dependents of a FAILED/CANCELLED step SKIPPED
       ``dependency_failed``. A run-ending trigger cancels the step and every remaining PENDING step with its reason.
+      Before any step (gate §7.3, ruling CONF-034): a run that is not RUNNING is returned untouched; a run whose
+      ownership does not name ``runtime_instance_id`` is never taken over (reason ``fenced_out``, nothing written:
+      only recovery takes ownership, M19); the canonical plan is decoded and its digest recomputed, and a plan that
+      does not decode or whose digest differs from ``execution_plans.plan_hash`` or ``execution_manifests.plan_hash``
+      executes nothing: every PENDING step CANCELLED ``run_dead_lettered``, an ERROR alert naming
+      ``plan_integrity``, consolidation, reason ``plan_integrity``.
+      ``FencedOut`` at any point (§8 step 8, C25): stop at once with reason ``fenced_out``; no further execution
+      write, no consolidation; a lease the loop holds is released ``fenced_out`` (Appendix A.4); a step in flight is
+      left as it is for the new owner. A lease is acquired only while the ownership row still names the loop's
+      holder, checked atomically inside the acquisition: ``PostgresLeaseManager.acquire`` gains the keyword
+      ``holder`` (default None, M07 unchanged) and raises ``FencedOut`` without writing when ownership moved.
   The loop never names runtime types (M08a, RD-9): it takes the binding's runtime list (read once per run through
   the selection reader, ruling CONF-019) and builds the ``SelectionContext`` through ``engine.stages.s12_execute.
   eligibility``.
@@ -335,6 +346,26 @@ def test_every_lease_is_released_after_its_step(db_schema, run):
     assert run(db_schema.fetchval("SELECT current_load FROM workers WHERE tenant_id = $1", tenant)) == 0
 
 
+def test_leases_bracket_each_step_in_the_section_8_order(db_schema, run):
+    state = _state("golden-loop-bracket", "bracket")
+    tenant, execution = _admit(db_schema, run, state)
+    _loop(db_schema, run, _deps(db_schema, _mock()), tenant, execution)
+    steps = _steps(db_schema, run, execution)
+    leases = [r["lease_id"] for r in run(db_schema.fetch(
+        "SELECT lease_id FROM worker_leases WHERE execution_id = $1 ORDER BY fence_token", execution))]
+    assert len(leases) == len(_order(state))
+    for sid, lease_id in zip(_order(state), leases, strict=True):
+        step_id = steps[sid]["step_id"]
+        reservation = run(db_schema.fetchval("SELECT reservation_id FROM execution_steps WHERE step_id = $1", step_id))
+        rows = run(db_schema.fetch("SELECT entity_type, to_state, reason FROM state_transitions"
+                                   " WHERE entity_id = ANY($1::text[]) AND reason <> 'created' ORDER BY transition_id",
+                                   [step_id, reservation, lease_id]))
+        assert [tuple(r) for r in rows] == [
+            ("lease", "active", "acquired"), ("reservation", "reserved", "reserved"), ("step", "running", "started"),
+            ("reservation", "locked", "step_started"), ("step", "completed", "verified"),
+            ("reservation", "committed", "step_completed"), ("lease", "released", "work_complete")]
+
+
 def test_an_undo_token_is_recorded_for_a_completed_write_with_an_inverse(db_schema, run):
     state = _state("golden-loop-undo", "undo")
     tenant, execution = _admit(db_schema, run, state)
@@ -522,6 +553,176 @@ def test_a_preflight_failure_cancels_only_its_step_and_skips_its_dependents(db_s
     assert run(db_schema.fetchval("SELECT count(*) FROM worker_leases WHERE execution_id = $1 AND status = 'active'",
                                   execution)) == 0
     assert len(consolidate.calls) == 1
+    run(assert_system_invariants(db_schema))
+
+
+# --- ownership, fencing and plan integrity (gate §7.3, §8 step 8, C25; CONF-034) -------------------------------------
+
+async def _snapshot(schema, tenant, execution):
+    """Everything the loop could write for this execution (lease moves are compared separately)."""
+    counts = {}
+    for table in ("execution_events", "worker_leases", "budget_reservations", "idempotency_ledger",
+                  "step_reconciliations"):
+        counts[table] = await schema.fetchval(f"SELECT count(*) FROM {table} WHERE tenant_id = $1", tenant)
+    counts["state_transitions"] = await schema.fetchval(
+        "SELECT count(*) FROM state_transitions WHERE tenant_id = $1 AND entity_type <> 'lease'", tenant)
+    steps = await schema.fetch("SELECT step_id, status, terminal_reason, attempt, dispatched_attempt, reservation_id"
+                               " FROM execution_steps WHERE execution_id = $1 ORDER BY step_id", execution)
+    run_row = await schema.fetch("SELECT status, terminal_reason FROM execution_runs WHERE execution_id = $1",
+                                 execution)
+    owner = await schema.fetch("SELECT runtime_instance_id, fencing_token, lease_id FROM execution_ownership"
+                               " WHERE execution_id = $1", execution)
+    return counts, [tuple(r) for r in steps], [tuple(r) for r in run_row], [tuple(r) for r in owner]
+
+
+async def _take_over(schema, execution):
+    """Another Worker Runtime takes the execution: a newer token from the one sequence (C25)."""
+    await schema.execute("UPDATE execution_ownership SET runtime_instance_id = 'runtime-B',"
+                         " fencing_token = nextval('fence_token_seq') WHERE execution_id = $1", execution)
+
+
+class _Proxy:
+    """Delegates to a real dependency; ``overrides`` replaces some of its methods."""
+    def __init__(self, real, **overrides):
+        self._real, self._overrides = real, overrides
+
+    def __getattr__(self, name):
+        return self._overrides.get(name) or getattr(self._real, name)
+
+
+def test_a_run_that_is_not_running_is_left_untouched(db_schema, run):
+    state = _state("golden-loop-notrunning", "notrunning")
+    tenant, execution = _admit(db_schema, run, state)
+    run(db_schema.execute("UPDATE execution_runs SET status = 'pending' WHERE execution_id = $1", execution))
+    before = run(_snapshot(db_schema, tenant, execution))
+    mock, consolidate = _mock(), Recorder()
+    result = _loop(db_schema, run, _deps(db_schema, mock, consolidate=consolidate), tenant, execution)
+    assert result.run_status == "pending" and mock.calls == [] and consolidate.calls == []
+    assert run(_snapshot(db_schema, tenant, execution)) == before
+
+
+def test_a_run_owned_by_another_runtime_is_never_taken_over(db_schema, run):
+    state = _state("golden-loop-foreign", "foreign")
+    tenant, execution = _admit(db_schema, run, state)
+    run(_take_over(db_schema, execution))
+    before = run(_snapshot(db_schema, tenant, execution))
+    mock, consolidate = _mock(), Recorder()
+    result = _loop(db_schema, run, _deps(db_schema, mock, consolidate=consolidate), tenant, execution)
+    assert result.reason == "fenced_out" and mock.calls == [] and consolidate.calls == []
+    assert run(_snapshot(db_schema, tenant, execution)) == before                 # ownership still runtime-B
+
+
+def test_a_takeover_between_steps_stops_the_loop_with_no_further_write(db_schema, run):
+    from engine.stages.s12_execute.admission_control import AdmissionSnapshot
+    state = _state("golden-loop-takeover", "takeover")
+    tenant, execution = _admit(db_schema, run, state)
+    first, second, third = _order(state)
+    after = {}
+
+    async def take_over_at_second(tenant_id, execution_id, plan_step_id):
+        if plan_step_id == second and not after:
+            await _take_over(db_schema, execution)
+            after["snapshot"] = await _snapshot(db_schema, tenant, execution)
+        return AdmissionSnapshot(**PASSING)
+
+    mock, consolidate = _mock(), Recorder()
+    result = _loop(db_schema, run, _deps(db_schema, mock, admission=take_over_at_second, consolidate=consolidate),
+                   tenant, execution)
+    assert result.reason == "fenced_out" and consolidate.calls == [] and len(mock.calls) == 1
+    assert (result.steps[first], result.steps[second], result.steps[third]) == (
+        ("completed", None), ("pending", None), ("pending", None))
+    assert run(_snapshot(db_schema, tenant, execution)) == after["snapshot"]
+
+
+def test_a_lease_is_never_acquired_once_ownership_has_moved(db_schema, run):
+    state = _state("golden-loop-steal", "steal")
+    tenant, execution = _admit(db_schema, run, state)
+    deps = _deps(db_schema, _mock())
+    real, calls, after = deps.leases, [], {}
+
+    async def acquire(**kw):
+        calls.append(kw)
+        if len(calls) == 2:                                           # just before the second step's lease
+            await _take_over(db_schema, execution)
+            after["snapshot"] = await _snapshot(db_schema, tenant, execution)
+        return await real.acquire(**kw)
+
+    deps = dataclasses.replace(deps, leases=_Proxy(real, acquire=acquire))
+    result = _loop(db_schema, run, deps, tenant, execution)
+    assert result.reason == "fenced_out"
+    assert run(_snapshot(db_schema, tenant, execution)) == after["snapshot"]      # no lease, ownership runtime-B
+
+
+def test_a_takeover_during_a_provider_call_discards_the_result_and_releases_the_lease(db_schema, run):
+    from adapters.runtime.mock_adapter import MockAdapter
+    state = _state("golden-loop-midcall", "midcall")
+    tenant, execution = _admit(db_schema, run, state)
+    first = _order(state)[0]
+    after = {}
+
+    class TakenOverDuringTheCall(MockAdapter):
+        async def call(self, kernel_op_id, params, binding, context, *, call_meta=None):
+            result = await super().call(kernel_op_id, params, binding, context, call_meta=call_meta)
+            if not after:
+                await _take_over(db_schema, execution)
+                after["snapshot"] = await _snapshot(db_schema, tenant, execution)
+            return result
+
+    mock, consolidate = TakenOverDuringTheCall(Credentials()), Recorder()
+    result = _loop(db_schema, run, _deps(db_schema, mock, consolidate=consolidate), tenant, execution)
+    assert result.reason == "fenced_out" and consolidate.calls == [] and len(mock.calls) == 1
+    assert run(_snapshot(db_schema, tenant, execution)) == after["snapshot"]      # no ledger row, step still running
+    steps = _steps(db_schema, run, execution)
+    assert (steps[first]["status"], steps[first]["budget"]) == ("running", "locked")   # the new owner probes
+    lease_id = run(db_schema.fetchval("SELECT lease_id FROM worker_leases WHERE execution_id = $1", execution))
+    assert _moves(db_schema, run, "lease", lease_id) == [(None, "active", "acquired"),
+                                                        ("active", "released", "fenced_out")]
+    assert run(db_schema.fetchval("SELECT current_load FROM workers WHERE tenant_id = $1", tenant)) == 0
+
+
+async def _force_plan_update(schema, execution, assignments):
+    """Tamper below the application: the table's immutability trigger is bypassed for this one superuser
+    transaction (``session_replication_role``), as a direct database write would."""
+    await schema.execute("SET LOCAL session_replication_role = replica;"
+                         f" UPDATE execution_plans SET {assignments} WHERE execution_id = $x${execution}$x$")
+
+
+async def _retamper(schema, execution, how):
+    from contracts import codec
+    from contracts.plan_hash import canonical_plan_digest
+    from contracts.stage_outputs import Plan
+    if how == "undecodable":
+        await _force_plan_update(schema, execution, """canonical_plan = '{"steps": "none"}'::jsonb""")
+        return
+    raw = await schema.fetchval("SELECT canonical_plan::text FROM execution_plans WHERE execution_id = $1", execution)
+    body = json.loads(raw)
+    body["steps"][0]["params"] = {**body["steps"][0]["params"], "tampered": True}
+    assignments = f"canonical_plan = $j${json.dumps(body)}$j$::jsonb"
+    if how == "plan_hash_rewritten":                     # the plan row is consistent again; the manifest is not
+        assignments += f", plan_hash = '{canonical_plan_digest(codec.decode(Plan, body))}'"
+    await _force_plan_update(schema, execution, assignments)
+
+
+@pytest.mark.parametrize("how", ["params_changed", "plan_hash_rewritten", "undecodable"])
+def test_a_tampered_plan_executes_nothing_and_raises_an_alert(db_schema, run, caplog, how):
+    state = _state(f"golden-loop-tamper-{how}", f"tamper-{how}")
+    tenant, execution = _admit(db_schema, run, state)
+    original = run(db_schema.fetch("SELECT canonical_plan::text AS plan, plan_hash FROM execution_plans"
+                                   " WHERE execution_id = $1", execution))[0]
+    run(_retamper(db_schema, execution, how))
+    mock, consolidate = _mock(), Recorder()
+    caplog.set_level(logging.DEBUG)
+    try:
+        result = _loop(db_schema, run, _deps(db_schema, mock, consolidate=consolidate), tenant, execution)
+    finally:                                   # the module's schema is shared: the stored plan must be intact again
+        run(_force_plan_update(db_schema, execution, f"canonical_plan = $j${original['plan']}$j$::jsonb,"
+                                                     f" plan_hash = '{original['plan_hash']}'"))
+    assert result.reason == "plan_integrity" and mock.calls == [] and len(consolidate.calls) == 1
+    assert set(result.steps.values()) == {("cancelled", "run_dead_lettered")}
+    for table in ("worker_leases", "budget_reservations", "execution_events"):
+        assert run(db_schema.fetchval(f"SELECT count(*) FROM {table} WHERE tenant_id = $1", tenant)) == 0, table
+    alerts = [r for r in caplog.records if r.levelno >= logging.ERROR and "plan_integrity" in r.getMessage()]
+    assert alerts and getattr(alerts[0], "execution_id", None) == execution
     run(assert_system_invariants(db_schema))
 
 

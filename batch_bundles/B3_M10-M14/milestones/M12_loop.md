@@ -102,6 +102,16 @@ use `dataclasses.replace`.
 - The loop's `LoopResult` must equal the persisted rows.
 - `consolidate` is called **once** (sabotage `M12_consolidate_again`).
 
+## Open defects this milestone must close (recorded during B1/B2)
+
+| Defect | Where (prototype loop on `s12-work`) | What M12 must do |
+|---|---|---|
+| **DEF-002** | `src/engine/stages/s12_execute/loop.py` logs step and run reasons Appendix A does not list (`step_started` for `started`, `timeout_probe_queued`, `verification_unknown`, `collateral`, `cancel_requested`, `adapter_error`, `step_completed`, …) | every move goes through `transitions.validate` with an Appendix A reason (I5 rejects the rest); then close DEF-002 in `S12_DEFECTS.md` (append only) |
+| **DEF-004** | the prototype moves `pending → running` and `reserved → locked` in two transactions | one transaction: the step start, `step_started` and `reserver.lock(..., connection=)` inside one `fenced_write` (I-3; sabotage `M12_lock_in_own_transaction`) |
+
+Both are listed `open … fix in M12` in `docs/gates/S12_DEFECTS.md`. The rewrite replaces the prototype loop, so they go
+away by construction, but the defect rows must be closed with the commit that does it.
+
 ## Traps
 
 - Taking over a run because `acquire` found no usable lease between steps. Pass `holder=` (sabotage

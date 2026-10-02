@@ -9,7 +9,7 @@ unavailability is not a revocation), C16 (cancellation requested by the run's ow
 step, never interrupts an in-flight call, applied after uncertainty is resolved; DEAD_LETTER takes precedence), C15,
 C39 (a pause set while a run is RUNNING cancels no step and revokes no held lease), suites 16a and 16b; invariant I14.
 Rulings: CONF-030 (credential validity from ``CredentialProvider.credential_valid``), CONF-031 (the event records the
-reason; the failing check is logged), CONF-032 (gate 8 and provider unavailability: not pinned here).
+reason; the failing check is logged), CONF-032 (gate 8 is a DELAY: a persistent outage ends as ``admission_exhausted``, never a cancelled run).
 
 Interface this file fixes (on top of M12/M13):
   * ``adapters.postgres.live_authorization.PostgresLiveAuthorization(scopes, *, database, credentials)``: the frozen
@@ -22,7 +22,8 @@ Interface this file fixes (on top of M12/M13):
     bool``.
   * ``adapters.postgres.cancellation.PostgresCancellation(database)``: ``async request(tenant_id, execution_id,
     user_id) -> bool`` — records ``execution_runs.cancel_requested_at`` for the run's own user and tenant only (no
-    lease needed); False otherwise.
+    lease needed) while the run is not terminal; a repeated request is True and keeps the first time; False
+    otherwise (another user or tenant, no such run, a finished run).
   * The loop checks the cancellation flag and ``live`` before each step; ``run_attempts`` checks ``live`` before each
     call. REVOKED at a step's start: that step and every remaining PENDING step CANCELLED with the reason, the run
     CANCELLED. REVOKED before an attempt: the step goes ``running → pending_probe (execution_uncertain)``, an
@@ -194,6 +195,26 @@ def test_a_provider_outage_is_not_a_revocation(db_schema, run):
     ctx = state.execution_context
     assert run(live.check(tenant_id=ctx.tenant_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
                           connection_id=ctx.connection_id, binding=state.frozen_bindings[0])) is None
+
+
+def test_a_persistent_provider_outage_ends_as_admission_exhausted_never_cancelled(db_schema, run):
+    """CONF-032: an open circuit at admission is a DELAY; bounded, it ends as ``admission_exhausted`` (consolidation),
+    never as a cancelled run."""
+    from engine.stages.s12_execute.admission_control import AdmissionSnapshot
+    from tests_golden.s12.M12_loop import PASSING
+    state = _state("golden-live-outage-loop", "outageloop")
+    tenant, execution = _admit(db_schema, run, state)
+
+    async def circuit_open(tenant_id, execution_id, plan_step_id):
+        return AdmissionSnapshot(**{**PASSING, "circuit_open": True})
+
+    consolidate = Recorder()
+    deps = dataclasses.replace(_live_deps(db_schema, _mock(), admission_max_attempts=2), admission=circuit_open,
+                               consolidate=consolidate)
+    result = _loop(db_schema, run, deps, tenant, execution)
+    assert all(result.steps[sid] == ("cancelled", "admission_exhausted") for sid in _order(state))
+    assert result.run_status == "running" and len(consolidate.calls) == 1
+    assert "cancelled" not in [to for _, to, _ in _moves(db_schema, run, "run", execution)]
 
 
 def test_the_live_check_writes_nothing(db_schema, run):
@@ -370,6 +391,25 @@ def test_only_the_runs_own_user_and_tenant_can_cancel(db_schema, run):
     assert _cancel(db_schema, run, tenant, "golden-no-such-run", state.execution_context.user_id) is False
     assert run(db_schema.fetchval("SELECT cancel_requested_at FROM execution_runs WHERE execution_id = $1",
                                   execution)) is None
+
+
+def test_a_repeated_cancel_request_is_idempotent_and_a_finished_run_cannot_be_cancelled(db_schema, run):
+    state = _state("golden-cancel-twice", "twice")
+    tenant, execution = _admit(db_schema, run, state)
+    user = state.execution_context.user_id
+    assert _cancel(db_schema, run, tenant, execution, user) is True
+    first = run(db_schema.fetchval("SELECT cancel_requested_at FROM execution_runs WHERE execution_id = $1",
+                                   execution))
+    assert _cancel(db_schema, run, tenant, execution, user) is True
+    assert run(db_schema.fetchval("SELECT cancel_requested_at FROM execution_runs WHERE execution_id = $1",
+                                  execution)) == first                          # the first request's time is kept
+    done = _state("golden-cancel-done", "done")
+    done_tenant, done_execution = _admit(db_schema, run, done)
+    _loop(db_schema, run, _live_deps(db_schema, _mock()), done_tenant, done_execution)
+    run(db_schema.execute("UPDATE execution_runs SET status = 'completed' WHERE execution_id = $1", done_execution))
+    assert _cancel(db_schema, run, done_tenant, done_execution, done.execution_context.user_id) is False
+    assert run(db_schema.fetchval("SELECT cancel_requested_at FROM execution_runs WHERE execution_id = $1",
+                                  done_execution)) is None
 
 
 def test_budget_exhaustion_mid_plan_ends_cancelled(db_schema, run):

@@ -38,7 +38,8 @@ Interface this file fixes:
         "uncertain" ``timeout`` / ``dispatched_without_record``).
       ``async run_attempts(step, holder, deps, *, first_attempt=1) -> AttemptOutcome`` — per attempt n: live check
         (revoked → "revoked", no call); ledger lookup (hit → the cached kind, event ``idempotency_hit`` with
-        ``step_id``, ``attempt_id``, ``kind``; no call); a dispatch marker already at n without a ledger row →
+        ``step_id``, ``attempt_id``, ``kind``; no call; a row for the key whose ``kernel_op_id`` is not the step's
+        raises ``IdempotencyConflict``, never a hit); a dispatch marker already at n without a ledger row →
         "uncertain" ``dispatched_without_record`` (no call); ``mark_dispatched(n)`` then event ``step_attempt``
         (``step_id``, ``attempt_id``, ``attempt``; C24: a retry is a ledger event, not a transition); the guarded call
         with ``CallMeta(key, attempt_id, uuid4, tenant)``; when the adapter was invoked (not ``circuit_open`` /
@@ -47,7 +48,8 @@ Interface this file fixes:
         ``ok`` → store success → "success"; ``timeout`` → "uncertain"
         ``timeout``; a non-retryable error the adapter produced → store failure → "failure"; ``circuit_open`` /
         ``retry_storm`` → "failure" without a row; a retryable error with attempts left → ``await sleep(backoff)``
-        and n + 1; retries exhausted → "failure" without a row. ``FencedOut`` and ``BudgetStateError`` propagate.
+        and n + 1; retries exhausted → "failure" without a row. ``FencedOut`` and ``BudgetStateError`` propagate;
+        a result whose ledger write is fenced out is discarded (no row: the new owner learns it by probing).
 """
 from __future__ import annotations
 
@@ -491,6 +493,54 @@ def test_a_fenced_out_runtime_can_neither_mark_nor_record(db_schema, run):
     with pytest.raises(FencedOut):                           # s1 has no ledger row: the marker write is fenced out
         run(_attempts(db_schema, _step(tenant, res, 1), stale, _deps(db_schema, mock)))
     assert mock.calls == []
+
+
+def test_a_cached_record_of_another_operation_is_a_conflict_never_a_hit(db_schema, run):
+    from adapters.postgres.idempotency import PostgresIdempotencyLedger
+    from contracts.idempotency import IdempotencyConflict
+    from contracts.step_execution import AdapterResult
+    tenant = "t-hit-other-op"
+    holder, res = run(_seed(db_schema, tenant, steps=1))
+    run(PostgresIdempotencyLedger(db_schema.database()).store(
+        holder, idempotency_key=f"req-{tenant}:s0", kernel_op_id="other.op", result=AdapterResult("ok"), ttl_s=3600))
+    mock, events = _mock(), Events()
+    with pytest.raises(IdempotencyConflict):
+        run(_attempts(db_schema, _step(tenant, res), holder, _deps(db_schema, mock, events=events)))
+    assert mock.calls == [] and events.events == []
+    assert _row(db_schema, run, tenant, f"e-{tenant}:s0")["dispatched_attempt"] is None
+
+
+def test_a_result_whose_ledger_write_is_fenced_out_is_discarded(db_schema, run):
+    from adapters.runtime.mock_adapter import MockAdapter
+    from contracts.step_execution import FencedOut
+    tenant = "t-fenced-mid-call"
+    holder, res = run(_seed(db_schema, tenant, steps=1))
+
+    class TakenOverDuringTheCall(MockAdapter):
+        async def call(self, kernel_op_id, params, binding, context, *, call_meta=None):
+            result = await super().call(kernel_op_id, params, binding, context, call_meta=call_meta)
+            await db_schema.execute("UPDATE execution_ownership SET runtime_instance_id = 'runtime-B',"
+                                    " fencing_token = fencing_token + 1 WHERE execution_id = $1", holder.execution_id)
+            return result
+
+    mock = TakenOverDuringTheCall(Credentials())
+    mock.program("mock.op", "success")
+    with pytest.raises(FencedOut):
+        run(_attempts(db_schema, _step(tenant, res), holder, _deps(db_schema, mock)))
+    key = f"req-{tenant}:s0"
+    assert mock.side_effects(key) == 1 and _ledger_rows(db_schema, run, key) == []
+
+
+def test_a_budget_state_error_propagates_before_any_provider_call(db_schema, run):
+    from contracts.adapter_interface import BudgetStateError
+    tenant = "t-budget-state"
+    holder, res = run(_seed(db_schema, tenant, steps=2))
+    wrong = dataclasses.replace(_step(tenant, res), reservation_id=res[f"e-{tenant}:s1"])   # another step's
+    mock, events = _mock(), Events()
+    with pytest.raises(BudgetStateError):
+        run(_attempts(db_schema, wrong, holder, _deps(db_schema, mock, events=events)))
+    assert mock.calls == [] and _ledger_rows(db_schema, run, f"req-{tenant}:s0") == []
+    assert [k for k, _ in events.events if k.startswith("Provider")] == []
 
 
 def test_every_move_on_these_paths_is_legal(db_schema, run):
