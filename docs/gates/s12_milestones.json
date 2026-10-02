@@ -130,7 +130,7 @@
       "batch": "B2",
       "prototype_state": "prototype",
       "scope": "Reserve/lock/commit/release, no over-reservation",
-      "status": "in_progress",
+      "status": "green",
       "notes": ""
     },
     {
