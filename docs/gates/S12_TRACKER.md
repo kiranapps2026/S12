@@ -2,9 +2,9 @@
 
 Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 16 not_started, 0 red_confirmed, 1 in_progress, 4 green, 2 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
+**Summary:** 16 not_started, 0 red_confirmed, 0 in_progress, 5 green, 2 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
 
-**Next:** M6 S12 entry and durable admission (model: sonnet, complexity: medium-high, status: in_progress)
+**Next:** M7 Leases, fencing, ownership (model: opus, complexity: very high, status: not_started)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -14,7 +14,7 @@ Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: chan
 | M3 State machines I: run, step, budget | B1 | green | medium | sonnet |  | prototype | 2 | 0 | 0 | 0 |
 | M4 State machines II: lease, worker, dead letter, episode, confirmation, breaker | B1 | green | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
 | M5 PostgreSQL confirmation store | B2 | green | medium | sonnet |  | built (S0-S11) | 2 | 0 | 0 | 0 |
-| M6 S12 entry and durable admission | B2 | in_progress | medium-high | sonnet |  | prototype | 2 | 0 | 0 | 0 |
+| M6 S12 entry and durable admission | B2 | green | medium-high | sonnet |  | prototype | 2 | 0 | 0 | 0 |
 | M7 Leases, fencing, ownership | B2 | not_started | very high | opus |  | not done | 2 | 0 | 0 | 0 |
 | M8 Admission controller and worker selection | B2 | not_started | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
 | M8a Worker management: entry checks, eligibility, operation quota | B2 | not_started | high | sonnet | ★ | quota built | 3 | 0 | 0 | 0 |
