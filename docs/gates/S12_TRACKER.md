@@ -2,9 +2,9 @@
 
 Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 12 not_started, 0 red_confirmed, 0 in_progress, 8 green, 3 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
+**Summary:** 11 not_started, 0 red_confirmed, 1 in_progress, 8 green, 3 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
 
-**Next:** M10 Mock adapter, adapter interface, reliability guard (model: opus, complexity: high, status: not_started)
+**Next:** M10 Mock adapter, adapter interface, reliability guard (model: opus, complexity: high, status: in_progress)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -19,7 +19,7 @@ Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: chan
 | M8 Admission controller and worker selection | B2 | green | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
 | M8a Worker management: entry checks, eligibility, operation quota | B2 | reviewed | high | sonnet | ★ | quota built | 3 | 0 | 0 | 0 |
 | M9 BudgetReserver | B2 | green | high | opus |  | prototype | 2 | 0 | 0 | 0 |
-| M10 Mock adapter, adapter interface, reliability guard | B3 | not_started | high | opus |  | guard built | 2 | 0 | 0 | 0 |
+| M10 Mock adapter, adapter interface, reliability guard | B3 | in_progress | high | opus |  | guard built | 2 | 0 | 0 | 0 |
 | M11 Idempotency ledger and retry | B3 | not_started | very high | opus |  | not done | 0 | 0 | 0 | 0 |
 | M12 S12 loop, dependents, terminal reasons | B3 | not_started | high | sonnet |  | prototype | 0 | 0 | 0 | 2 |
 | M13 Probe path and EXECUTION episodes | B3 | not_started | very high | opus |  | not done | 0 | 0 | 0 | 0 |

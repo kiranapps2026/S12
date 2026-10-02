@@ -142,7 +142,7 @@
       "batch": "B3",
       "prototype_state": "guard built",
       "scope": "BaseAdapter probe/observe, five guard components",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
