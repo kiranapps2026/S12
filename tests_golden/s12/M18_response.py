@@ -6,7 +6,9 @@ raw exception text, stack traces, provider response bodies, secrets, tokens or i
 the negative-path matrix wording where a row applies), §21 S6 (credentials only through the CredentialProvider, never
 persisted or logged), suite 12, FINAL_ARCHITECTURE I-018, SECURITY §7, PIPELINE_STAGES §19 (matrix rows "Budget
 exhausted", "No eligible worker"). Rulings: CONF-039 (a user cancellation has no envelope error type in DATA_CONTRACTS:
-``execution_failed`` with a cancellation message).
+``execution_failed`` with a cancellation message), CONF-020 as amended (the frozen ``AdmissionOutcome`` has no
+``detail``: S15 maps an entry denial, so ``quota_exhausted`` reaches the user as ``budget_exceeded`` with the upgrade
+text; a soft quota adds ``retry_after_ms``).
 
 Interface this file fixes:
   * ``contracts.envelope``: ``Envelope(status, data=None, message=None, error=None, metadata=None)`` and
@@ -19,6 +21,11 @@ Interface this file fixes:
     ``budget_exhausted`` → ``error.type == "budget_exceeded"`` with the matrix message; a FAILED run whose steps
     ended ``no_worker`` has the matrix message; DEAD_LETTER is ``error`` with ``recoverable`` False;
     ``metadata == {"trace_id": ...}``; a run that is not terminal raises ValueError.
+    ``entry_denial_envelope(outcome, trace_id) -> Envelope`` — pure, for an entry ``AdmissionOutcome`` (frozen,
+    ``contracts.admission``) with status DENIED; nothing ran, so there is no ``data`` and no step list; reason
+    ``quota_exhausted`` → ``error.type == "budget_exceeded"`` with the matrix message (the upgrade text),
+    ``recoverable`` True, ``error.details == {"retry_after_ms": n}`` for a soft quota (``retry_after_ms`` set) and
+    ``{}`` for a hard one; ``metadata == {"trace_id": ...}``; an outcome that is not DENIED raises ValueError.
   * ``adapters.postgres.run_summary.PostgresRunSummaries(database).load(tenant_id, execution_id) -> RunSummary |
     None`` (steps in plan order).
   * Redaction across the pipeline: an exception text, a stack trace, a provider error body and the credential never
@@ -82,6 +89,30 @@ def test_a_cancelled_run_is_an_error_that_lists_what_already_completed(reason, k
     assert env.error.details == {"completed_steps": _listed((1, "completed"))}
     if message is not None:
         assert env.message == env.error.message == message
+
+
+# --- entry denials (CONF-020 as amended) -----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("retry_after_ms,details", [(None, {}), (1500, {"retry_after_ms": 1500})],
+                         ids=["hard", "soft"])
+def test_an_exhausted_quota_at_entry_is_budget_exceeded_with_the_upgrade_text(retry_after_ms, details):
+    from contracts.admission import DENIED, AdmissionOutcome
+    from engine.stages.s15_final_state.response import entry_denial_envelope
+    env = entry_denial_envelope(AdmissionOutcome(DENIED, reason="quota_exhausted", retry_after_ms=retry_after_ms),
+                                "golden-trace-1")
+    assert (env.status, env.data, env.metadata) == ("error", None, {"trace_id": "golden-trace-1"})
+    assert env.error.type == "budget_exceeded" and env.error.recoverable is True
+    assert env.message == env.error.message == "Budget limit reached — upgrade or reduce scope"
+    assert env.error.details == details
+
+
+def test_only_a_denied_entry_has_a_denial_envelope():
+    from contracts.admission import ADMITTED, DUPLICATE, AdmissionOutcome
+    from engine.stages.s15_final_state.response import entry_denial_envelope
+    for outcome in (AdmissionOutcome(ADMITTED, execution_id="e-1", run_status="running"),
+                    AdmissionOutcome(DUPLICATE, execution_id="e-1", run_status="running")):
+        with pytest.raises(ValueError):
+            entry_denial_envelope(outcome, "golden-trace-1")
 
 
 def test_a_failed_run_lists_its_failed_and_cancelled_steps():

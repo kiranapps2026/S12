@@ -190,6 +190,33 @@ tests in `tests/` stay green; that is Fable's job under CONF-011.
   no `StepState.UNKNOWN`; no import of `contracts.state_validators` (CONF-006); frozen files byte-identical to the tag.
 - `fixtures/invariants.py`: `assert_system_invariants(schema)` with I5 (every logged transition legal per Appendix A).
 
+## Stage 2 amendments (2026-10-02, unpinned until the second pin)
+
+Drafted by the test-author session from `docs/gates/S12_STAGE2_OWNER_RULINGS.md` Part G and the ruled rows
+CONF-020, CONF-027, CONF-043 (D-3), CONF-044 (D-4), CONF-045 (D-5), CONF-049 (D-9), CONF-050 (D-10), CONF-052 (D-12)
+and DEF-003 (D-13). Every new or changed case is red on `s12-work` at `bb0883b`, except the M10 rewrite, which fixes a
+timing-dependent case and must pass on the current code. M11 is unchanged (D-11 took the alternative).
+
+| File | Change | Red on `bb0883b` | Ruling |
+|---|---|---|---|
+| `M10_guard.py` | `test_probes_and_observations_take_their_own_bulkhead_slot` ordered by events (the call holds its slot until released), not a fixed 30 ms sleep; same assertion plus "the probe waits" | 0 (passes; a probe that skips the bulkhead fails it) | owner run, Part G |
+| `M18_response.py` | `entry_denial_envelope`: hard and soft `quota_exhausted` → `budget_exceeded` with the upgrade text; only DENIED outcomes | 3 | CONF-020 |
+| `M19_recovery.py` | tampered-plan dead letter `NONE` with an EXHAUSTED episode (`attempts == 0`, evidence `plan_integrity`); a recorded FAIL after a crash, three ways; checkpoint rows | 5 | D-3, D-10, D-4 |
+| `M20_multiprocess.py` | lease renewal during a step three times the TTL; a refused renewal discards the result | 2 | D-5 |
+| `M21_journeys.py` | journey on `PostgresAdmissionSnapshot` and `PostgresPreflight`; one case per database-backed gate; the dead-letter operator path; Worker Runtime start-up refusals | 10 | CONF-027, D-9, D-13, D-12 |
+
+New sabotage patches (each loads; they become checkable once the code exists, the cases they target being red today):
+
+| Patch | Must turn red |
+|---|---|
+| `M19_tamper_letter_probed.py` | `test_the_in_flight_step_of_a_tampered_plan_is_dead_lettered_never_probed` |
+| `M19_fail_rerun_after_crash.py` | `test_a_recorded_fail_is_never_overturned_by_recovery[*]` |
+| `M21_retry_allowed_for_none.py` | `test_the_operator_retries_probe_records_and_refuses_none` |
+
+Open point for the owner: CONF-027 names `PostgresPreflight`, but the database holds no kernel input schema (no column
+in `kernel_ops` or `capabilities`), so its schema check has no source; the M21 journey pins only that a valid step
+passes. A source for the input schema needs a ruling before a case can pin a schema failure.
+
 ## Sabotage (owner verify)
 
 `tests_golden/sabotage/*.sql` run after the migrations, and `*.py` patches (`apply()`) monkeypatch the interface under

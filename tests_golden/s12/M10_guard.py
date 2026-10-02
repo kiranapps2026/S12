@@ -703,22 +703,43 @@ def test_mock_observation_reflects_the_side_effect(behaviour, matches):
 
 
 def test_probes_and_observations_take_their_own_bulkhead_slot():
+    # Ordered by events, not by sleeps: the call holds its slot until released, so a slow or loaded event loop cannot
+    # let it finish before the probe asks for a slot (Stage 2 Part G; a fixed 30 ms sleep failed on a loaded host).
     from adapters.runtime.reliability import InProcessBulkhead
+    from contracts.adapter_interface import BaseAdapter, ProbeOutcome
+    from contracts.step_execution import AdapterResult
+
+    class Held(BaseAdapter):
+        def __init__(self):
+            self.entered, self.release = asyncio.Event(), asyncio.Event()
+
+        async def call(self, kernel_op_id, params, binding, context, *, call_meta=None):
+            self.entered.set()
+            await self.release.wait()
+            return AdapterResult("ok")
+
+        async def probe(self, kernel_op_id, params, binding, context, *, call_meta):
+            return ProbeOutcome.NOT_EXECUTED
+
     bulkhead = InProcessBulkhead(1)
-    mock, _ = _mock(call="slow", ms=150)
-    guard, _, _ = _guard(mock, bulkhead=bulkhead)
-    peak = []
+    peak, probe_done_while_held = [], []
 
     async def scenario():
+        adapter = Held()
+        guard, _, _ = _guard(adapter, bulkhead=bulkhead)
         call = asyncio.create_task(guard.call(_call(key="k-slow")))
-        await asyncio.sleep(0.03)
+        await adapter.entered.wait()                        # the call is inside the adapter, holding its slot
         probe = asyncio.create_task(guard.probe(_call(key="k-slow")))
-        await asyncio.sleep(0.03)
+        for _ in range(5):                                  # let the probe run as far as it can
+            await asyncio.sleep(0)
         peak.append(bulkhead.in_use("mockp"))
-        await asyncio.gather(call, probe)
+        probe_done_while_held.append(probe.done())
+        adapter.release.set()
+        result, outcome = await asyncio.gather(call, probe)
+        assert result.status == "ok" and outcome == ProbeOutcome.NOT_EXECUTED
 
     _run(scenario())
-    assert peak == [1] and bulkhead.in_use("mockp") == 0
+    assert peak == [1] and probe_done_while_held == [False] and bulkhead.in_use("mockp") == 0
 
 
 # --- mock adapter (§15.3) and credentials (S6) ------------------------------------------------------------------------

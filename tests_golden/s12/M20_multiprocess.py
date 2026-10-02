@@ -7,10 +7,15 @@ at a time; after a kill the other's sweeper takes over; no step executes twice; 
 working for tenant A cannot read or modify tenant B's executions, reservations, leases or dead letters; RLS enforces it
 at the database; every row carries its tenant, C34), §21 S4 (``FOR UPDATE SKIP LOCKED``: sweepers never claim the same
 execution), S9 (portable: ``subprocess`` + ``Popen.kill()``, ``pathlib``, no POSIX-only process APIs in the engine).
-Rulings: CONF-033, CONF-042 (M19).
+Rulings: CONF-033, CONF-042 (M19), CONF-045 (D-5, option A: the loop renews its lease every
+``lease_renewal_interval_s`` while a step runs; ``LeaseLost`` stops the step like ``FencedOut``).
 
 Interface this file relies on (all fixed by M19 and earlier): ``RecoverySweeper``, ``recover_execution``,
-``run_execution``, M17's dependencies, ``PostgresLeaseManager.acquire(..., skip_locked=True)``. The process itself is
+``run_execution``, M17's dependencies, ``PostgresLeaseManager.acquire(..., skip_locked=True)``. CONF-045 adds
+``LoopSettings.lease_renewal_interval_s`` (real time, never ``LoopDeps.sleep``): while a step holds its lease the loop
+calls ``PostgresLeaseManager.renew`` (each renewal a new, larger token, logged ``active → active (renewed)``) and writes
+with the renewed token; a renewal that raises ``LeaseLost`` stops the run at once with reason ``lease_lost`` or
+``fenced_out``: the call's result is discarded (no ledger row, no step move, no consolidation). The process itself is
 the owner fixture ``tests_golden/fixtures/runtime_process.py`` (a ``FileProvider`` whose side effects are an
 append-only file shared by every process).
 """
@@ -225,6 +230,101 @@ def test_a_sweeper_skips_an_execution_another_sweeper_holds(db_schema, run):
 
 
 # --- tenant isolation (suite 18, C34) --------------------------------------------------------------------------------
+
+# --- lease renewal during a long step (CONF-045, D-5) ----------------------------------------------------------------
+
+RENEW_TTL_S, RENEW_EVERY_S, LONG_CALL_MS = 1.2, 0.4, 3000
+
+
+def _renewing(schema, mock, runtime):
+    """M17's dependencies with a short lease, renewal on, a step timeout above the long call, and real sleeps."""
+    import asyncio
+    from tests_golden.s12.M17_dead_letter import _dl_deps
+    deps = _dl_deps(schema, mock, lease_ttl_s=RENEW_TTL_S, lease_renewal_interval_s=RENEW_EVERY_S,
+                    step_timeout_s=10.0)
+    return dataclasses.replace(deps, runtime_instance_id=runtime, sleep=asyncio.sleep)
+
+
+def _lease_log(schema, run, execution):
+    return [dict(r) for r in run(schema.fetch(
+        "SELECT t.from_state, t.to_state, t.reason, t.fence_token, t.runtime_instance_id FROM state_transitions t"
+        " JOIN worker_leases l ON l.lease_id = t.entity_id WHERE t.entity_type = 'lease' AND l.execution_id = $1"
+        " ORDER BY t.transition_id", execution))]
+
+
+def test_a_step_longer_than_the_lease_ttl_renews_and_is_never_taken_over(db_schema, run):
+    """CONF-045 A: a call three times the lease TTL completes in its own runtime while another runtime sweeps the whole
+    time: the lease is renewed (strictly increasing tokens), never lapses, and the sweeper never takes over."""
+    import asyncio
+    from engine.stages.s12_execute.loop import run_execution
+    from engine.stages.s12_execute.recovery import RecoverySweeper
+    from tests_golden.s12.M12_loop import _ops
+    from tests_golden.s12.M19_recovery import CRASHED, RECOVERING, _mocked
+    state = _state("golden-mp-renew", "mprenew")
+    tenant, execution = _admit(db_schema, run, state)
+    first = _order(state)[0]
+    mock = _mocked(**{_ops(state)[first]: {"call": "slow", "ms": LONG_CALL_MS}})
+    owner, other = _renewing(db_schema, mock, CRASHED), _renewing(db_schema, mock, RECOVERING)
+    swept = []
+
+    async def scenario():
+        loop = asyncio.create_task(run_execution(owner, tenant, execution))
+        sweeper = RecoverySweeper(db_schema.database(), other)
+        while not loop.done():
+            swept.extend(await sweeper.sweep())
+            await asyncio.sleep(0.2)
+        return await loop
+
+    result = run(scenario())
+    assert result.reason is None and _status(db_schema, run, execution) == "completed"
+    assert swept == []                                                            # never an orphan
+    log = _lease_log(db_schema, run, execution)
+    assert {r["runtime_instance_id"] for r in log} == {CRASHED}
+    assert _max_concurrent_leases(db_schema, run, execution) == 1
+    renewals = [r["fence_token"] for r in log if (r["from_state"], r["to_state"], r["reason"]) == (
+        "active", "active", "renewed")]
+    assert len(renewals) >= 3 and renewals == sorted(set(renewals))              # strictly increasing tokens
+    assert not [r for r in log if r["to_state"] == "expired"]
+    assert run(db_schema.fetchval("SELECT count(*) FROM state_transitions WHERE execution_id = $1"
+                                  " AND runtime_instance_id = $2", execution, RECOVERING)) == 0
+    assert mock.side_effects(f"{state.execution_context.request_id}:{first}") == 1
+    run(assert_system_invariants(db_schema))
+
+
+def test_a_refused_renewal_stops_the_step_and_discards_its_result(db_schema, run):
+    """CONF-045 A: once a renewal is refused (the lease lapsed underneath the runtime), the loop stops like FencedOut:
+    whatever the call returns afterwards is discarded: no ledger row, the step stays RUNNING for recovery, the
+    reservation stays LOCKED, the run is not consolidated."""
+    import asyncio
+    from engine.stages.s12_execute.loop import run_execution
+    from tests_golden.s12.M12_loop import _ops
+    from tests_golden.s12.M19_recovery import CRASHED, _mocked
+    state = _state("golden-mp-renewlost", "mprenewlost")
+    tenant, execution = _admit(db_schema, run, state)
+    first = _order(state)[0]
+    mock = _mocked(**{_ops(state)[first]: {"call": "slow", "ms": LONG_CALL_MS}})
+    owner = _renewing(db_schema, mock, CRASHED)
+    key = f"{state.execution_context.request_id}:{first}"
+
+    async def scenario():
+        started = time.monotonic()
+        loop = asyncio.create_task(run_execution(owner, tenant, execution))
+        while not mock.calls:                                                     # the call is in flight
+            await asyncio.sleep(0.01)
+        await db_schema.execute("UPDATE worker_leases SET expires_at = now() - interval '1 second'"
+                                " WHERE execution_id = $1 AND status = 'active'", execution)
+        result = await loop
+        await asyncio.sleep(max(0.0, LONG_CALL_MS / 1000 + 0.5 - (time.monotonic() - started)))
+        return result
+
+    result = run(scenario())
+    assert result.reason in ("lease_lost", "fenced_out")
+    assert run(db_schema.fetchval("SELECT count(*) FROM idempotency_ledger WHERE idempotency_key = $1", key)) == 0
+    step = _steps(db_schema, run, execution)[first]
+    assert (step["status"], step["budget"]) == ("running", "locked")
+    assert _status(db_schema, run, execution) == "running"
+    run(assert_system_invariants(db_schema))
+
 
 def test_a_runtime_for_one_tenant_can_neither_read_nor_change_another_tenants_rows(db_schema, run):
     from adapters.postgres.dead_letters import PostgresDeadLetters

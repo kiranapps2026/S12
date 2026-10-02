@@ -11,7 +11,13 @@ probe; marker → probe; the existing reservation is reused, a new one only for 
 (Crash A, B, C; cached failure at recovery; expired record at recovery), suite 14, suite 16b (recovery after
 revocation), suite 19 (C35 rows); invariants I1–I16 (I4 through the mock's side-effect ledger).
 Rulings: CONF-033 (a sweeper never takes an execution its own runtime owns), CONF-042 (cross-tenant discovery through
-``s12_recovery_candidates``, ids only), CONF-043 (an in-flight step of a tampered plan is dead-lettered, never probed).
+``s12_recovery_candidates``, ids only), CONF-043 as amended (D-3: an in-flight step of a tampered plan is
+dead-lettered ``retry_mode = NONE``, never probed, with an EXECUTION episode closed EXHAUSTED, ``attempts == 0``,
+evidence ``plan_integrity``), CONF-044 (A+: checkpoint rows are a hint written at §8 steps 7 and 11; recovery never
+reads them), CONF-050 (§8 step 9 wins over §13: a recorded FAIL found in recovery, checked before the ledger lookup,
+ends the step ``failed (verification_failed)``; an open VERIFICATION episode closes ``confirmed_failure
+(verified_fail)``; the budget is released; a ``data`` / NONE dead letter; no layer is re-run, nothing is probed;
+the recorded verdicts are read through ``PostgresExecutionEvents.layer_verdicts``).
 
 Interface this file fixes:
   * ``engine.stages.s12_execute.fault_injection``: ``POINTS`` (the ten names of §15.2, in that order);
@@ -43,15 +49,19 @@ Interface this file fixes:
     DEFINER, search_path pinned with pg_temp last; a run never leased is a candidate only after ``orphan_after_s``, the lease TTL, CONF-046).
     ``RecoverySweeper.sweep`` isolates each run: an error recovering one is logged at ERROR (``recovery_failed``, the
     run and the error type) and the sweep goes on; a ``SimulatedCrash`` is never caught.
+  * ``checkpoints`` rows (CONF-044, C10): written through ``fenced_write`` at §8 step 7 and step 11 with
+    ``tenant_id``, ``execution_id``, a strictly increasing ``sequence``, and ``completed_steps`` / ``pending_steps``
+    as lists of plan step ids; after a completed run the last row lists every plan step as completed.
 """
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
 from tests_golden.fixtures.invariants import assert_system_invariants
-from tests_golden.s12.M12_loop import _admit, _moves, _order, _ops, _state, _steps
+from tests_golden.s12.M12_loop import _admit, _events, _moves, _order, _ops, _state, _steps
 
 CRASHED, RECOVERING = "runtime-A", "runtime-B"
 
@@ -510,8 +520,11 @@ def test_a_reconciling_run_is_resolved_and_consolidated(db_schema, run, call, la
 
 
 def test_the_in_flight_step_of_a_tampered_plan_is_dead_lettered_never_probed(db_schema, run):
-    """CONF-043: the call cannot be rebuilt from an untrusted plan, so the in-flight step is neither probed nor re-run:
-    DEAD_LETTER, its budget LOCKED (D4), a PROBE dead letter for an operator; the rest is cancelled."""
+    """CONF-043 as amended (D-3): the call cannot be rebuilt from an untrusted plan, so the in-flight step is neither
+    probed nor re-run: DEAD_LETTER, its budget LOCKED (D4); the dead letter is ``retry_mode = NONE`` (no automated
+    probe from an untrusted plan: a human resolves it, CONF-049) and carries an EXECUTION episode opened and closed
+    with the step's move: outcome EXHAUSTED, ``attempts == 0``, evidence ``plan_integrity``, one ``episode_closed``
+    event, linked by the dead letter's ``episode_id``. The rest is cancelled."""
     from tests_golden.s12.M12_loop import _force_plan_update, _retamper
     state = _state("golden-rec-tamperflight", "rectamperflight")
     tenant, execution = _admit(db_schema, run, state)
@@ -535,11 +548,125 @@ def test_the_in_flight_step_of_a_tampered_plan_is_dead_lettered_never_probed(db_
     assert (steps[first]["status"], steps[first]["budget"]) == ("dead_letter", "locked")
     assert all((steps[sid]["status"], steps[sid]["terminal_reason"]) == ("cancelled", "run_dead_lettered")
                for sid in rest)
-    (letter,) = run(db_schema.fetch("SELECT error_type, retry_mode, status FROM dead_letters WHERE step_id = $1",
-                                    steps[first]["step_id"]))
-    assert (letter["error_type"], letter["retry_mode"], letter["status"]) == ("unknown_unresolved", "PROBE",
+    (letter,) = run(db_schema.fetch("SELECT error_type, retry_mode, status, episode_id FROM dead_letters"
+                                    " WHERE step_id = $1", steps[first]["step_id"]))
+    assert (letter["error_type"], letter["retry_mode"], letter["status"]) == ("unknown_unresolved", "NONE",
                                                                               "pending")
+    (episode,) = run(db_schema.fetch("SELECT episode_id, kind, status, outcome, attempts, evidence, closed_at"
+                                     " FROM step_reconciliations WHERE step_id = $1", steps[first]["step_id"]))
+    assert (episode["kind"], episode["status"], episode["outcome"], episode["attempts"]) == (
+        "EXECUTION", "pending_probe", "EXHAUSTED", 0)                       # no probe attempt ever started
+    assert episode["closed_at"] is not None and letter["episode_id"] == episode["episode_id"]
+    evidence = json.loads(episode["evidence"]) if isinstance(episode["evidence"], str) else episode["evidence"]
+    assert evidence.get("reason") == "plan_integrity"
+    assert _moves(db_schema, run, "episode", episode["episode_id"]) == [("none", "pending_probe", "opened")]
+    closed = [e for e in _events(db_schema, run, execution, "episode_closed")
+              if e["step_id"] == steps[first]["step_id"]]
+    assert len(closed) == 1
     assert _run_status(db_schema, run, execution) == "dead_letter"
+    run(assert_system_invariants(db_schema))
+
+
+# --- a recorded verification FAIL survives a crash (CONF-050, D-10) --------------------------------------------------
+
+def _scripted_deps(schema, mock, first, outcome, *, runtime=CRASHED, faults=None):
+    """Full deps whose verification answers ``outcome`` for the first step and PASS for every other step; returns
+    (deps, the first step's script)."""
+    from tests_golden.s12.M15_verification import ScriptedVerification, _outcome
+    script, rest = ScriptedVerification(*outcome), ScriptedVerification(_outcome(schema="PASS"))
+
+    class PerStep:
+        async def verify(self, step, *args, **kw):
+            return await (script if step.id == first else rest).verify(step, *args, **kw)
+
+    return dataclasses.replace(_full(schema, mock, runtime=runtime, faults=faults), verification=PerStep()), script
+
+
+FAIL_AFTER_CRASH = [
+    # case, the first runtime's verification answers, nth hit of the crash point, expire the ledger row
+    ("no_episode", ("fail",), 1, False),
+    ("open_episode", ("unknown", "fail"), 2, False),
+    ("ledger_expired", ("fail",), 1, True),
+]
+
+
+@pytest.mark.parametrize("case,answers,nth,expire", FAIL_AFTER_CRASH, ids=[c[0] for c in FAIL_AFTER_CRASH])
+def test_a_recorded_fail_is_never_overturned_by_recovery(db_schema, run, case, answers, nth, expire):
+    """CONF-050: crashed at ``after_verification_before_step_commit`` with a FAIL persisted; recovery gives the live
+    path's answer (M15: failed, dependents ``skipped (dependency_failed)``, nothing called again). Recovery checks the
+    recorded verdicts before the ledger, so an expired ledger row changes nothing; it never re-runs a layer (the
+    recovering runtime's verification would now answer PASS: running it would flip a non-retryable FAIL) and never
+    probes. The step ends ``failed (verification_failed)``, its budget released, with a ``data`` / NONE dead letter;
+    an open VERIFICATION episode is closed ``confirmed_failure`` VERIFIED_FAIL and linked by the dead letter."""
+    from tests_golden.s12.M15_verification import _outcome
+    verdicts = {"fail": _outcome(schema="PASS", provider_state="FAIL"),
+                "unknown": _outcome(schema="PASS", provider_state="UNKNOWN")}
+    index = [c[0] for c in FAIL_AFTER_CRASH].index(case)
+    state = _state(f"golden-rec-failcrash-{index}", f"recfailcrash{index}")
+    tenant, execution = _admit(db_schema, run, state, retry_safety="safe")
+    first = _order(state)[0]
+    mock = _mocked()
+    deps, _ = _scripted_deps(db_schema, mock, first, tuple(verdicts[a] for a in answers),
+                             faults=CrashAt("after_verification_before_step_commit", nth))
+    _crash(db_schema, run, deps, tenant, execution)
+    step_id = _steps(db_schema, run, execution)[first]["step_id"]
+    assert _steps(db_schema, run, execution)[first]["status"] in ("running", "pending_probe")
+    if expire:
+        run(db_schema.execute("UPDATE idempotency_ledger SET expires_at = now() - interval '1 second'"
+                              " WHERE idempotency_key = $1", _key(state, first)))
+    _time_passes(db_schema, run, execution)
+    calls, probes = len(mock.calls), len(mock.probes)
+    recovering, script = _scripted_deps(db_schema, mock, first, (_outcome(schema="PASS", provider_state="PASS"),),
+                                        runtime=RECOVERING)
+    (swept,) = _sweep(db_schema, run, recovering)
+    assert swept[:2] == (tenant, execution)
+    assert [layers for sid, layers in script.layers if sid == first] == []     # no layer re-run for the FAIL
+    assert len(mock.probes) == probes and len(mock.calls) == calls             # nothing probed, nothing called
+    step = _steps(db_schema, run, execution)[first]
+    assert (step["status"], step["terminal_reason"]) == ("failed", "verification_failed")
+    assert _reservations(db_schema, run, step_id)[-1] == "released"
+    assert _moves(db_schema, run, "step", step_id)[-1][1:] == ("failed", "verification_failed")
+    (letter,) = run(db_schema.fetch("SELECT error_type, retry_mode, error, episode_id FROM dead_letters"
+                                    " WHERE step_id = $1", step_id))
+    assert (letter["error_type"], letter["retry_mode"], letter["error"]) == ("data", "NONE", "verification_failed")
+    episodes = _episodes(db_schema, run, step_id)
+    if case == "open_episode":
+        (episode,) = episodes
+        assert (episode["kind"], episode["status"], episode["outcome"]) == (
+            "VERIFICATION", "confirmed_failure", "VERIFIED_FAIL")
+        assert _moves(db_schema, run, "episode", episode["episode_id"])[-1][1:] == ("confirmed_failure",
+                                                                                     "verified_fail")
+        assert letter["episode_id"] == episode["episode_id"]
+    else:
+        assert episodes == [] and letter["episode_id"] is None                 # nothing was open, nothing opened
+    assert mock.side_effects(_key(state, first)) == 1                            # called once, never again
+    steps = _steps(db_schema, run, execution)                                  # as on the live path (M15)
+    assert all((steps[sid]["status"], steps[sid]["terminal_reason"]) == ("skipped", "dependency_failed")
+               for sid in _order(state)[1:])
+    assert _run_status(db_schema, run, execution) not in ("running", "reconciling")
+    run(assert_system_invariants(db_schema))
+
+
+# --- checkpoints are written, never read (CONF-044, D-4) --------------------------------------------------------------
+
+def test_a_completed_run_writes_checkpoints_with_increasing_sequences(db_schema, run):
+    """CONF-044 A+: §8 steps 7 and 11 write a checkpoint row (a hint; recovery never reads it). After a completed run
+    the rows of the execution carry the run's tenant, strictly increasing sequences, and the last lists every plan
+    step as completed and none pending."""
+    from engine.stages.s12_execute.loop import run_execution
+    state = _state("golden-rec-checkpoints", "reccheckpoints")
+    tenant, execution = _admit(db_schema, run, state)
+    run(run_execution(_full(db_schema, _mocked()), tenant, execution))
+    assert _run_status(db_schema, run, execution) == "completed"
+    rows = run(db_schema.fetch("SELECT tenant_id, sequence, completed_steps, pending_steps FROM checkpoints"
+                               " WHERE execution_id = $1 ORDER BY sequence", execution))
+    assert len(rows) >= len(_order(state)) + 1                    # at least one per step start, one at the end
+    assert {r["tenant_id"] for r in rows} == {tenant}
+    sequences = [r["sequence"] for r in rows]
+    assert sequences == sorted(set(sequences))                    # strictly increasing
+    decode = lambda v: json.loads(v) if isinstance(v, str) else v    # noqa: E731
+    assert sorted(decode(rows[-1]["completed_steps"])) == sorted(_order(state))
+    assert decode(rows[-1]["pending_steps"]) == []
     run(assert_system_invariants(db_schema))
 
 
