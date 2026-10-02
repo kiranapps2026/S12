@@ -13,7 +13,7 @@ _LOOKUP = ("SELECT kernel_op_id, result FROM idempotency_ledger WHERE tenant_id 
            " AND expires_at > now()")
 _INSERT = ("INSERT INTO idempotency_ledger (idempotency_key, tenant_id, kernel_op_id, result, expires_at)"
            " VALUES ($1, $2, $3, $4::jsonb, now() + make_interval(secs => $5))"
-           " ON CONFLICT (tenant_id, idempotency_key) DO NOTHING"
+           " ON CONFLICT (idempotency_key) DO NOTHING"
            " RETURNING idempotency_key")
 _EXISTING = "SELECT kernel_op_id, result FROM idempotency_ledger WHERE tenant_id = $1 AND idempotency_key = $2"
 
@@ -48,7 +48,7 @@ class PostgresIdempotencyLedger:
                 return
             row = await c.fetchrow(_EXISTING, holder.tenant_id, idempotency_key)
             if row is None:
-                return  # another tenant's row (RLS) or benign race: not a conflict for us
+                raise IdempotencyConflict(idempotency_key)  # the key is held by a row this tenant cannot see (C9)
             if row["kernel_op_id"] != kernel_op_id \
                     or _decode(row["kernel_op_id"], row["result"]).kind != _kind(result):
                 raise IdempotencyConflict(idempotency_key)

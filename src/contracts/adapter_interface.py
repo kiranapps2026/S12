@@ -32,11 +32,11 @@ class CallMeta:
 # ------------------------------------------------------------------ probe / observe ----------------------------------------------------------
 
 class ProbeOutcome(StrEnum):
-    """What a provider probe returns."""
-    EXECUTED_SUCCESS = "executed_success"
-    EXECUTED_FAILURE = "executed_failure"
-    NOT_EXECUTED = "not_executed"
-    INCONCLUSIVE = "inconclusive"
+    """What a provider probe returns (gate C32: exactly these values)."""
+    EXECUTED_SUCCESS = "EXECUTED_SUCCESS"
+    EXECUTED_FAILURE = "EXECUTED_FAILURE"
+    NOT_EXECUTED = "NOT_EXECUTED"
+    INCONCLUSIVE = "INCONCLUSIVE"
 
 
 @dataclass(frozen=True)
@@ -146,3 +146,12 @@ class GuardedCall:
     reservation_id: str | None
     attempt: int
     timeout_s: float
+
+    def __post_init__(self) -> None:
+        # a guarded call is self-consistent or it cannot be built (C9, C34, C37)
+        if self.call_meta.tenant_id != self.context.tenant_id:
+            raise ValueError("call_meta.tenant_id differs from the context's tenant")
+        if self.attempt < 1:
+            raise ValueError("attempt must be >= 1")
+        if not self.timeout_s > 0:
+            raise ValueError("timeout_s must be > 0")

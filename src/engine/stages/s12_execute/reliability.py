@@ -179,6 +179,8 @@ class ReliabilityGuard:
 
             if attempt > 1 and self._retry_storm is not None:
                 if not self._retry_storm.allow_retry(provider, call.kernel_op_id):
+                    if self._breaker is not None:
+                        self._breaker.record_ignored(provider)      # release a half-open trial (C37)
                     self._record_outcome(provider, call, attempt, started, "retry_storm", ErrorClass.RETRY_STORM.value, False)
                     return AdapterResult("error", False, ErrorClass.RETRY_STORM.value)
 
@@ -187,6 +189,10 @@ class ReliabilityGuard:
                     call.kernel_op_id, call.params, call.binding, call.context, call_meta=call.call_meta
                 )
                 raw = await self._timeouts.run(inner, call.timeout_s)
+            except asyncio.CancelledError:
+                if self._breaker is not None:
+                    self._breaker.record_ignored(provider)          # never stuck half-open; the slot is released by async with
+                raise
             except TimeoutError:
                 self._record_failure(provider, call, attempt, started, "timeout", ErrorClass.TIMEOUT.value, False)
                 return AdapterResult("timeout", False, ErrorClass.TIMEOUT.value)
@@ -230,9 +236,10 @@ class ReliabilityGuard:
             # StrEnum members are also str; pass them through as-is so StrEnum equality works.
             if isinstance(raw, ProbeOutcome):
                 return raw
-            if isinstance(raw, str):
-                return raw
-            return ProbeOutcome.INCONCLUSIVE
+            try:
+                return ProbeOutcome(str(raw).upper())
+            except ValueError:
+                return ProbeOutcome.INCONCLUSIVE
 
     async def observe(self, kernel_op_id: str, observation_spec: dict, binding, context) -> Observation:
         """Observe provider state without side effects (C37)."""

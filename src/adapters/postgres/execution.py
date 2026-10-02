@@ -179,9 +179,11 @@ class PostgresExecutionStore:
                                       tenant_id, execution_id)
             owner = await c.fetchrow("SELECT runtime_instance_id, fencing_token FROM execution_ownership"
                                      " WHERE tenant_id = $1 AND execution_id = $2", tenant_id, execution_id)
+            manifest_hash = await c.fetchval("SELECT plan_hash FROM execution_manifests"
+                                             " WHERE tenant_id = $1 AND execution_id = $2", tenant_id, execution_id)
         if plan_row is None or owner is None:
             raise LookupError(f"execution {execution_id} was not admitted (no plan or ownership row)")
-        plan, bindings = _decode_plan(plan_row, None, {r["plan_step_id"] for r in step_rows})
+        plan, bindings = _decode_plan(plan_row, manifest_hash, {r["plan_step_id"] for r in step_rows})
         position = {s.id: i for i, s in enumerate(plan.steps)} if plan is not None else {}
         return LoadedRun(
             execution_id=execution_id, tenant_id=tenant_id, workspace_id=run["workspace_id"], user_id=run["user_id"],
@@ -254,7 +256,7 @@ def _decode_plan(plan_row, manifest_hash: str | None, step_ids: set) -> tuple[Pl
         bindings = {sid: distinct[i] for sid, i in index.items()}
     except (KeyError, IndexError, TypeError, ValueError):
         return None, {}
-    if digest != plan_row["plan_hash"] or (manifest_hash is not None and digest != manifest_hash):
+    if manifest_hash is None or digest != plan_row["plan_hash"] or digest != manifest_hash:   # fail closed (C21)
         return None, {}
     if {s.id for s in plan.steps} != step_ids or set(bindings) != step_ids:
         return None, {}
