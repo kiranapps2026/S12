@@ -2,9 +2,9 @@
 
 Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 15 not_started, 0 red_confirmed, 0 in_progress, 6 green, 2 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
+**Summary:** 14 not_started, 0 red_confirmed, 1 in_progress, 6 green, 2 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
 
-**Next:** M8 Admission controller and worker selection (model: sonnet, complexity: medium, status: not_started)
+**Next:** M8 Admission controller and worker selection (model: sonnet, complexity: medium, status: in_progress)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -16,7 +16,7 @@ Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: chan
 | M5 PostgreSQL confirmation store | B2 | green | medium | sonnet |  | built (S0-S11) | 2 | 0 | 0 | 0 |
 | M6 S12 entry and durable admission | B2 | green | medium-high | sonnet |  | prototype | 2 | 0 | 0 | 0 |
 | M7 Leases, fencing, ownership | B2 | green | very high | opus |  | not done | 2 | 0 | 0 | 0 |
-| M8 Admission controller and worker selection | B2 | not_started | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
+| M8 Admission controller and worker selection | B2 | in_progress | medium | sonnet |  | not done | 2 | 0 | 0 | 0 |
 | M8a Worker management: entry checks, eligibility, operation quota | B2 | not_started | high | sonnet | ★ | quota built | 3 | 0 | 0 | 0 |
 | M9 BudgetReserver | B2 | not_started | high | opus |  | prototype | 2 | 0 | 0 | 0 |
 | M10 Mock adapter, adapter interface, reliability guard | B3 | not_started | high | opus |  | guard built | 2 | 0 | 0 | 0 |

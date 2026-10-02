@@ -106,7 +106,7 @@
       "batch": "B2",
       "prototype_state": "not done",
       "scope": "Gate order, QUEUE/DELAY/REJECT, locality scoring",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
