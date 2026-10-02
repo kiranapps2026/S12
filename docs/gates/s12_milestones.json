@@ -82,7 +82,7 @@
       "batch": "B2",
       "prototype_state": "prototype",
       "scope": "Entry checks deny with exact reason and zero rows",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
