@@ -70,7 +70,7 @@
       "batch": "B2",
       "prototype_state": "built (S0-S11)",
       "scope": "20 concurrent consumers, exactly one winner",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
