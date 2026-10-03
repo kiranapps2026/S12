@@ -112,9 +112,9 @@ before S5 freezes the binding.
 |---|---|
 | Capability, binding, `FrozenBindingIdentity`, `ExecutionManifest` | None |
 | `catalog.yaml` kernel op (mutation, risk, cost, `timeout_seconds`, `retry_safety`, inverse, observation) | None: registry facts (A4) |
-| `AdapterResult`, `CallMeta`, `BaseAdapter`, `CredentialProvider` | None required. Owner decision 10 proposes two small fixes in S12 code (`credential_valid` on the protocol, the `observed_state` type) |
+| `AdapterResult`, `CallMeta`, `BaseAdapter`, `CredentialProvider` | None required by this proposal. Owner decision 10's two small fixes are done (`7e0b5bf`): `credential_valid` on the protocol, `observed_state: dict \| None` |
 | Guard, breaker, bulkhead, retry policy, probe and verification stages | None |
-| Worker Runtime start-up check (`startup.py`) | Additive extension, owner decision 5 |
+| Worker Runtime start-up check (`startup.py`) | Additive per-operation condition, done (`7e0b5bf`, owner decision 5); the catalog check waits for the first profile |
 | Layer A spec | Keeps its prose, VERIFY marks and provider rules; its header values, endpoints and compared fields move to the profile, and the spec links to it |
 
 `<provider>` is the catalog's `provider` id (`crm`, `mail`), the key the breaker and bulkhead already use (CONF-022).
@@ -176,9 +176,8 @@ depends on the archetype:
 For a read, a response `extract` cannot parse is `adapter_defect`.
 
 **Observed state.** `observe` puts only the compared keys' match results and `stamp_ok` in `observed_state`, never
-provider values (DR-60: it can reach the semantic layer). The contract types it `str | None`
-(`adapter_interface.py:48`) while the semantic assessor takes `dict | None` (`verification.py:54`); the engine emits
-the dict, and the type fix is owner decision 10.
+provider values (DR-60: it can reach the semantic layer). The contract types it `dict | None` (fixed in `7e0b5bf`),
+matching the semantic assessor (`verification.py:54`).
 
 **Deadlines.** A call runs under the guard's `step.timeout_s`; a probe or an observation runs under one
 `probe_timeout_s` for **everything** it does (`reliability.py:230`, `:251`), whose code default is 0.5 s (DR-17).
@@ -346,8 +345,7 @@ ETag flow (C36), `null_means`, `field_reference`, `redact_paths`. Revision 6 rep
 
 `CredentialProvider.credential()` returns one string: `{"token": …, "settings": {…}}` (README §5). The whole string is
 secret. The provider must also implement `credential_valid(tenant_id, connection_id)`: M14 calls it before every step
-(`live_authorization.py:81`), though the protocol in `adapter_interface.py` does not declare it yet (owner decision
-10).
+(`live_authorization.py:81`); the protocol in `adapter_interface.py` declares it (since `7e0b5bf`).
 
 | Setting | Example |
 |---|---|
@@ -619,9 +617,11 @@ kernels:
 3. Accept the profile, its location, the `reads:` block as the definition of `observation.method` names, and the
    `not_found` rule (default `needs_parent_read`).
 4. Accept the version rule with `compatible_binding_versions` and the per-provider rollout.
-5. **Recommended:** extend the Worker Runtime start-up check additively (S12 code, CONF ruling): the per-operation
-   `verifiable_operations()` condition and the catalog check, with `check_worker_runtime` calling the shared
-   `unverifiable_mutations` helper. Keep `verifiable()` unchanged (see "Per-operation verifiability").
+5. **Done for the per-operation condition (`7e0b5bf`):** `startup.verifiable_for()` keeps `verifiable()` unchanged and,
+   when the class declares `verifiable_operations()`, requires the operation to be listed (fail closed);
+   `unverifiable_mutations` and `check_worker_runtime` share one decision. Tests: `tests_agent/
+   test_startup_per_operation.py`. **Still open:** the catalog-to-profile check at start-up, which needs the first
+   profile to exist; it is built with the first adapter.
 6. Optional CONF items: a per-provider binding version in the catalog; per-provider breaker and bulkhead settings;
    per-key breakers (`ghl_crm.md` Q3); the routing adapter for several providers in one runtime (DR-42).
 7. Update `TEMPLATE.md`: point its header table, endpoints and compared fields to the profile; add "Cannot do" and
@@ -629,8 +629,8 @@ kernels:
 8. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned, apply `PROVIDER_ADAPTERS_CORRECTIONS.md`.
 9. Correct `ghl_crm.md` §4: the stamp check applies to the create's observation and the inverse, not to update
    observations (see the finding under the GHL example).
-10. Two small fixes in S12 code (not frozen): declare `credential_valid` on the `CredentialProvider` protocol, and type
-    `Observation.observed_state` as `dict | None`, matching the semantic assessor.
+10. **Done (`7e0b5bf`):** `credential_valid` declared on the `CredentialProvider` protocol; `Observation.observed_state`
+    typed `dict | None`, matching the semantic assessor.
 11. **Recommended:** `S12_STEP_TIMEOUT_S` 30, `S12_ADAPTER_CLIENT_TIMEOUT_S` 8, `S12_PROBE_TIMEOUT_S` 8, the
     three-request limit per probe, observation and call, and `min_probe_timeout_s` per profile (see "Deadlines"),
     after checking the worst cases against lease renewal (M20). The Worker Runtime composition (DR-14) must construct

@@ -170,8 +170,8 @@ spec = {
 | Method not implemented | `None` | `"observe_not_supported"` | UNKNOWN |
 
 **`observed_state`**: only the compared keys' match results, never provider values (DR-60: it can reach the semantic
-layer). The contract types it `str | None` (`adapter_interface.py:48`) while the semantic assessor takes
-`dict | None` (`verification.py:54`); use the dict until the type is fixed.
+layer). The contract types it `dict | None` (`adapter_interface.py`, fixed in `7e0b5bf`), matching the semantic
+assessor (`verification.py:54`).
 
 **The `identifier=None` case** (after the probe path): After EXECUTED_SUCCESS, verification has no
 adapter result, so `spec["identifier"]` is `None`. The adapter must find the resource from
@@ -285,8 +285,8 @@ CONTRACT  credentials
   - credential() returns str and should never raise (the protocol says so); the adapter still treats a raise
     as not_dispatched (Layer A README §5)
   - credential_valid() is a cheap local check (token present, not expired); not a provider round trip.
-    M14 calls it before every step (live_authorization.py:81), but the CredentialProvider protocol in
-    adapter_interface.py does not declare it yet: implement it anyway
+    M14 calls it before every step (live_authorization.py:81); the CredentialProvider protocol declares it
+    (since 7e0b5bf)
 
 CONTRACT  idempotency key
   - call_meta.idempotency_key = "{request_id}:{plan_step_id}" is stable across attempts and recovery
@@ -630,7 +630,8 @@ class CredentialProvider(Protocol):
   as "not available". The adapter still treats a raise as `not_dispatched` (Layer A README §5), never raises itself.
 - `credential_valid(tenant_id, connection_id)` is a cheap local check (token present, not expired).
   It is called by M14's `LiveAuthorizationCheck` before every step (`live_authorization.py:81`) — it must not make a
-  provider round trip. The protocol above does not declare it yet; implement it anyway.
+  provider round trip. The protocol declares it too (`adapter_interface.py`, since `7e0b5bf`; the excerpt above shows
+  only `credential`).
 - Token refresh happens inside the credential provider, not the adapter.
 - The credential string is secret: never log it, never put any part of it in `data`, never include
   it in an exception message.
