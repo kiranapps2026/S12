@@ -109,5 +109,5 @@ made it fail.
 |---|---|---|
 | "Every adapter must have all 7 required files" (`kernels.py`, `kernel_meta.py`, `aliases.py`, `policy.py`, `schema.py`, `assertions.py`, `policy/execution.yaml`) | one adapter class, one credential provider, one profile (`src/engines/<provider>/profile.yaml`), one Layer A spec, and catalog rows. This multi-file layout is what the earlier app built per provider, and it did not survive | README §7, profile proposal |
 | `make scaffold-adapter`, generators (`generate_kernel_meta`, `generate_tools`, `generate_migration`) | none: catalog rows are loaded by `tools/load_catalog.py`; `tools/registry_readiness.py` must exit 0 | README §7 |
-| Contract-test list | README §6 recorded-response test matrix, plus the profile load check | README §6 |
+| Contract-test list | README §6 recorded-response test matrix, plus the profile check and the catalog check | README §6 |
 | "verified" in any form | only a recorded sandbox response clears a VERIFY mark; operation status lives in the catalog's `truth_state` only, never as a count in a document | profile proposal, "Lessons from the earlier app" |
