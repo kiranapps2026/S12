@@ -45,7 +45,7 @@ class Observation:
     attempt: int
     observed_at: float              # epoch seconds
     provider_response_code: int | None = None
-    observed_state: str | None = None
+    observed_state: dict | None = None  # compared keys' match results only, never provider values (DR-60)
     matches_expected: bool | None = None
     error: str | None = None
 
@@ -123,6 +123,13 @@ class CredentialProvider(Protocol):
 
     async def credential(self, tenant_id: str, connection_id: str | None) -> str:
         """Return the credential string for this tenant/connection. Never raise."""
+        ...  # pragma: no cover — protocol stub
+
+    async def credential_valid(self, tenant_id: str, connection_id: str | None) -> bool:
+        """Cheap local check that the connection's credential is usable (CONF-030): present, not expired or revoked.
+
+        M14's live authorization calls it before every step; it must not make a provider round trip. Anything other
+        than ``True`` revokes the step (``credential_invalid``)."""
         ...  # pragma: no cover — protocol stub
 
 
