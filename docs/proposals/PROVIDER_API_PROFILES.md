@@ -1,6 +1,6 @@
 # Provider API profiles — one data file for the provider-API facts that change
 
-**Status: proposal for the owner (revision 2, 2026-10-03). No code, pinned document, catalog or milestone is changed by
+**Status: proposal for the owner (revision 3, 2026-10-03). No code, pinned document, catalog or milestone is changed by
 it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call
 real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row
 moves.
@@ -43,6 +43,23 @@ Capabilities, bindings, `catalog.yaml`, the planner, S5, the guard and every fro
 the code that reads it. The catalog goes to the database through `load_catalog.py`, but the profile does not. `<provider>`
 is the catalog's `provider` id (`crm`, `mail`), the same key the breaker and bulkhead use (CONF-022).
 
+## Lessons from the earlier app
+
+An earlier app (OpenClaw) built Notion and Airtable adapters and failed on complexity: about 30 artefact files per
+provider, two ID systems, alias files, business-entity and composite matrices, per-provider policy YAMLs, and status
+counts written by hand. Its own audit found "37 bindings, all verified" where the source said 32, with 10 verified.
+Its reviews (the Notion tool-level appendix and the Airtable architecture sections 1–10) still hold useful provider
+facts. This proposal keeps the facts and turns the failures into six guardrails:
+
+| Failure in the earlier app | Guardrail here |
+|---|---|
+| Status written by hand in several documents, then contradicting itself | Operation status lives in one place, the catalog's `truth_state` (DR-41 enables one operation at a time). No profile or document states a count or a status by hand |
+| "Verified" meant "checked against the docs", not "ran against the provider" | The profile records both separately (`verified.docs`, `verified.recorded`); only a recorded sandbox response clears a Layer A VERIFY mark |
+| Capabilities mapped for every endpoint, most never used or tested | Only operations on the Layer A launch allow-list get a catalog row and a `kernels:` entry. Everything else stays unbound, with a reason in the spec |
+| Two ID systems (UC-, NC-) plus aliases and endpoint ids | One id: the catalog kernel op id. No aliases, no endpoint-id layer |
+| Per-provider frameworks: policy YAMLs, undo journals, assertion modules, reconciliation engines, client retries, in-adapter breakers | None. The S12 kernel already owns retry, breaker, ledger, verification and rollback; an adapter is one class, one credential provider, one profile |
+| Silent provider behaviour hidden by the adapter (endpoint remapping, dropped fields) | The adapter never hides one. It refuses before send or lets verification see it (see "Provider behaviours the adapter must not hide") |
+
 ## What stays out of the profile (on purpose)
 
 | Not in the profile | Where it stays | Why |
@@ -78,6 +95,8 @@ claim. A field without a default is required.
 | `idempotency_header` / `idempotency_field` | name, for `native_header` / `body_field` | — | `Idempotency-Key` |
 | `max_url_length` | int | none | Airtable `16000` (switch a read to its POST form above it) |
 | `limits` | free-form documented limits, informational | `{}` | `{burst: "100 per 10 s per location", bulkhead: 8}` |
+| `verified` | `{docs: <date and source>, recorded: <date of the last recorded sandbox response> or null}` | required | `{docs: "2026-08-15 API reference", recorded: null}` |
+| `review_by` | date by which the provider's docs and changelog are checked again | required | `2026-11-15` |
 
 `base_url_source` from revision 1 is gone: when the base URL differs per tenant (Salesforce `instance_url`, HubSpot
 EU, Shopify shop), the profile's `base_url` holds a `{settings.<name>}` placeholder that the adapter fills from the
@@ -90,7 +109,7 @@ Keyed by catalog kernel op id. An entry states only what it needs; most need two
 | Field | Values | Default |
 |---|---|---|
 | `method`, `endpoint` | HTTP method, path template (`{name}` = a step param) | required |
-| `api_version` | override, only when this kernel uses a different version | profile's |
+| `api_version` | override, only when this kernel uses a different version (Notion runs two: `2025-09-03`, and `2026-03-11` for its markdown endpoints) | profile's |
 | `pagination` | `none` to switch paging off | profile's (reads only) |
 | `batch_max_items` | int; **reads only**, writes are always `1` | `1` |
 | `update_semantics` | `patch_merge` / `put_replace`, for update ops (a label: the request code follows the spec) | — |
@@ -172,6 +191,22 @@ At start, the adapter loads its profile and refuses to start if the profile fail
 
 Error classification, probe, observe, stamping and inverse location are unchanged, as the spec defines them.
 
+### Provider behaviours the adapter must not hide
+
+These come from the earlier app's Airtable and Notion work. Each one follows from rules S12 already has, so it adds
+lines to a provider spec but no machinery.
+
+| Provider behaviour (example) | Rule |
+|---|---|
+| A write is accepted with HTTP 200 but only partly applied (Airtable `details.message: "partialSuccess"`, e.g. an attachment failed) | Return `ok` with the identifier: the resource exists, so verification and rollback must be able to see it. Never return `error` for a write that took effect, because that leaves an orphan no inverse will remove. `observe` then compares the fields and fails the step |
+| Fields silently ignored on write (Airtable computed fields; legacy Notion database create dropping `properties`) | `observe` compares every field the step wrote (Layer A README §4, "observe fields"), so a silent drop becomes a verification FAIL, not a success |
+| `PUT` clears every field it does not send (Airtable `records.replace`) | A replace is its own kernel op with its own risk, never a variant or flag of an update |
+| Deprecated endpoints quietly remapped by the adapter (Notion `/v1/data_sources` → `/v1/databases`) | Never. An endpoint change is a new profile version (see "Version rule") |
+| A pagination cursor expires or is invalidated by concurrent writes (Airtable `offset`) | `client_error`, `provider_code: "cursor_expired"`; the caller starts again without a cursor |
+| No delete endpoint, or the action notifies people (Airtable and Notion comments) | The catalog marks it `IRREVERSIBLE` |
+| A secret returned only once (Airtable webhook `macSecretBase64`) | Never in `data`. The operation stays off the allow-list until a secret store can take it (DR-11, MC-058) |
+| No connection mapped for the caller | `client_error`, `provider_code: "no_connection"` (README §5). Never fall back to a default account, a token file or an environment variable |
+
 ## Checks
 
 **Load check** (in the adapter at start, and as a `tests_agent` test against `docs/catalog/catalog.yaml`):
@@ -188,7 +223,7 @@ Error classification, probe, observe, stamping and inverse location are unchange
 **Repository checks** (`tests_agent`):
 
 - `binding_version` in every profile equals `versions.binding` in `catalog.yaml`;
-- a kernel with `sunset_at` within N days fails;
+- a kernel with `sunset_at` within N days fails, and so does a profile whose `review_by` date has passed;
 - recorded response fixtures exist for the current `api_version` (README §6 test plan).
 
 A drift report against the provider's published schema can be added later, offline only. Nothing checks the network at
@@ -210,6 +245,8 @@ base_url: https://services.leadconnectorhq.com
 pagination: cursor
 max_page_size: 100
 idempotency: stamp
+verified: {docs: "ghl_crm.md (VERIFY marks open)", recorded: null}
+review_by: 2026-12-31
 limits: {burst: "100 per 10 s per location", daily: "200000 per location", bulkhead: 8}
 
 kernels:
@@ -229,16 +266,19 @@ kernels:
 `contact_update` is a `PUT` that sends only the fields in `params` (`ghl_crm.md` §1), so its effect is a merge; the
 label records that. The catalog entries for `crm` stay exactly as they are.
 
-## Points to verify before building
+## Provider facts
 
-- **GHL:** `PROVIDER_ADAPTERS.md` §2 describes the v1 API (`rest.gohighlevel.com/v1`). `ghl_crm.md` says v1 is end of
-  support and to build on LeadConnector v2. The profile follows `ghl_crm.md`. §2 needs an owner correction when it is
-  next re-pinned.
-- **Airtable:** `PROVIDER_ADAPTERS.md` §6 says API v0 is deprecated and gives `/v1`. As far as this proposal's author
-  knows, Airtable's Web API is still served under `/v0`. Check before an Airtable adapter is written; the §6 rate limit
-  (10 requests/second per token) needs the same check.
+The provider facts collected from `ghl_crm.md` and the earlier app's Airtable and Notion reviews, and the corrections
+they imply for the pinned `PROVIDER_ADAPTERS.md` (§1, §2, §4, §6), are in
+`docs/proposals/PROVIDER_ADAPTERS_CORRECTIONS.md`, ready to apply at its next re-pin. Two of them settle earlier open
+points:
 
-## Not adopted (from the pyairtable review)
+- **Airtable is `/v0`.** The earlier app ran live against `https://api.airtable.com/v0` on 2026-08-15. The pinned §6
+  (`/v1`, "v0 deprecated") is wrong.
+- **Airtable's second limit is concurrency, not a rate.** It is 5 requests/second per base and 10 concurrent requests
+  per token, not "10 requests/second per token".
+
+## Not adopted (from the pyairtable review and the earlier app)
 
 | Idea | Why not |
 |---|---|
@@ -248,11 +288,17 @@ label records that. The catalog entries for `crm` stay exactly as they are.
 | Retry as an adapter property | Retry belongs to the guard (README §1) |
 | Side-effect ledger as an adapter contract | The ledger is the engine's. Adapters send or stamp the key and implement `probe()` (README §3) |
 | Paging many pages inside one call | One page per call, cursor in `data["next"]` (Layer A convention); simpler, and it stays inside the step deadline |
+| Client retries inside the adapter (the earlier Airtable client retried 3 times, Notion up to 3 with backoff) | Retries are the guard's, and an adapter retry of a write can duplicate it. Transport `retries=0` (`ghl_crm.md`) |
+| A breaker inside the adapter (the earlier `_TwoKeyBreaker`) | The guard's breaker is the only one (CONF-022); per-key breakers are a CONF question (`ghl_crm.md` Q3) |
+| `status="partial"` | `AdapterResult` has `ok` / `error` / `timeout` only; a partly applied write is `ok` plus a verification FAIL (above) |
+| Async multi-step provider flows (Notion view queries, three-step file uploads) | No verification path for a 202 or a chunked lifecycle; off the allow-list |
+| Business-entity matrices, composite capabilities, workflow IR in the adapter layer | Plans and chains belong to S4/S9 (M2a); adapters stay one operation per call |
+| Hot credential reload from files, token fallback chains, multi-account adapter registries | One `CredentialProvider` per provider, keyed by `connection_id` (README §5) |
 
 ## Owner decisions needed (when the first new-adapter milestone starts)
 
 1. Check the profile against the Notion and Airtable v2 adapter package (DR-38, prepared for `adapters-work`, not in
-   this repository): it is the first real code the format must fit, and it settles the Airtable `/v0` point.
+   this repository). Revision 3 used the earlier app's reviews for the provider facts, but not that package's code.
 2. Accept the profile, its location (`src/engines/<provider>/profile.yaml`) and the "stays out" list.
 3. Accept the version rule, the adapter's binding-version check and the rollout order.
 4. Update `TEMPLATE.md`, the Layer A header tables and README §7 (definition of done) to point to the profile; include
@@ -260,4 +306,6 @@ label records that. The catalog entries for `crm` stay exactly as they are.
 5. Optional, separate CONF items: per-provider breaker and bulkhead settings (today one setting for all providers),
    per-key breakers (`ghl_crm.md` Q3), and the routing adapter for several providers in one runtime (DR-42; each
    adapter keeps loading only its own profile).
-6. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned: the GHL §2 and Airtable §6 corrections above.
+6. Add two short sections to `TEMPLATE.md`: "Cannot do" (operations left unbound, with the reason) and "Fails
+   silently" (each with the rule from "Provider behaviours the adapter must not hide").
+7. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned, apply `PROVIDER_ADAPTERS_CORRECTIONS.md`.
