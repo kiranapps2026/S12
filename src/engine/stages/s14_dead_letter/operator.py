@@ -6,6 +6,7 @@ a refusal writes nothing.  Records from other tenants are never returned.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Awaitable, Callable
 
 from adapters.postgres.admin import AdminError
@@ -26,7 +27,12 @@ class DeadLetterOperator:
         self._reverify = reverify
 
     async def list_open(self, principal: Principal) -> list[dict]:
-        actor = await self._admin.authorize(principal)
+        try:
+            actor = await self._admin.authorize(principal)
+        except AdminError as exc:
+            if exc.status == 403:
+                return []
+            raise
         async with self._db.tenant_transaction(actor.principal.tenant_id) as c:
             rows = await c.fetch(
                 "SELECT dead_letter_id, execution_id, step_id, kernel_op_id, error_type, retry_mode, status"
@@ -40,13 +46,13 @@ class DeadLetterOperator:
         actor = await self._admin.authorize(principal)
         async with self._db.tenant_transaction(actor.principal.tenant_id) as c:
             row = await c.fetchrow(
-                "SELECT tenant_id, status FROM dead_letters WHERE dead_letter_id = $2",
-                actor.principal.tenant_id, dead_letter_id)
+                "SELECT tenant_id, status FROM dead_letters WHERE dead_letter_id = $1",
+                dead_letter_id)
             if row is None:
                 raise AdminError(404, "dead_letter_not_found")
         await self._dead_letters.resolve(actor.principal.tenant_id, dead_letter_id, outcome)
-        await self._audit(actor.principal.tenant_id, "dead_letter.resolve", dead_letter_id,
-                          {"outcome": outcome})
+        await self._audit(actor.principal.tenant_id, actor.principal.user_id, actor.principal.membership_id,
+                          "dead_letter.resolve", dead_letter_id, {"outcome": outcome})
         return {"dead_letter_id": dead_letter_id, "outcome": outcome}
 
     async def retry(self, principal: Principal, dead_letter_id: str) -> str:
@@ -64,13 +70,14 @@ class DeadLetterOperator:
         status = await retry_dead_letter(
             actor.principal.tenant_id, dead_letter_id,
             dead_letters=self._dead_letters, probe=self._probe, reverify=self._reverify)
-        await self._audit(actor.principal.tenant_id, "dead_letter.retry", dead_letter_id,
-                          {"status": status})
+        await self._audit(actor.principal.tenant_id, actor.principal.user_id, actor.principal.membership_id,
+                          "dead_letter.retry", dead_letter_id, {"status": status})
         return status
 
-    async def _audit(self, tenant_id: str, action: str, target_id: str, details: dict) -> None:
+    async def _audit(self, tenant_id: str, actor_user_id: str, actor_membership_id: str,
+                     action: str, target_id: str, details: dict) -> None:
         async with self._db.tenant_transaction(tenant_id) as c:
             await c.execute(
-                "INSERT INTO admin_audit (tenant_id, action, target_type, target_id, details)"
-                " VALUES ($1, $2, 'dead_letter', $3, $4::jsonb)",
-                tenant_id, action, target_id, details)
+                "INSERT INTO admin_audit (tenant_id, actor_user_id, actor_membership_id, action, target_type, target_id,"
+                " details) VALUES ($1, $2, $3, $4, 'dead_letter', $5, $6::jsonb)",
+                tenant_id, actor_user_id, actor_membership_id, action, target_id, json.dumps(details))
