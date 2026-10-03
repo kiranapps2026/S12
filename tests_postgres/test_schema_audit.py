@@ -20,6 +20,9 @@ NOT_TABLES = {"set", "pg_roles", "pg_class", "information_schema", "__future__",
               "uuid", "asyncio", "fastapi", "pydantic", "config", "constants", "time", "hashlib", "hmac", "base64",
               "math", "logging", "functools", "itertools", "secrets", "unicodedata", "pathlib", "urllib", "sys",
               "httpx", "asyncpg", "cryptography", "decimal", "contextlib", "inspect", "types", "zoneinfo"}
+# "of" — SQL keyword in 'FOR UPDATE OF d' (dead_letters.py); regex takes OF as the table name
+# "s12_recovery_candidates" — SQL function from migration 017, not a table (recovery.py)
+NOT_TABLES |= {"of", "s12_recovery_candidates"}
 
 
 async def _schema(database_url):
