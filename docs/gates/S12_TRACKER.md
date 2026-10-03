@@ -2,9 +2,9 @@
 
 Generated 2026-10-03 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 1 not_started, 0 red_confirmed, 1 in_progress, 17 green, 4 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 2 defects.
+**Summary:** 1 not_started, 0 red_confirmed, 0 in_progress, 18 green, 4 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 2 defects.
 
-**Next:** M20 Multi-process: subprocess kills, two runtimes, tenant isolation (model: opus, complexity: very high, status: in_progress)
+**Next:** M21 Journeys, architecture suite, seams, certification (model: sonnet, complexity: high, status: not_started)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -29,7 +29,7 @@ Generated 2026-10-03 by `tools/s12_tracker.py report`. Do not edit by hand: chan
 | M17 Dead letter and explicit rollback | B4 | green | high | opus |  | not done | 0 | 0 | 0 | 0 |
 | M18 S15 response and redaction | B4 | green | medium | sonnet |  | not done | 1 | 0 | 0 | 0 |
 | M19 Crash recovery and fault injection | B5 | green | very high | opus |  | not done | 3 | 0 | 0 | 0 |
-| M20 Multi-process: subprocess kills, two runtimes, tenant isolation | B5 | in_progress | very high | opus |  | not done | 2 | 0 | 0 | 0 |
+| M20 Multi-process: subprocess kills, two runtimes, tenant isolation | B5 | green | very high | opus |  | not done | 2 | 0 | 0 | 0 |
 | M21 Journeys, architecture suite, seams, certification | B5 | not_started | high | sonnet | ★ | not done | 3 | 0 | 0 | 0 |
 
 ## Rule violations
