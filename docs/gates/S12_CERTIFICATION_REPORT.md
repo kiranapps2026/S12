@@ -2,17 +2,22 @@
 
 Gate §20 template, filled from the certified code and the owner's verification run, with the evidence for each row.
 
-- **Status:** draft for the owner's sign-off, 2026-10-03.
+- **Status:** **CERTIFIED**, 2026-10-03. Tag `s12-s15-certified` = `c844cdd`, verified by the owner
+  (`owner_verify_s12.ps1 M21`, 34/34 PASS).
 - **Revision 2:** after a stage-by-stage re-check. It adds the `tests_postgres` results, four pre-tag decisions
   (section 5), the API-wiring gaps and a proposed DEF-006, and corrects the S8 and blocker rows.
+- **Revision 3 (at the tag):** the four pre-tag decisions were taken as option (a) and done in code (section 5); the
+  owner re-verified at `c844cdd` and tagged; the numbers below are at the tagged commit; section 8 lists the work
+  pushed to `s12-work` after the tag.
 - **Companions:**
   - `docs/gates/S12_DEFERRED_REGISTER.md` (gate §21, DR-01–DR-60);
   - `docs/gates/S0_S15_STAGE_REFERENCE.md` (per-stage logic, what works, limits, inconsistencies).
 
 | Item | Value |
 |---|---|
-| Code certified | `ee9c334` (M21 green checkpoint `3c2a515`, pushed to `s12-work`) |
-| Owner verification | `tools/owner_verify_s12.ps1 M21` on the owner's Windows host: **34/34 PASS (target M21)**, transcript `..\verify_m21.txt` |
+| Code certified | **`c844cdd`** = tag `s12-s15-certified` (owner checkpoint commit `d6b8ad7` "M21 green at c844cdd"). Earlier M21 certification: `ee9c334` (checkpoint `3c2a515`) |
+| Owner verification | `tools/owner_verify_s12.ps1 M21` on the owner's Windows host at `c844cdd`: **34/34 PASS (target M21)**, including C-M20 (5 consecutive multi-process runs) and X-M21 (sabotage); transcript `..\verify_m21.txt` |
+| Tags | `s12-s15-certified` → `c844cdd`; `s12-m14-certified` → `181b7f5`; `s12-stage2-pinned` → `dac952e` (annotated, pushed by the owner) |
 | S12 certifier | `tools/owner_certify_s12.py`, SHA-256 `C105C86139B2CF1FD4D17BFF1A266250BD674ABADBA7E128E64818BA473EA0CD` (= `docs/gates/owner_certify_s12.sha256`) |
 | Pinned set | `docs/gates/s12_pins.sha256`, 138 files (pins #1–#6: `db847c4`, `49b1fb9`, `157a173`, `dac952e`, `a54cba1`, `ffc35a7`) |
 | Base tag | `s0-s11-certified` = `f14a95626749ea85caadd7318aa1729f46d56565` |
@@ -80,24 +85,26 @@ Scale-readiness S1–S9:     PASS   (S1 settings from env (M2, M21); S2 InProces
 Performance baseline:      p50/p95 S12 overhead per step = 42/55 ms (Linux, 210 steps, three runs:
                            41.3/55.0, 41.9/54.6, 42.4/53.8; recorded, no threshold)
 
-S0–S11 regression:         19/19 PASS (tools/owner_certify.py; tests/ 836 passed)
-Full regression:           1826/1826 PASS (tests 836, tests_golden 896, tests_agent 94)
+S0–S11 regression:         19/19 PASS (S12-S011 row of the owner run at c844cdd)
+Full regression:           goldens M1–M21 clean in the owner run at c844cdd (G-M1..G-M21, C rows, X-M21);
+                           at ee9c334: 1826/1826 (tests 836, tests_golden 896, tests_agent 94);
+                           independent re-run at c844cdd: PENDING (filled in the next revision)
 tests_postgres (S0–S11 integration, not run by any certifier):
-                           294 passed; 12 live-model tests need DEEPSEEK_API_KEY (not run here);
-                           1 FAIL test_schema_audit (stale SQL parser, DR-59);
-                           2 files cannot import (test_step_loop, test_chain_full_stack: CONF-035 port never
-                           done, DR-58)
+                           before the pre-tag fixes: 294 passed, 1 FAIL (DR-59), 2 files not importable (DR-58);
+                           with P1 and before P2: 326 passed, 1 FAIL (test_schema_audit, fixed by P2);
+                           the four changed files at the merged head: 43/43 on the owner host;
+                           12 live-model tests need DEEPSEEK_API_KEY (not run)
 Skipped: 0   XFail: 0
 
-Recorded blockers:         CONF-001..052: 2 fixed, 50 ruled, 0 open (but CONF-035's follow-on was never
-                           applied, DR-58); STOP-001..005 applied; DEF-001, DEF-005 fixed; DEF-003 wontfix by
-                           ruling; DEF-002, DEF-004 fixed in code but still open in the records (section 3);
-                           proposed DEF-006, admission budget gate (DR-55)
+Recorded blockers:         CONF-001..052: 2 fixed, 50 ruled, 0 open; CONF-035's port applied (48fa283);
+                           STOP-001..005 applied; DEF-001, DEF-005 fixed; DEF-003 wontfix by ruling;
+                           DEF-002, DEF-004 fixed in code (M12); DEF-006 (admission budget gate) fixed (192e993).
+                           Record rows to update: section 3
 Open questions:            DR-19 (no post-execution human-approval run state); all others in the deferred register
 Deleted tests:             none
 
-Final:                     CERTIFIED — subject to the owner's four pre-tag decisions (section 5) and sign-off
-                           (section 7)
+Final:                     CERTIFIED at c844cdd (tag s12-s15-certified); pre-tag decisions P1–P4 taken and
+                           done (section 5)
 ```
 
 ## 2. Milestones
@@ -116,7 +123,7 @@ reviewed (`docs/gates/S12_M0_PREFLIGHT.md`).
 | M7 | 15 | `fdfc7df` | M18 | 19 | `ee9be5a` |
 | M8 | 40 | `e51855f` | M19 | 44 | `a89ff73` |
 | M8a ★ | 49 | `289d2e8`, reviewed `721e916` | M20 | 12 | `24adafc`, re-verified `7f30892` |
-| M9 | 17 | `4fd6fed` | M21 ★ | 28 | `3c2a515`, review pending |
+| M9 | 17 | `4fd6fed` | M21 ★ | 28 | `3c2a515`, re-verified at `c844cdd` (`d6b8ad7`), reviewed by the owner |
 | M10 | 64 | `7c29d74` | | | |
 | M11 | 46 | `6586639` | **Total** | **896** | |
 
@@ -143,18 +150,20 @@ Sabotage: every milestone's sabotage patches caught (X rows); M21 patches caught
   - DEF-001 and DEF-005: fixed.
   - DEF-003: `wontfix` by ruling D-13. Control: forced RLS, a least-privilege role, and the runtime refuses a superuser
     or BYPASSRLS role (DR-09).
-  - **DEF-002 and DEF-004: fixed by the M12 rework but still `open` in `S12_DEFECTS.md`. The owner closes them**
-    (evidence in register DR-R5). Proposed row text:
+  - **DEF-002 and DEF-004: fixed by the M12 rework** (evidence in register DR-R5). Row text for the owner's
+    columns in `S12_DEFECTS.md` (on GitHub both rows still read `open` when this revision was written):
     - DEF-002: `fixed in M12 (591fc73): loop step reasons are Appendix A's (started …); step_started / step_completed are
       reservation reasons allowed by A.3; I5 checked by assert_system_invariants across the goldens`
     - DEF-004: `fixed in M12 (591fc73): step pending→running and reservation reserved→locked in one set_step
       transaction (I-3); golden M09 test_lock_joins_the_callers_transaction and M12`
-  - **Proposed DEF-006** (caused by M21, severity minor, found 2026-10-03 in the stage re-check). Row text:
-    `adapters/postgres/admission_snapshot.py:36-42: admission gate 10 reads execution_steps.effective_risk (0–1) as
-    step_cost and compares it to tenants.budget_pool, so for any pool >= 1 the gate is "pool > 0" and never refuses an
-    over-cost step early; money stays safe because the step's reservation enforces the real cost (I1, M9)`.
-    A milestone cannot be `reviewed` while a defect it caused is open, so this needs a decision before M21 is
-    reviewed (section 5).
+  - **DEF-006** (caused by M21, minor, found 2026-10-03): admission gate 10 read `execution_steps.effective_risk`
+    (0–1) as the step cost, so for any pool ≥ 1 it reduced to "pool > 0". **Fixed in `192e993`** before the tag
+    (decision P3 a): the gate now asks whether the reserve step would succeed (plan step cost from
+    `canonical_plan`, `AVAILABLE_SQL`, live reservation passes, unknown step fails closed). Test
+    `tests_agent/test_admission_snapshot_budget_def006.py`: 3 of 7 red before, 7/7 after; goldens unchanged. Row text:
+    `DEF-006 | M21 | closed | 2026-10-03 | stage re-check | minor | admission_snapshot.py gate 10 used effective_risk
+    as cost | fixed 192e993`. A pinned golden case is DR-65.
+- **CONF-035** (ruled): applied in `48fa283` (decision P1 a). Its findings are register DR-61–DR-64.
 
 ## 4. What this certification does and does not mean
 
@@ -175,9 +184,9 @@ goldens and verified by the owner.
    step data (DR-40).
 3. **No production semantic assessor.** Steps that require the semantic layer (risk ≥ 0.7 or IRREVERSIBLE) end in a
    dead letter (DR-21).
-4. **Admission is partly sourced.** Seven of the eleven gates are hard-coded to pass (DR-26), and gate 10 has a
-   defect (DR-55). The step's budget reservation, the live authorisation check and the guard's breaker remain the
-   effective controls.
+4. **Admission is partly sourced.** Seven of the eleven gates are hard-coded to pass (DR-26). Gate 10's defect was
+   fixed before the tag (DEF-006, `192e993`). The step's budget reservation, the live authorisation check and the
+   guard's breaker remain the effective controls.
 5. **Security items:**
    - team test keys must be removed (DR-11);
    - EXECUTE on the recovery function must be revoked from PUBLIC (DR-12);
@@ -185,15 +194,14 @@ goldens and verified by the owner.
 
 ## 5. Pre-tag decisions (owner)
 
-The tag says "certified", so each of these needs an explicit owner decision first. The recommendation is the
-first option.
+All four were taken as option (a) and done before the tag:
 
-| # | Item | Options |
-|---|---|---|
-| P1 | DR-58: CONF-035 port never done (2 `tests_postgres` files cannot import) | (a) port them now to the M12 interface with the same scenarios (an implementation task, then this report updated); (b) amend CONF-035 to defer the port, with the reason recorded |
-| P2 | DR-59: stale schema-audit heuristic | (a) teach the audit to skip SQL functions and `FOR UPDATE OF`; (b) record it as known and defer |
-| P3 | DR-55 / proposed DEF-006: admission budget gate | (a) record DEF-006 and fix it before the tag (read the step's cost from its reservation or plan; a golden case by the test-author); (b) record DEF-006 `wontfix` this phase, citing the M9 reservation as the control |
-| P4 | DEF-002 and DEF-004 | close as fixed (section 3 text) |
+| # | Item | Decision | Done |
+|---|---|---|---|
+| P1 | DR-58: CONF-035 port | (a) port to the certified loop with the same scenarios | `48fa283`: `test_step_loop.py` 26 passed, `test_chain_full_stack.py` 6 passed. The certified loop differs from the prototype in six places (P1-F1–F6): four are columns it never writes (register DR-61–DR-64; those assertions were removed, not changed to the gap), two are by design and pinned with a comment (F5: a revocation found at the pre-call check settles the attempt through the dispatch marker; F6: every step is offered to the verifier). Two prototype verifier cases were dropped (DR-63) |
+| P2 | DR-59: schema audit | (a) teach the audit | `009a0e8`: `of` and `s12_recovery_candidates` named as non-tables; 4/4 |
+| P3 | DR-55: admission budget gate | (a) record DEF-006 and fix | `192e993` (section 3); test-author's regression test 7/7; goldens M08/M12/M21 and the scan milestones M02/M04/M13 312 passed |
+| P4 | DEF-002, DEF-004 | close as fixed | row text in section 3; the owner updates `S12_DEFECTS.md` |
 
 ## 6. Issues found and fixed during M15–M21 certification
 
@@ -202,21 +210,36 @@ first option.
 | M20 run 4/5 failed in the owner's M21 verification | A real race, not a flake. A sweeper acting on a stale candidate list took over a live run between two steps; the takeover did not re-apply CONF-046's released-lease grace | `bdbc915` (`leases.acquire` re-checks the grace under the ownership lock) | reproduced under CPU load (3/10 before, 0/10 after); `tests_agent/test_recovery_takeover_conf046.py` fails before, passes after |
 | S0–S11 certifier 18/19 (OWN-11) | the regression test carried a `pytest.skip` guard under `tests/` | `ee9c334` (moved to `tests_agent/`, no skip) | `owner_certify.py` 19/19 |
 | M21 marked `reviewed` without a green checkpoint (`f1e4535`) | made outside `owner_verify_s12.ps1` while a row failed | reverted `df957d0`; M21 then certified properly, `3c2a515` | owner run 34/34 |
+| Admission gate 10 never refused an over-cost step (DEF-006) | M21 read the risk score as the cost | `192e993` | section 3 |
+| Two `tests_postgres` files could not import | CONF-035 port never done; no certifier runs `tests_postgres` | `48fa283` | 32 tests run again |
+| Schema audit failed on a SQL keyword and a SQL function | stale parser heuristic | `009a0e8` | 4/4 |
+| The verifier's tag prompt showed no commit (`Create tag s12-s15-certified on  (y/n)`) | the checkpoint push was rejected (the remote had moved), so the script had no pushed commit to offer | the owner rebased and pushed the checkpoint (`d6b8ad7`) and created the three tags by hand on the exact commits | tags listed at the top |
 
 ## 7. Owner sign-off
 
-The owner, in this order:
+| Step | State |
+|---|---|
+| 1. Review this report, the register and the stage reference | done (this revision) |
+| 2. Decide P1–P4 and record them | decided and done in code (section 5). Record rows: CONF-035 applied; DEF-002, DEF-004 closed; DEF-006 added closed. **On GitHub these rows were not yet updated when this revision was written** |
+| 3. Review M21 (`s12_tracker.py set M21 reviewed`), commit, push | run by the owner. **The tracker commit was not yet on GitHub when this revision was written** (`S12_TRACKER.md` still read `green`) |
+| 4. Owner verification | `owner_verify_s12.ps1 M21` at `c844cdd`: 34/34 PASS |
+| 5. Tags | `s12-s15-certified` → `c844cdd`, `s12-m14-certified` → `181b7f5`, `s12-stage2-pinned` → `dac952e`, pushed |
+| 6. Backups and protection (`BACKUP_AND_RESTORE.md` §9.1); `s12-work` read-only; `adapters-work` | `adapters-work` created at `d6b8ad7` (see section 8). Mirror, bundle and rulesets: not yet reported |
 
-1. Review this report, `S12_DEFERRED_REGISTER.md` and `S0_S15_STAGE_REFERENCE.md`.
-2. Decide P1–P4 (section 5), record the decisions (CONF-035 amendment or port; DEF-002, DEF-004 closed; DEF-006
-   recorded), then commit.
-3. Review M21: `python tools\s12_tracker.py set M21 reviewed`, then commit and push.
-4. Run `python tools\owner_certify_s12.py --milestone M21 --fast`. Every row must PASS.
-5. Tag, then push the tags:
-   - `s12-m14-certified` at `181b7f5`;
-   - `s12-stage2-pinned` at `dac952e`;
-   - **`s12-s15-certified`** at the commit that contains the signed report.
-6. Backups and protection per `BACKUP_AND_RESTORE.md` §9.1: mirror, bundle, rulesets. Then make `s12-work` read-only
-   and create `adapters-work` from the tag.
+Sign-off: `owner ______  date 2026-10-03  decision: CERTIFIED  tag commit c844cdd`
 
-Sign-off: `owner ______  date ______  decision: CERTIFIED / NOT CERTIFIED  tag commit ______`
+## 8. After the tag
+
+Commits pushed to `s12-work` after `c844cdd`. They are **not** covered by this certification; the certified state
+is the tag.
+
+| Commit | What | Effect |
+|---|---|---|
+| `4b3c45c`, `1e53d53`, `ac62822` | adapter proposals rev 11–12; `ADAPTER_IMPLEMENTATION_GUIDE.md` revision 1.1 | documents only |
+| `d6b8ad7` | owner checkpoint "M21 green at c844cdd" | progress file |
+| `e3e9cae` | A1 per-operation start-up check (`startup.py`), A4 `Observation.observed_state` typed `dict \| None`, A5 `CredentialProvider.credential_valid` declared (`adapter_interface.py`); `tests_agent/test_startup_per_operation.py` (9 cases) | **source change** to two non-frozen, non-pinned files. Its commit reports goldens 896 passed and `owner_certify_s12 --milestone M21 --fast` 27/27; not owner-verified |
+| `4132267`, `22b2db6` | records A1, A4, A5 as implemented | documents only |
+
+`adapters-work` was cut at `d6b8ad7`, so it does not contain `e3e9cae`. Decide before adapter work starts: merge
+`s12-work` into `adapters-work` (A1/A4/A5 become the first adapter-phase commits) or revert `e3e9cae` from
+`s12-work` and redo it on `adapters-work`. Either way, nothing further lands on `s12-work`.

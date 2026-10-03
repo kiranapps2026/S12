@@ -4,11 +4,15 @@ Required by gate §21 ("Before certification, write every deferred item from Sec
 this gate into the blocker register with a target phase"). It also holds every item the S12 records ruled into the
 register, and the items found while certifying M21 and cross-checking the first real adapters.
 
-- **Status:** draft for the owner, written at `3c2a515` (M21 green at `ee9c334`), 2026-10-03.
+- **Status:** final at certification, 2026-10-03. S12–S15 certified at `c844cdd` (tag `s12-s15-certified`; owner
+  verification 34/34 PASS).
 - **Companions:** `docs/gates/S12_CERTIFICATION_REPORT.md` and `docs/gates/S0_S15_STAGE_REFERENCE.md` (per-stage
   logic, what works, limits, inconsistencies).
 - **Revision 2 (2026-10-03):** DR-48–DR-60 added after a stage-by-stage re-check; DR-06, DR-26, DR-R3 and DR-R4
   corrected.
+- **Revision 3 (2026-10-03, at the tag):** the four pre-tag decisions were taken as option (a): DR-55, DR-58 and
+  DR-59 closed by code (`192e993`, `48fa283`, `009a0e8`; listed under "Resolved"); DR-61–DR-65 added from the
+  CONF-035 port (findings P1-F1–F4) and the DEF-006 fix.
 - **Format.** `DR-nn` ids are stable and never renumbered. A line leaves this register only by a later phase's commit
   that closes it (cite the commit), never by deletion.
 - **Target phase**, in the order gate §21 fixes:
@@ -28,8 +32,9 @@ register, and the items found while certifying M21 and cross-checking the first 
 
 ## At a glance
 
-- **Pre-tag decisions (report §5):** DR-58 (CONF-035 port), DR-59 (schema-audit heuristic), DR-55 (proposed
-  DEF-006), plus closing DEF-002 and DEF-004 (DR-R5).
+- **Pre-tag decisions (report §5):** all taken and closed before the tag: DR-55 (DEF-006, `192e993`), DR-58
+  (CONF-035 port, `48fa283`), DR-59 (schema audit, `009a0e8`), DEF-002 and DEF-004 (DR-R5). The owner's record rows
+  for these are listed in the report, section 3.
 - **GO-LIVE (must close before production):**
   - reachability: DR-14, DR-48, DR-49, DR-57;
   - security: DR-09, DR-11, DR-12;
@@ -48,10 +53,11 @@ register, and the items found while certifying M21 and cross-checking the first 
 | DR-05 | Deterministic golden case for the recovery-takeover race (a sweeper's stale candidate must not steal a live run between two steps, CONF-046 at the takeover). Today it is pinned by `tests_agent/test_recovery_takeover_conf046.py` and, only under load, by M20 `test_two_sweeping_processes_claim_every_orphaned_run_exactly_once` | fix `bdbc915`, test `ee9c334` | product fix in `leases.acquire`; agent regression test | |
 | DR-06 | Prototype modules superseded by S12–S15: `engine/stages/s12_execute/guard.py` (old `ReliabilityGuard` on `StepAdapter`), `engine/stages/s12_worker_execution/handler.py`, `engine/stages/s13_reconciliation/handler.py`, `engine/stages/s14_verification/handler.py`, `engine/stages/s15_final_state/handler.py` (each marked "Pre-existing. Not certified. Superseded"), `engine/providers/base.py` (`BaseProviderAdapter`). Remove under change control | cross-check 2026-10-03 | not on the S12 execution path | |
 | DR-07 | Truth-model maintenance runbook: how `docs/truth_model/` is kept current when a later phase changes a state machine, contract or ruling | owner list | the truth model matches the code at this certification | |
-| DR-58 | CONF-035 is `ruled` ("port `tests_postgres/**` prototype S12 tests to the M12 interface with the same scenarios and assertions; never delete or weaken one") but the port was never done: `tests_postgres/test_step_loop.py` and `tests_postgres/test_chain_full_stack.py` fail to import (`StepLoopDeps` no longer exists). No certifier runs `tests_postgres`, so it went unnoticed | stage re-check 2026-10-03 | the M12 goldens cover the loop; the two files' scenarios are not executed | **pre-tag decision** |
-| DR-59 | `tests_postgres/test_schema_audit.py::test_every_table_the_sql_in_src_names_exists` fails: its SQL parser reads the S12 function `s12_recovery_candidates(...)` (`recovery.py`) and `FOR UPDATE OF` (`dead_letters.py`) as table names. A stale heuristic, not a missing table | stage re-check 2026-10-03 | M1 and M2 goldens check the S12 schema and every S12 query | pre-tag decision |
+| DR-65 | Pinned golden case for admission gate 10 (DEF-006): today the reserve arithmetic of the gate is pinned only by `tests_agent/test_admission_snapshot_budget_def006.py`; golden M21 `GATE_CASES` covers only pool = 0. The test-author adds a golden case at the next pin | fix `192e993` | agent regression test, 7 cases | |
+| DR-58 | **Closed `48fa283`.** CONF-035 port of `tests_postgres/test_step_loop.py` and `test_chain_full_stack.py` to the certified loop (see Resolved, and DR-61–DR-64 for what the port found) | stage re-check 2026-10-03 | 32 tests run again (26 + 6 pass) | closed |
+| DR-59 | **Closed `009a0e8`.** The schema audit names `of` (`FOR UPDATE OF`) and `s12_recovery_candidates` (a SQL function) as non-tables, each with its reason | stage re-check 2026-10-03 | `test_schema_audit.py` 4/4 | closed |
 | DR-60 | `verification.py` docstring says provider text "can never reach the language model", but the semantic layer receives `observed_state`, which an adapter builds from provider data. Correct the docstring; adapter rule: `observed_state` holds only the plan's own fields (adapter package v2 does) | stage re-check 2026-10-03 | no semantic assessor exists, so nothing reaches an LLM today (DR-21) | ADAPTERS |
-| DR-08 | `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (commit `4181585`) is not usable as written: about 15 factual errors against the code and missing worker-runtime, routing, rate-limit, timeout, golden-scan and credential-store sections (review of 2026-10-03). Rewrite (v2) before agents use it | review 2026-10-03 | agents told to use `batch_bundles/LAYER_A/ADAPTER_SPECS/README.md` and `TEMPLATE.md` | ADAPTERS |
+| DR-08 | `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (commit `4181585`) is not usable as written: about 15 factual errors against the code and missing worker-runtime, routing, rate-limit, timeout, golden-scan and credential-store sections (review of 2026-10-03). Rewrite (v2) before agents use it | review 2026-10-03 | agents told to use `batch_bundles/LAYER_A/ADAPTER_SPECS/README.md` and `TEMPLATE.md`. Revision 1.1 of the guide (`ac62822`, another session, "corrected against the code") is not yet reviewed against this register | ADAPTERS |
 
 ## 2. Secrets and data governance
 
@@ -98,7 +104,7 @@ register, and the items found while certifying M21 and cross-checking the first 
 | DR-24 | Multi-node fleet | gate §14 | single node; several Worker Runtimes on one database are certified (M20: fencing, SKIP LOCKED sweeps, takeover) | |
 | DR-25 | Distributed circuit breakers; per-(provider, operation) keying | gate §14, CONF-022 | `InProcessCircuitBreaker` keyed per provider, behind an injected interface (S3) | |
 | DR-26 | Seven of the eleven admission gates have no database source and are hard-coded to pass in `PostgresAdmissionSnapshot`: 2 tenant quota, 4 workspace active, 5 mode allowed, 6 provider allowed, 8 circuit open, 9 DB pool pressure, 11 system overloaded. Sourced: 1 kill switch, 3 tenant active, 7 worker capacity, 10 budget (see DR-55) | cross-check and re-check 2026-10-03, CONF-027 | C39 quota at S12 entry; the guard's breaker refuses calls at call time; the S0.1 pause check covers workspace pause | |
-| DR-55 | **Defect (proposed DEF-006, caused by M21):** admission gate 10 reads `execution_steps.effective_risk` (a 0–1 risk score) as `step_cost` and compares it to `tenants.budget_pool`, so for any pool ≥ 1 the gate reduces to "pool > 0" and never refuses an over-cost step early | stage re-check 2026-10-03, `admission_snapshot.py:36-42` | money is safe: step 5's reservation enforces the real cost (I1; zero over-reservations, M9) | **pre-tag decision** |
+| DR-55 | **Closed `192e993` (DEF-006).** Admission gate 10 now asks whether the reserve step would succeed: the plan step's cost from `execution_plans.canonical_plan`, availability from `budget.AVAILABLE_SQL`, a step already holding a live reservation passes, an unknown execution or step fails closed | stage re-check 2026-10-03 | `tests_agent/test_admission_snapshot_budget_def006.py` (7 cases, 3 red before the fix); goldens M08/M12/M21 unchanged and green | closed |
 | DR-56 | Worker selection scores locality and free capacity only: health, queue, fairness and cost have no inputs, and the 0.7/0.5 locality tiers never apply (no worker versions or hosts recorded) | `selection.py` | capacity rule never broken (C5, I8) | |
 | DR-27 | Parallel step execution | gate §14 | sequential topological order | |
 | DR-28 | Worker version and deployment lifecycle | gate §14 | `workers` rows managed by the admin API (M8a) | |
@@ -111,6 +117,10 @@ register, and the items found while certifying M21 and cross-checking the first 
 | DR-30 | Health and billing records are in-memory lists (`InProcessHealthMonitor`, `InProcessBilling`); the metrics hook is a no-op by default (S5) | gate §21 S5 | structured, correlated logs; no exporter | |
 | DR-31 | Timing sensitivity on a loaded Windows host: event-loop stalls of about 250 ms were measured, and M20's multi-process cases need a quiet machine. Run the certification suites in Linux CI (gate §21 S9: "Linux CI is a later phase") | certification runs 2026-10-02/03 | owner verification on a quiet Windows machine; independent Linux runs | |
 | DR-32 | Performance baseline recorded on Linux only (report §1, p50/p95 42/55 ms); record the Windows figure on the certification host | gate §21 | record only, no threshold | |
+| DR-61 | The run row's `budget_spent` and `duration_ms` are never written by the certified loop or consolidator (always 0 / NULL); only the prototype repository wrote them | CONF-035 port finding P1-F1 (`48fa283`) | budget truth is in `budget_reservations` (committed sum per run); no certified S12–S15 code reads the two columns (only the superseded prototype modules of DR-06) | |
+| DR-62 | `execution_steps.error` is never written; a failed step's error class is in its dead-letter record (`dead_letters.error_type`) and its attempt events | P1-F2 | dead-letter record and execution events carry the class; S15 builds its error from the run summary | |
+| DR-63 | The loop does not contain an exception from the injected `verify` hook: the run is left `running` with the step `running` and the budget LOCKED, and no record is written; recovery (M19) takes it over after the lease expires. An unrecognised verdict string counts as FAIL | P1-F3 | production composes the M15 `StepVerifier` (`LoopDeps.verification`), which returns verdicts only; the hook is a test seam | |
+| DR-64 | A dead-lettered run keeps no `terminal_reason` on its run row; the reason is only in the dead-letter record | P1-F4 | operators read `dead_letters` (`DeadLetterOperator.list`) | |
 
 ## 8. AI Worker product layer
 
@@ -159,5 +169,8 @@ register, and the items found while certifying M21 and cross-checking the first 
 | DR-R1 | Tenant scoping of `idempotency_ledger` | gate §14 / §21 S7: resolved. C34 puts `tenant_id` and forced RLS on every S12–S15 table (I15, M20 `test_every_s12_table_forces_row_level_security_on_its_tenant`) |
 | DR-R2 | "Record gap" tables of gate §21 S7 (`execution_ownership`, `worker_leases`, `execution_steps`, `checkpoints`, `dead_letters`) | superseded by C34: every one carries `tenant_id` with forced RLS |
 | DR-R3 | LOCKED money had no release path | CONF-049: `DeadLetterOperator`, tenant-scoped and audited, lists, resolves and retries (PROBE/VERIFY only) dead letters (M21). Resolved as a service; the HTTP route is DR-57 |
-| DR-R4 | Real admission snapshot and pre-flight sources | CONF-027: `PostgresAdmissionSnapshot` and `PostgresPreflight` assigned to M21 and pinned (journey on real sources). Partly: four gates are sourced (DR-26), gate 10 has a defect (DR-55), and the pre-flight validates no input schema (DR-04) |
+| DR-R4 | Real admission snapshot and pre-flight sources | CONF-027: `PostgresAdmissionSnapshot` and `PostgresPreflight` assigned to M21 and pinned (journey on real sources). Partly: four gates are sourced (DR-26; gate 10 fixed before the tag, DR-55), and the pre-flight validates no input schema (DR-04) |
 | DR-R5 | DEF-002 (non-Appendix-A reasons in the loop) and DEF-004 (step start and budget lock in two transactions) | fixed by the M12 rework (checkpoint `591fc73`): step reason `started`; `step_started` / `step_completed` are reservation reasons allowed by A.3 (`transitions.py:80,83`); the start and the lock are one `set_step(..., budget_move="lock")` (I-3, M09 `test_lock_joins_the_callers_transaction`, M12). **Owner closes both rows in `S12_DEFECTS.md`** |
+| DR-55 | Admission gate 10 used the risk score as cost (DEF-006) | fixed `192e993` before the tag (decision P3 a); details in its row |
+| DR-58 | CONF-035 port never done | done `48fa283` before the tag (decision P1 a): 26 + 6 tests on `LoopDeps`; expected values kept except where the certified loop differs by design (P1-F5 dispatch-marker path, P1-F6 every step offered to the verifier, both pinned with a comment) or writes nothing (DR-61–DR-64, assertions removed, not weakened to the gap) |
+| DR-59 | Stale schema-audit heuristic | fixed `009a0e8` before the tag (decision P2 a) |

@@ -46,7 +46,7 @@ DR-48, DR-49).
 | API → S12 handoff | **missing** | — | DR-48 |
 | S12 entry | works | M6 23 | not called by the application (DR-48) |
 | S12 loop | works | M12 33, M7–M11, M13–M14 | sequential; event-driven flag hard-coded (DR-54) |
-| Admission control | works with a defect | M8 40, M21 | 7 of 11 gates have no source (DR-26); budget gate defect (DR-55) |
+| Admission control | works | M8 40, M21 | 7 of 11 gates have no source (DR-26); budget gate defect fixed before the tag (DEF-006, `192e993`) |
 | Eligibility / selection / leases | works | M8a 49, M7 15 | locality + free capacity only (DR-56) |
 | Budget | works | M9 17 | — |
 | Guard / adapters | works (mock) | M10 64 | one adapter per guard (DR-42); mock only (DR-38) |
@@ -57,7 +57,7 @@ DR-48, DR-49).
 | Dead letter / operator / rollback (S14) | works | M17 37, M21 | operator has no HTTP route (DR-57) |
 | S15 response | works | M18 19 | no step data (DR-40); not served (DR-49) |
 | Recovery / renewal / multi-runtime | works | M19 44, M20 12 | no runtime runs the sweeper (DR-14) |
-| `tests_postgres` (S0–S11 integration) | **partly broken** | 294 pass | 2 files cannot import (CONF-035 not applied, DR-58); 1 stale audit (DR-59) |
+| `tests_postgres` (S0–S11 integration) | works | see report §1 | CONF-035 port done (`48fa283`, findings DR-61–DR-64); schema audit fixed (`009a0e8`); 12 live-model tests need a key |
 
 ## 2. Pre-execution pipeline (S0–S11, certified at `s0-s11-certified`, frozen in this phase)
 
@@ -257,13 +257,15 @@ recovery takeover (`loop.py:713`), and `execution_runs` stores no event-driven f
 | 7 worker capacity | QUEUE | `workers` (ACTIVE, `current_load < capacity`) |
 | 8 circuit open | DELAY (C35) | hard-coded pass (the guard's breaker refuses at call time) |
 | 9 DB pool pressure | DELAY | hard-coded pass |
-| 10 budget available | REJECT `budget_exhausted` | **defect**: see below |
+| 10 budget available | REJECT `budget_exhausted` | sourced: would the reserve step succeed (fixed, see below) |
 | 11 system overloaded | DELAY | hard-coded pass |
 
-**Defect (DR-55, proposed DEF-006).** Gate 10 reads `execution_steps.effective_risk`, a 0–1 risk score, as
-`step_cost` and compares it to `tenants.budget_pool`. For any pool ≥ 1 it is the same as "pool > 0", so the gate
-cannot refuse a step that is too expensive. Money stays safe, because step 5's reservation enforces the real cost
-(I1; zero over-reservations, M9), but the early REJECT the gate was written for never happens.
+**Gate 10 (DEF-006, fixed in `192e993` before the tag).** At M21 the gate read `execution_steps.effective_risk`, a
+0–1 risk score, as the step cost, so for any pool ≥ 1 it was "pool > 0". It now mirrors the reserve step: the plan
+step's `cost` from `execution_plans.canonical_plan`; availability from `budget.AVAILABLE_SQL` (pool minus the
+period's reserved, locked and committed reservations); a step that already holds a live reservation passes (reserve
+would return it); an unknown execution or step fails closed. Step 5's reservation remains the binding control (I1).
+Pinned by `tests_agent/test_admission_snapshot_budget_def006.py`; a golden case is DR-65.
 
 ## 6. Workers, leases, fencing (`eligibility.py`, `selection.py`, `adapters/postgres/leases.py`, `renewal.py`)
 - **Works.**
@@ -383,9 +385,11 @@ cannot refuse a step that is too expensive. Money stays safe, because step 5's r
 - **Settings (S1).** `ExecutionSettings.from_env`, validated (C37 timeout ordering, TTL ≥ 3 × renewal).
 - **Portability (S9).** No POSIX-only APIs or fixed paths (M20 scan).
 - **Records.**
-  - CONF-035 is `ruled` ("port the `tests_postgres` prototype S12 tests to the M12 interface; never delete or
-    weaken one"), but the port was never done. `tests_postgres/test_step_loop.py` and `test_chain_full_stack.py`
-    fail to import (`StepLoopDeps` no longer exists) (DR-58).
-  - `tests_postgres/test_schema_audit.py::test_every_table_the_sql_in_src_names_exists` fails: its SQL parser reads
-    the S12 function `s12_recovery_candidates(...)` and `FOR UPDATE OF` as table names (DR-59).
-  - No certifier runs `tests_postgres`, so neither was caught.
+  - CONF-035 (port the `tests_postgres` prototype S12 tests) was found not done at the stage re-check (DR-58) and
+    done before the tag (`48fa283`, 26 + 6 tests). The port found four places where the certified loop writes
+    nothing the prototype wrote: the run's `budget_spent` / `duration_ms`, the step's `error`, a dead-lettered
+    run's `terminal_reason`, and no containment of an exception from the injected `verify` test seam
+    (DR-61–DR-64).
+  - The schema audit misread `FOR UPDATE OF` and the `s12_recovery_candidates` function as tables (DR-59); fixed
+    `009a0e8`.
+  - No certifier runs `tests_postgres`; it was run by hand for this certification (report §1).
