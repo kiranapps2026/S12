@@ -226,7 +226,7 @@
       "batch": "B4",
       "prototype_state": "not done",
       "scope": "rollback_execution(), failed inverse dead letter",
-      "status": "in_progress",
+      "status": "green",
       "notes": ""
     },
     {
