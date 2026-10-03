@@ -20,7 +20,7 @@ import json
 import logging
 
 from adapters.postgres.database import Database
-from engine.stages.s12_execute.loop import LoopDeps, LoopResult, recover_execution
+from engine.stages.s12_execute.loop import LoopDeps, LoopResult, recover_execution, LEASE_LOST
 from engine.stages.s12_execute.settings import RECOVERY_SWEEP_INTERVAL_MAX_S
 
 logger = logging.getLogger(__name__)
