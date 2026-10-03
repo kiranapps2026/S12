@@ -623,7 +623,7 @@ def test_a_recorded_fail_is_never_overturned_by_recovery(db_schema, run, case, a
     assert [layers for sid, layers in script.layers if sid == first] == []     # no layer re-run for the FAIL
     assert len(mock.probes) == probes and len(mock.calls) == calls             # nothing probed, nothing called
     step = _steps(db_schema, run, execution)[first]
-    assert (step["status"], step["terminal_reason"]) == ("failed", "verification_failed")
+    assert (step["status"], step["terminal_reason"]) == ("failed", None)   # as M15: a FAILED step has no terminal reason
     assert _reservations(db_schema, run, step_id)[-1] == "released"
     assert _moves(db_schema, run, "step", step_id)[-1][1:] == ("failed", "verification_failed")
     (letter,) = run(db_schema.fetch("SELECT error_type, retry_mode, error, episode_id FROM dead_letters"
