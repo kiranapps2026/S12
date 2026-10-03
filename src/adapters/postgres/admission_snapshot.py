@@ -21,7 +21,7 @@ class PostgresAdmissionSnapshot:
     async def __call__(self, tenant_id: str, execution_id: str, plan_step_id: str) -> AdmissionSnapshot:
         async with self._db.tenant_transaction(tenant_id) as c:
             tenant = await c.fetchrow(
-                "SELECT kill_switch_engaged, status, budget_pool"
+                "SELECT kill_switch_engaged, (status = 'active') AS is_active, budget_pool"
                 " FROM tenants WHERE tenant_id = $1", tenant_id)
             if tenant is None:
                 return AdmissionSnapshot(
@@ -31,7 +31,7 @@ class PostgresAdmissionSnapshot:
                     budget_available=False, system_overloaded=False)
 
             kill_switch = tenant["kill_switch_engaged"]
-            tenant_active = tenant["status"] == "active"
+            tenant_active = tenant["is_active"]
 
             budget_available = tenant["budget_pool"] > 0
 
