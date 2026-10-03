@@ -88,12 +88,14 @@ Performance baseline:      p50/p95 S12 overhead per step = 42/55 ms (Linux, 210 
 S0–S11 regression:         19/19 PASS (S12-S011 row of the owner run at c844cdd)
 Full regression:           goldens M1–M21 clean in the owner run at c844cdd (G-M1..G-M21, C rows, X-M21);
                            at ee9c334: 1826/1826 (tests 836, tests_golden 896, tests_agent 94);
-                           independent re-run at c844cdd: PENDING (filled in the next revision)
+                           independent re-run at c844cdd (Linux): 1833/1833 PASS
+                           (tests 836, tests_golden 896, tests_agent 101)
 tests_postgres (S0–S11 integration, not run by any certifier):
                            before the pre-tag fixes: 294 passed, 1 FAIL (DR-59), 2 files not importable (DR-58);
                            with P1 and before P2: 326 passed, 1 FAIL (test_schema_audit, fixed by P2);
                            the four changed files at the merged head: 43/43 on the owner host;
-                           12 live-model tests need DEEPSEEK_API_KEY (not run)
+                           at c844cdd (Linux): 327 passed, 0 failed;
+                           12 live-model tests need DEEPSEEK_API_KEY (not collected without it)
 Skipped: 0   XFail: 0
 
 Recorded blockers:         CONF-001..052: 2 fixed, 50 ruled, 0 open; CONF-035's port applied (48fa283);
