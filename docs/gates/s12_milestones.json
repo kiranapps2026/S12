@@ -238,7 +238,7 @@
       "batch": "B4",
       "prototype_state": "not done",
       "scope": "Envelope mapping, no secrets leaked",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
