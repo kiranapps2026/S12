@@ -3,27 +3,21 @@
 A sweeper may act on a candidate list fetched earlier. Its takeover (``PostgresLeaseManager.acquire(...,
 skip_locked=True)``) must therefore re-apply CONF-046 under the ownership lock: a run whose latest lease was released
 less than one lease TTL ago belongs to a live owner between two steps, so it is not orphaned and nothing is written.
-Needs real PostgreSQL (TEST_DATABASE_URL); reuses the golden M19 helpers and fixtures read-only.
+Needs real PostgreSQL (TEST_DATABASE_URL), like every tests_agent/ file; reuses the golden M19 helpers and
+fixtures read-only. It lives here, not under tests/: the S0-S11 certifier (OWN-11) forbids any skip under tests/.
 """
 from __future__ import annotations
 
-import os
-
-import pytest
-
-if not os.environ.get("TEST_DATABASE_URL"):
-    pytest.skip("needs TEST_DATABASE_URL (real PostgreSQL)", allow_module_level=True)
-
-from tests_golden.conftest import db_schema, run  # noqa: E402,F401 - fixtures
-from tests_golden.s12.M19_recovery import (  # noqa: E402
+from tests_golden.conftest import db_schema, run  # noqa: F401 - fixtures
+from tests_golden.s12.M19_recovery import (
     RECOVERING, CrashAt, _admit, _crash, _full, _mocked, _run_status, _state)
 
 
-def _count(schema, run, table, execution):
+def _count(schema, run, table, execution):  # noqa: F811
     return run(schema.fetchval(f"SELECT count(*) FROM {table} WHERE execution_id = $1", execution))
 
 
-def test_a_takeover_between_two_steps_of_a_live_owner_is_refused_until_a_ttl_has_passed(db_schema, run):
+def test_a_takeover_between_two_steps_of_a_live_owner_is_refused_until_a_ttl_has_passed(db_schema, run):  # noqa: F811
     from adapters.postgres.leases import Lease, PostgresLeaseManager
     from engine.stages.s12_execute.loop import recover_execution
     state = _state("unit-conf046-takeover", "conf046takeover")
