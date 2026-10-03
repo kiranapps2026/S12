@@ -379,8 +379,10 @@ def test_a_worker_runtime_refuses_a_privileged_database_role(db_schema, run):
     from engine.stages.s12_execute.startup import StartupRefused, check_worker_runtime
     from tests_golden.fixtures.db import golden_database_url
     run(check_worker_runtime(db_schema.database(), {"MockAdapter": MockAdapter}))      # golden_app: allowed
-    pool = run(asyncpg.create_pool(golden_database_url(), min_size=1, max_size=1,
-                                   server_settings={"search_path": db_schema.name}))
+    async def superuser_pool():                      # created on the schema loop: asyncpg binds a pool
+        return await asyncpg.create_pool(golden_database_url(), min_size=1, max_size=1,
+                                         server_settings={"search_path": db_schema.name})
+    pool = run(superuser_pool())
     try:
         with pytest.raises(StartupRefused) as refused:
             run(check_worker_runtime(Database(pool), {"MockAdapter": MockAdapter}))  # the test's superuser
