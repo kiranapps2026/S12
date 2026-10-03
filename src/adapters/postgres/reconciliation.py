@@ -83,9 +83,12 @@ class PostgresEpisodes:
             return episode_id
         return await fenced_write(self._db, holder, write)
 
-    async def exhaust(self, holder: FenceHolder, episode_id: str) -> None:
+    async def exhaust(self, holder: FenceHolder, episode_id: str, *, evidence: dict | None = None) -> None:
+        """Set an open episode's outcome to EXHAUSTED and close it, without a state-machine transition."""
         async def write(c):
-            await c.execute("UPDATE step_reconciliations SET outcome = 'EXHAUSTED', closed_at = now()"
+            await c.execute("UPDATE step_reconciliations SET outcome = 'EXHAUSTED', closed_at = now(),"
+                            " evidence = COALESCE($3::jsonb, evidence)"
                             " WHERE tenant_id = $1 AND episode_id = $2 AND closed_at IS NULL",
-                            holder.tenant_id, episode_id)
+                            holder.tenant_id, episode_id,
+                            None if evidence is None else json.dumps(evidence, sort_keys=True))
         await fenced_write(self._db, holder, write)

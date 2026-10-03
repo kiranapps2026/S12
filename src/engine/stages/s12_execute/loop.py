@@ -23,7 +23,7 @@ from contracts.idempotency import IdempotencyConflict, attempt_id, step_idempote
 from contracts.metrics import NoMetrics
 from contracts.step_admission import AdmissionStatus
 from contracts.step_execution import FencedOut
-from contracts.verification import Verdict, VerificationLayer, VerificationOutcome
+from contracts.verification import LayerResult, Verdict, VerificationLayer, VerificationOutcome
 from engine.stages.s12_execute.admission_control import admit_step, reject_outcome
 from engine.stages.s12_execute.attempts import AttemptDeps, StepAttempt, run_attempts
 from engine.stages.s12_execute.eligibility import (
@@ -703,17 +703,22 @@ async def _recover_owned(state: _Run, flying, target):
 
 
 async def _dead_letter_untrusted(state: _Run, step_id: str) -> None:
-    """CONF-043: an in-flight step of a plan that failed its integrity check is never probed or re-run (its call cannot
-    be rebuilt from an untrusted plan): DEAD_LETTER with its budget LOCKED, for an operator to resolve (D4)."""
-    row = state.loaded.steps[step_id]
+    """CONF-043 (D-3): an in-flight step of a plan that failed its integrity check is never probed or re-run (its call
+    cannot be rebuilt from an untrusted plan): DEAD_LETTER with its budget LOCKED, for an operator to resolve (D4);
+    an EXECUTION episode is opened and closed (outcome EXHAUSTED, evidence plan_integrity)."""
+    deps, row = state.deps, state.loaded.steps[step_id]
+    episode_id = await deps.episodes.open(state.holder, step_id=row.step_id, kind=K.EXECUTION)
+    await deps.episodes.exhaust(state.holder, episode_id, evidence={"reason": PLAN_INTEGRITY})
+    await state.recorder(row.step_id).record(probe.CLOSED_EVENT,
+        {"step_id": row.step_id, "episode_id": episode_id, "outcome": str(O.EXHAUSTED)})
     await _to_pending_probe(state, step_id)
     await state.set_step(step_id, S.DEAD_LETTER, reason="probe_exhausted")
     if state.deps.dead_letters is not None:
         state.deps.metrics.increment(m.DEAD_LETTER, error_type=str(ErrorType.UNKNOWN_UNRESOLVED))
         await state.deps.dead_letters.create(
             state.holder, step_id=row.step_id, kernel_op_id=row.kernel_op_id,        # the admitted row, not the plan
-            error_type=ErrorType.UNKNOWN_UNRESOLVED, retry_mode=RetryMode.PROBE, error=PLAN_INTEGRITY,
-            evidence={"reason": PLAN_INTEGRITY}, reservation_id=row.reservation_id)
+            error_type=ErrorType.UNKNOWN_UNRESOLVED, retry_mode=RetryMode.NONE, error=PLAN_INTEGRITY,
+            evidence={"reason": PLAN_INTEGRITY}, reservation_id=row.reservation_id, episode_id=episode_id)
 
 
 async def _to_pending_probe(state: _Run, step_id: str) -> None:
@@ -747,7 +752,8 @@ async def _layers_passed(state: _Run, step, row, binding) -> bool:
 
 async def _resolve_in_flight(state: _Run, step):
     """§13 step 3, the single recovery decision rule. The existing reservation is reused (C35); a new one is created
-    only for a retry after NOT_EXECUTED."""
+    only for a retry after NOT_EXECUTED. CONF-050 (D-10): recorded layer verdicts are checked before re-running a
+    VERIFICATION episode, so a FAIL is never overturned by re-verification."""
     deps, loaded = state.deps, state.loaded
     row, binding = loaded.steps[step.id], loaded.bindings[step.id]
     rid = row.reservation_id
@@ -755,6 +761,22 @@ async def _resolve_in_flight(state: _Run, step):
     attempt = dataclasses.replace(_attempt_for(state, step, row), retry_safety=retry_safety)
     await _to_pending_probe(state, step.id)
     used = row.dispatched_attempt or 0
+    # CONF-050 (D-10): before any re-run, check recorded layer verdicts — a FAIL is never overturned
+    verdicts = await deps.events.layer_verdicts(loaded.tenant_id, row.step_id)
+    if verdicts and any(v == Verdict.FAIL for v in verdicts.values()):
+        episode_id = None
+        open_episode = await deps.episodes.find_open(loaded.tenant_id, row.step_id)
+        if open_episode is not None and open_episode["kind"] == K.VERIFICATION:
+            episode_id = open_episode["episode_id"]
+            if open_episode["status"] == E.RECONCILING:
+                await deps.episodes.inconclusive(state.holder, episode_id)
+            await deps.episodes.start_attempt(state.holder, episode_id)
+            await deps.episodes.close(state.holder, episode_id, status=E.CONFIRMED_FAILURE,
+                                       outcome=O.VERIFIED_FAIL, reason="verified_fail",
+                                       evidence={"recovered": True, "layers": dict(verdicts)})
+        checked = VerificationOutcome(Verdict.FAIL,
+            tuple(LayerResult(k, v, {}) for k, v in verdicts.items()))
+        return await _verification_failed(state, step, row, rid, checked, episode_id)
     episodes = deps.episodes
     open_episode = await episodes.find_open(loaded.tenant_id, row.step_id)
     if open_episode is not None:                                   # continue that episode (same kind)
@@ -762,9 +784,18 @@ async def _resolve_in_flight(state: _Run, step):
             await episodes.inconclusive(state.holder, open_episode["episode_id"])
         spent = int(open_episode["attempts"])
         if open_episode["kind"] == K.VERIFICATION:
-            record = await deps.idempotency.lookup(loaded.tenant_id, step_idempotency_key(loaded.request_id, step.id))
+            # CONF-050 (D-10): check persisted layer verdicts before re-running
+            verdicts = await deps.events.layer_verdicts(loaded.tenant_id, row.step_id)
+            if verdicts and any(v == Verdict.FAIL for v in verdicts.values()):
+                await episodes.start_attempt(state.holder, open_episode["episode_id"])
+                await episodes.close(state.holder, open_episode["episode_id"], status=E.CONFIRMED_FAILURE,
+                                     outcome=O.VERIFIED_FAIL, reason="verified_fail",
+                                     evidence={"recovered": True, "layers": dict(verdicts)})
+                checked = VerificationOutcome(Verdict.FAIL,
+                    tuple(LayerResult(k, v, {}) for k, v in verdicts.items()))
+                return await _verification_failed(state, step, row, rid, checked, open_episode["episode_id"])
             return await _verification_episode(
-                state, step, row, binding, rid, record.result if record is not None else None,
+                state, step, row, binding, rid, None,
                 VerificationOutcome(Verdict.UNKNOWN, ()), "verification_passed",
                 episode_id=open_episode["episode_id"], tries=spent)
         return await _probe_and_settle(state, step, row, binding, rid, attempt, used, open_episode["episode_id"],
