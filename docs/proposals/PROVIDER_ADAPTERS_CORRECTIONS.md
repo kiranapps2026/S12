@@ -28,7 +28,7 @@ made it fail.
 |---|---|---|
 | `call()` returns `KernelResult` | returns `AdapterResult(status, retryable, error_class, data)`; `status` is `ok` / `error` / `timeout` | CONF-021, README §1 |
 | `SafeAdapterWrapper` | removed: the guard (`reliability._normalise`) turns an escaped exception or an unknown `error_class` into `adapter_defect` | README §1 |
-| Example: `httpx.TimeoutException` and `httpx.NetworkError` → `status="UNKNOWN"` | before send (`ConnectError`, `ConnectTimeout`, `PoolTimeout`) → `error`, `not_dispatched`; after send (read/write timeouts and errors) → `status="timeout"`, which leads to the probe | README §2.1 |
+| Example: `httpx.TimeoutException` and `httpx.NetworkError` → `status="UNKNOWN"` | before send (`ConnectError`, `ConnectTimeout`, `PoolTimeout`) → `error`, `not_dispatched`; after send (read/write timeouts and errors) → `status="timeout"`, which leads to the probe for W, D and IRREVERSIBLE; a read that times out is re-executed (`loop.py` `read_reexecution_safe`) | README §2.1 |
 | Example: `httpx.Timeout(35.0)` "> default 30 s step timeout" | the client timeout is `ExecutionSettings.adapter_client_timeout_s`, which must be **less than** `step_timeout_s` (C37); transport `retries=0` | README §1, `ghl_crm.md` |
 | `BindingRow` subclasses with provider fields (e.g. `NotionBindingRow.notion_account_id`) | per-connection values travel in the credential document `{"token", "settings"}`, keyed by `connection_id`; bindings carry no provider fields | README §5 |
 
