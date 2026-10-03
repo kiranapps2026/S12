@@ -1,220 +1,256 @@
-# Provider API profiles — one data file for everything that depends on a provider's API
+# Provider API profiles — one data file for the provider-API facts that change
 
-**Status: proposal for the owner. No code, pinned document, catalog or milestone is changed by it.** It applies when
-the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call real providers
-(`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row moves.
+**Status: proposal for the owner (revision 2, 2026-10-03). No code, pinned document, catalog or milestone is changed by
+it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call
+real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row
+moves.
 
-It builds on what already exists and replaces none of it:
+It builds on, and must agree with:
 
-- `docs/ADAPTER_IMPLEMENTATION_GUIDE.md`: the adapter contract, error classification (§4), the Layer A spec standard
-  (§9) and the registry entries a new adapter needs (§12);
-- `batch_bundles/LAYER_A/ADAPTER_SPECS/TEMPLATE.md`: the human-readable provider spec;
-- `docs/catalog/catalog.yaml`: kernel ops, capabilities and bindings, loaded by `tools/load_catalog.py`.
+- `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (the guide): adapter contract, error rules (§4), probe methods (§3.2),
+  credentials (§11), registry entries (§12);
+- `batch_bundles/LAYER_A/ADAPTER_SPECS/` (the Layer A specs): `README.md` (the standard), `TEMPLATE.md`, and the
+  per-provider files `ghl_crm.md` and `gmail_mail.md`;
+- `docs/catalog/catalog.yaml` and its loader `src/adapters/postgres/catalog.py`.
 
 ## Problem
 
-Adapters, kernels, bindings and capabilities all end up depending on how a provider's API works: its version, how it
-pages, whether it accepts an idempotency key, how it rate-limits, where its base URL lives. Today those facts have no
-machine-readable home. The Layer A spec describes them in prose, and the guide's §12 lists a "provider config"
-(bulkhead size, breaker threshold, cooldown) without a format. If each adapter hard-codes them, a provider API change
-means editing adapter code. If they go into the catalog, the loader refuses them: `src/adapters/postgres/catalog.py:17`
-accepts only a fixed set of kernel-op fields and rejects any other.
+Some provider-API facts change over time and today have no machine-readable home: the API version and how it is sent,
+the base URL, page size, whether the provider takes an idempotency key, endpoints, deprecation dates. The Layer A spec
+holds them in prose (its header table), so an API change means editing prose and adapter code by hand, with nothing
+checking that the two agree. They cannot go into the catalog: the loader rejects every kernel-op field outside a fixed
+set (`catalog.py:17`).
 
-## Proposal in one line
+## Proposal
 
-Add **one data file per provider**, the provider profile, next to the catalog. It holds the provider-wide API facts
-and, under `kernels:`, the per-kernel API facts. Only the provider's adapter reads it. Capabilities, bindings,
-`catalog.yaml` and its loader, the planner, S5, the guard and every frozen contract stay as they are.
+One small data file per provider, the **provider profile**, shipped with the adapter. It holds only the facts that
+change with the provider's API and are plain values. Logic stays in code and its rules stay in the Layer A spec.
+Capabilities, bindings, `catalog.yaml`, the planner, S5, the guard and every frozen contract stay as they are.
 
-## What each layer holds
+| Layer | Change |
+|---|---|
+| Capability, binding, `FrozenBindingIdentity` | None |
+| `catalog.yaml` kernel op (mutation, risk, cost, `timeout_seconds`, `retry_safety`, inverse, observation) | None: these stay registry facts (A4) |
+| `AdapterResult`, `CallMeta`, `BaseAdapter`, `CredentialProvider` | None (guide §14) |
+| Guard, breaker, bulkhead, retry policy | None |
+| Layer A spec | Its header values (version, base URL, idempotency, page size) move to the profile; the spec links to it and keeps the prose, the VERIFY marks and the rules |
+| **Provider profile** (new) | `src/engines/<provider>/profile.yaml`, next to the adapter (`ghl_crm.md` puts the `crm` adapter in `src/engines/crm/adapter.py`) |
 
-| Layer | Depends on the provider API? | Change |
+**Why next to the adapter and not under `docs/catalog/`:** the adapter is its only reader, so the file is deployed with
+the code that reads it. The catalog goes to the database through `load_catalog.py`, but the profile does not. `<provider>`
+is the catalog's `provider` id (`crm`, `mail`), the same key the breaker and bulkhead use (CONF-022).
+
+## What stays out of the profile (on purpose)
+
+| Not in the profile | Where it stays | Why |
 |---|---|---|
-| Capability (what the user wants: "create contact") | No | None |
-| Binding / `FrozenBindingIdentity` (which provider and kernel was chosen) | Only the API version | None: the catalog's existing `versions.binding` carries it (see "Version rule") |
-| `catalog.yaml` kernel op (mutation, risk, cost, `timeout_seconds`, `retry_safety`, inverse, observation) | No | None: these stay registry facts (A4) |
-| `AdapterResult`, `CallMeta`, `BaseAdapter` | No | None (guide §14: the protocol is complete) |
-| **Provider profile** (new, one file per provider) | Yes | Provider-wide API facts, plus a `kernels:` block for per-kernel API facts |
-| Connection record (per tenant connection) | Yes, for some providers | Returned by the provider's `CredentialProvider` (guide §11), so no new store |
+| Error mapping | adapter code + Layer A spec §2 | Real mappings match on body text, differ for reads and mutations, set `provider_code`, and sometimes need a lookup (the GHL duplicate-contact rule). A status-to-class table cannot express that, and would be a second source of truth |
+| Probe, observe and inverse logic | adapter code + spec §3, §3.1, §4 | Consistency conditions per operation (search-index lag, read-your-writes) are logic, not values |
+| Timeouts and retries | `ExecutionSettings.adapter_client_timeout_s` (< `step_timeout_s`, C37); `retry_policy` | The adapter never sets its own deadline or retries (README §1) |
+| Mutation, risk, cost, `retry_safety`, inverse, observation | `catalog.yaml` | Registry facts (A4) |
+| Credentials and per-connection settings | the credential document (below) | Secret |
+| Breaker threshold, cooldown, bulkhead size | guard wiring | S12 applies one setting to every provider today (`InProcessCircuitBreaker()` defaults, `bootstrap.py:75`; one `InProcessBulkhead(max_concurrent)`), keyed by `binding.provider`. The profile records the provider's documented limits for sizing (`limits`), but does not configure the guard |
+| Per-key breakers (Airtable per base, GHL per location) | not possible today | The breaker is keyed by provider only (CONF-022; `ghl_crm.md` Q3). A change needs a CONF ruling |
+| Log redaction | not needed | `data` on success carries only identifiers and named fields; on failure only `provider_status` and `provider_code`; bodies are never kept (README §1, M18) |
 
-Rate-limit headers, cursors, provider request ids and `Retry-After` stay inside the adapter. The guard does not learn
-about any of them.
+## Profile fields
 
-## Provider profile
+Defaults are chosen to fail safe where the field affects behaviour: one page, no batching, `sync`, no idempotency
+claim. A field without a default is required.
 
-Location: `docs/catalog/providers/<provider>.yaml`, the `provider` value used in `catalog.yaml` bindings. It is the
-machine-readable form of the Layer A spec's provider-wide sections (error mapping, idempotency, rate limits), and the
-"provider config" of guide §12 item 4. Every field has a fail-closed default, so a profile lists only what it knows.
+### Provider-wide
 
 | Field | Values | Default | Example |
 |---|---|---|---|
-| `api_version` | the provider's own string | required | `"2022-06-28"` (Notion), `"v0"` (Airtable) |
-| `version_scheme` | `header` / `path` / `query` / `none` | `none` | Notion and GHL: `header` |
-| `version_header` | header name | — | `Notion-Version`, `Version` (GHL) |
-| `base_url_source` | `fixed` / `connection` | `fixed` | Salesforce, HubSpot EU, Zendesk, Shopify: `connection` |
-| `base_url` | URL, when `fixed` | — | `https://api.notion.com/v1` |
-| `pagination` | `cursor` / `offset_token` / `page` / `link_header` / `page_token` / `none` | `none` | Notion `cursor`, Airtable `offset_token`, Google `page_token`, GitHub `link_header` |
-| `cursor_param`, `cursor_response_path`, `has_more_path` | names / JSON paths | — | Notion: `start_cursor`, `next_cursor`, `has_more` |
-| `max_page_size`, `max_pages` | ints | `1`, `1` | `100`, `10` |
-| `idempotency` | `native_header` / `body_field` / `none` | `none` | Stripe `native_header`; Airtable and GHL `none` |
-| `idempotency_header`, `idempotency_window_s` | name, seconds | — | `Idempotency-Key`, `86400` |
-| `rate_limit_scopes` | list of `token` / `base` / `location` / `tenant` | `[token]` | Airtable: `[token, base]` (the two-key breaker) |
-| `bulkhead_size`, `breaker_threshold`, `breaker_cooldown_s` | ints | `KernelPolicy` values | guide §12 item 4 |
-| `error_map` | provider status or code → `ErrorClass` | `{}` | Google `403 rateLimitExceeded` → `rate_limited` |
-| `deprecation_headers` | header names | `[Sunset, Deprecation]` | — |
-| `max_url_length` | int | none | Airtable `16000` (switch to POST above it) |
-| `redact_paths` | JSON paths | `[]` | PII fields for logs and dead-letter evidence |
+| `provider` | catalog provider id | required | `crm` |
+| `profile_format` | int, the format of this file | required | `1` |
+| `binding_version` | the catalog `versions.binding` this profile was certified with | required | `bind-1` (see "Version rule") |
+| `api_version` | the provider's own string | required | `"2021-07-28"` (GHL), `"2022-06-28"` (Notion) |
+| `version_scheme` | `header` / `path` / `none` | `none` | GHL, Notion: `header` |
+| `version_header` | header name, for `header` | — | `Version`, `Notion-Version` |
+| `base_url` | URL; for `path`, it contains `{api_version}` | required | `https://services.leadconnectorhq.com`, `https://api.airtable.com/{api_version}` |
+| `pagination` | `cursor` / `offset_token` / `page` / `link_header` / `page_token` / `none` | `none` | GHL search `cursor`, Airtable `offset_token`, Google `page_token` |
+| `max_page_size` | int | `1` | `100` |
+| `idempotency` | `native_header` / `body_field` / `stamp` | `stamp` | Stripe `native_header`; GHL, Airtable `stamp` (README §1: no provider key → stamp the resource) |
+| `idempotency_header` / `idempotency_field` | name, for `native_header` / `body_field` | — | `Idempotency-Key` |
+| `max_url_length` | int | none | Airtable `16000` (switch a read to its POST form above it) |
+| `limits` | free-form documented limits, informational | `{}` | `{burst: "100 per 10 s per location", bulkhead: 8}` |
 
-**Error classification is not redefined here.** Guide §4.1 and §4.2 stay the rule, including "whenever the request
-may have been processed, return `timeout`" and the per-mutation 5xx column. `error_map` lists only a provider's
-exceptions to that table, exactly the rows the Layer A spec's §2 asks for.
+`base_url_source` from revision 1 is gone: when the base URL differs per tenant (Salesforce `instance_url`, HubSpot
+EU, Shopify shop), the profile's `base_url` holds a `{settings.<name>}` placeholder that the adapter fills from the
+credential document, e.g. `https://{settings.shop}.myshopify.com/admin/api/{api_version}`.
 
-### `kernels:` block (per-kernel API facts)
+### `kernels:` block
 
-Keyed by the kernel op id from `catalog.yaml`. An entry inherits the whole profile and states only its own facts; most
-need two or three lines. A key that is not a kernel op in the catalog is an error.
+Keyed by catalog kernel op id. An entry states only what it needs; most need two or three lines.
 
 | Field | Values | Default |
 |---|---|---|
-| `method`, `endpoint` | HTTP method, path template | required |
-| `api_version` | override, only when this kernel is on a different version | profile's |
-| `pagination` | `none` to switch paging off | profile's |
-| `batch_max_items` | int | `1` |
-| `partial_success` | `none` / `records_and_errors` / `flag` | `none` |
-| `update_semantics` | `patch_merge` / `put_replace` | `patch_merge` |
-| `null_means` | `clear` / `ignore` | `ignore` |
-| `concurrency_control` | `etag` / `version_field` / `updated_at` / `none` | `none` |
-| `probe_method` | guide §3.2: `provider_key` / `deterministic_id` / `stamped_marker` / `natural_key` | none (probe stays `INCONCLUSIVE`) |
-| `marker_field`, `natural_key` | field names, for `stamped_marker` / `natural_key` | — |
-| `async_mode` | `sync` / `long_running` / `bulk_job` | `sync` |
-| `field_reference` | `by_id` / `by_name` | `by_id` |
+| `method`, `endpoint` | HTTP method, path template (`{name}` = a step param) | required |
+| `api_version` | override, only when this kernel uses a different version | profile's |
+| `pagination` | `none` to switch paging off | profile's (reads only) |
+| `batch_max_items` | int; **reads only**, writes are always `1` | `1` |
+| `update_semantics` | `patch_merge` / `put_replace`, for update ops (a label: the request code follows the spec) | — |
+| `probe_method` | `provider_key` / `deterministic_id` / `stamp` / `natural_key` (guide §3.2) / `by_id` (deletes and updates) | required for W, D, IRREVERSIBLE |
+| `marker` | where the stamp lives, for `stamp`: e.g. `custom_field:s12_ref`, `body_suffix` | — |
 | `required_scopes` | list | `[]` |
 | `deprecated_at`, `sunset_at`, `replacement_kernel_op_id` | dates, kernel op id | — |
 
-`natural_key` keeps guide §3.2's rule: it is never used alone to return `NOT_EXECUTED`.
+Revision 1 also had `partial_success`, `async_mode`, `concurrency_control`, `null_means`, `field_reference` and
+`redact_paths`. They are dropped, because each one either had no defined S12 behaviour or broke a rule:
 
-Mutation, risk, cost, `timeout_seconds`, `retry_safety`, inverse and observation stay in `catalog.yaml`. The profile
-never repeats them.
+- **Multi-record writes and partial success.** One step has one idempotency key, one stamp, one probe and one inverse,
+  and `AdapterResult.status` is only `ok` / `error` / `timeout`. A 10-record create that half-succeeds has no correct
+  result. Writes stay single-record.
+- **`long_running` / `bulk_job`.** A 202 with an operation id has no path through verification. Only synchronous
+  operations are supported.
+- **ETag / `If-Match`.** It needs the ETag from an earlier read, and a step may not use another step's output (C36).
+  An adapter that needs it reads the ETag inside the same call. That is code, not a profile value.
+- **`field_reference`, `null_means`.** Code-level choices: they belong in the adapter and its spec, not in a value
+  someone can flip.
+- **`redact_paths`.** Not needed (see the table above).
 
-## Connection settings
+`probe_method` and `marker` are **labels checked by the load check** (below). The probe logic itself stays in code and
+follows the spec's §3, including guide §3.2's rule that a natural-key search alone never returns `NOT_EXECUTED`.
 
-For providers whose `base_url_source` is `connection`, the per-tenant values come from the provider's
-`CredentialProvider` (guide §9 item 2 already has it return per-connection settings), keyed by the `connection_id` that
-`ExecutionContext` carries:
+## Connection settings: the credential document
+
+`CredentialProvider.credential()` returns one string (guide §11). Per-connection values travel inside it, as the Layer A
+standard already defines (README §5): `{"token": …, "settings": {…}}`. The whole string is secret. Examples:
 
 | Setting | Example |
 |---|---|
-| `base_url` or `region` | Salesforce `instance_url`, HubSpot `eu1`, Zendesk subdomain, Shopify shop domain |
-| `external_account_id` | GHL `locationId`, Airtable base, Notion workspace, Atlassian `cloudId` |
-| `granted_scopes` | checked against the kernel's `required_scopes` before the call (`client_error` if missing) |
-| `environment` | `sandbox` / `production`; must match the execution mode, or the call is refused |
+| account scope | GHL `location_id`, Atlassian `cloud_id` |
+| base URL parts | Shopify `shop`, Salesforce `instance_url`, HubSpot region |
+| provider-side ids created at connection setup | GHL `s12_ref_field_id` |
+| `granted_scopes` | checked against the kernel's `required_scopes` before send: `client_error`, `provider_code: "scope"` |
 
-## Version rule (no contract change)
+These values never come from step params (`ghl_crm.md`: "`locationId` … comes from the credential document, never
+from `params`").
 
-`catalog.yaml` already has one `versions.binding` for the whole catalog. It is frozen into every binding at S5, and S12
-entry denies a plan whose binding row version differs from `manifest.binding_version` (`binding_version_mismatch`,
-gate C32, G2).
+## Version rule
 
-**Rule: when any kernel's effective `api_version` changes (profile or kernel override), bump `versions.binding` in the
-same change.** Then:
+The catalog has one `versions.binding` for the whole registry. S5 copies it into `FrozenBindingIdentity.binding_version`
+(`s5_provider_resolution/handler.py:55`, from `registry_versions`). S12 entry denies a plan whose binding version no
+longer matches (`binding_version_mismatch`, C32, G2).
 
-- a plan built on the old API version is refused at S12 entry instead of running against the new one (fail closed,
-  through the C32 check that already exists);
-- the API version is frozen with the binding, as I-002 / I-010 require, without a new field.
+**Rule:** when a kernel's effective `api_version` changes, bump `versions.binding` in the catalog and `binding_version` in
+the profile together.
 
-Because `versions.binding` is catalog-wide, a bump refuses every in-flight plan, not only the changed provider's. That
-is coarse but simple and safe. Per-provider versions would need a catalog format change and are not proposed.
+**Runtime check (in the adapter, before send):** if `binding.binding_version` ≠ the profile's `binding_version`, the
+adapter sends nothing:
 
-An upgrade is a new profile version that goes through the provider's recorded-response tests (guide §13.1), never an
-edit in place.
+| Path | Result | Effect |
+|---|---|---|
+| `call` | `client_error`, `provider_code: "binding_version_mismatch"` | step fails, nothing was sent, breaker not counted (C37) |
+| `probe` | `INCONCLUSIVE` | the step dead-letters after the bounded probes, safe |
+| `observe` | `matches_expected=None` | verification `UNKNOWN`, never silent success |
+| inverse | `client_error` | a `rollback` dead letter for a human |
 
-## Who reads the profile
+The S12 entry check alone is not enough. It does not cover executions that were already admitted when the new version
+went live: one recovered by another worker (M19) would otherwise run an old plan against the new API version. Every
+path above fails safe.
 
-Only the provider's adapter. It loads the profile once at start and uses it to:
+**Rollout:** pause new entries (C39 `paused_until`), let running executions finish, load the catalog and deploy the
+workers, then unpause. A step that still lands in the window fails closed as above.
 
-1. build the URL from `base_url` (profile or connection), `endpoint` and the version scheme, and switch to POST above
-   `max_url_length`;
-2. set the version header and, where `idempotency` is `native_header`, send `CallMeta.idempotency_key`;
-3. classify every response by guide §4, then `error_map`, so `call()` never raises and every error has an
-   `error_class`;
-4. page up to `max_pages` within the step deadline, and report truncation in `data`, never by streaming results across
-   `call()`;
-5. turn a `Sunset` / `Deprecation` header into an alert event.
+## How the adapter uses the profile
 
-To stay simple, write this code inside the first adapter. Move it to a shared module only when a second adapter needs
-the same code. The adapter never retries (retry stays in the guard, guide §7.4), never reads profile fields from step
-params (LLM output cannot change a registry fact, A4), and never resolves a name to an id at S12 (that belongs to S5,
-I-002).
+At start, the adapter loads its profile and refuses to start if the profile fails the load check. On each call it:
 
-## CI checks (one small script in `tests_agent/`)
+1. checks the binding version (above);
+2. builds the URL from `base_url` (placeholders from `api_version` and the credential document's settings), the
+   kernel's `endpoint` and step params, and switches a read to its POST form above `max_url_length`;
+3. sets the version header; for `native_header` / `body_field` it sends `call_meta.idempotency_key`;
+4. fetches **one page per call**, at most `max_page_size`, and returns the provider's cursor in `data["next"]` (the
+   Layer A convention, `ghl_crm.md` §1);
+5. logs one WARNING without PII when a response carries a `Sunset` or `Deprecation` header. Adapters never emit events
+   or call the control plane (README §1, isolation).
 
-- every profile validates against the tables above, and every `kernels:` key is a kernel op in `catalog.yaml` for
-  that provider;
-- a kernel whose `sunset_at` is within N days fails the build;
-- an `api_version` change without a `versions.binding` change in the same commit fails the build;
-- recorded response fixtures exist per `api_version` (guide §13.1 layout);
-- optional, offline only: compare the catalog's schemas with the provider's published schema and report drift. Never at
-  run time.
+Error classification, probe, observe, stamping and inverse location are unchanged, as the spec defines them.
 
-## Example (illustrative; verify every value against the provider's docs when the adapter is built)
+## Checks
+
+**Load check** (in the adapter at start, and as a `tests_agent` test against `docs/catalog/catalog.yaml`):
+
+- the profile parses, `profile_format` is known, required fields are present, and enum values are valid;
+- every `kernels:` key is a kernel op of this provider in the catalog, and every catalog op of this provider has an
+  entry;
+- every W, D and IRREVERSIBLE kernel has a `probe_method`, and `stamp` has a `marker`. The startup guard already
+  refuses W/D/IRREVERSIBLE bindings without `probe` and `observe` overrides (guide §12); this check makes sure each one
+  has a defined method;
+- no write has `batch_max_items` > 1;
+- `version_scheme: path` ⇒ `base_url` contains `{api_version}`; `header` ⇒ `version_header` is set.
+
+**Repository checks** (`tests_agent`):
+
+- `binding_version` in every profile equals `versions.binding` in `catalog.yaml`;
+- a kernel with `sunset_at` within N days fails;
+- recorded response fixtures exist for the current `api_version` (guide §13.1 layout).
+
+A drift report against the provider's published schema can be added later, offline only. Nothing checks the network at
+run time.
+
+## Example: `crm` (GoHighLevel)
+
+Values from `ghl_crm.md`; every one is still VERIFY there.
 
 ```yaml
-# docs/catalog/providers/airtable.yaml
-provider: airtable
-api_version: "v0"
-version_scheme: path
-base_url_source: fixed
-base_url: https://api.airtable.com/v0
-pagination: offset_token
-cursor_param: offset
-cursor_response_path: offset
+# src/engines/crm/profile.yaml
+provider: crm
+profile_format: 1
+binding_version: bind-1
+api_version: "2021-07-28"
+version_scheme: header
+version_header: Version
+base_url: https://services.leadconnectorhq.com
+pagination: cursor
 max_page_size: 100
-max_pages: 10
-idempotency: none
-rate_limit_scopes: [token, base]
-max_url_length: 16000
+idempotency: stamp
+limits: {burst: "100 per 10 s per location", daily: "200000 per location", bulkhead: 8}
 
 kernels:
-  airtable.record_list:
-    method: GET
-    endpoint: /{base_id}/{table_id}
-  airtable.record_create:
-    method: POST
-    endpoint: /{base_id}/{table_id}
-    pagination: none
-    batch_max_items: 10
-    partial_success: records_and_errors
-    probe_method: stamped_marker
-    marker_field: external_id
+  crm.contact_list:   {method: POST, endpoint: /contacts/search}
+  crm.contact_create: {method: POST, endpoint: /contacts/, probe_method: stamp, marker: "custom_field:s12_ref"}
+  crm.contact_update: {method: PUT, endpoint: "/contacts/{id}", update_semantics: patch_merge, probe_method: by_id}
+  crm.contact_delete: {method: DELETE, endpoint: "/contacts/{id}", probe_method: by_id}
+  crm.note_list:      {method: GET, endpoint: "/contacts/{contactId}/notes"}
+  crm.note_create:    {method: POST, endpoint: "/contacts/{contactId}/notes", probe_method: stamp, marker: body_suffix}
+  crm.note_delete:    {method: DELETE, endpoint: "/contacts/{contactId}/notes/{id}", probe_method: by_id}
+  crm.task_list:      {method: GET, endpoint: "/contacts/{contactId}/tasks"}
+  crm.task_create:    {method: POST, endpoint: "/contacts/{contactId}/tasks", probe_method: stamp, marker: body_suffix}
+  crm.task_update:    {method: PUT, endpoint: "/contacts/{contactId}/tasks/{id}", update_semantics: patch_merge, probe_method: by_id}
+  crm.task_delete:    {method: DELETE, endpoint: "/contacts/{contactId}/tasks/{id}", probe_method: by_id}
 ```
 
-The matching `catalog.yaml` entries are unchanged in format:
-
-```yaml
-  - {id: airtable.record_list, mutation: R, risk_floor: 0.1, cost: 1, timeout_seconds: 30, retry_safety: safe}
-  - {id: airtable.record_create, mutation: W, risk_floor: 0.2, cost: 3, timeout_seconds: 30, retry_safety: never, inverse: airtable.record_delete, observation: {method: get_record, identifier_field: id}}
-```
+`contact_update` is a `PUT` that sends only the fields in `params` (`ghl_crm.md` §1), so its effect is a merge; the
+label records that. The catalog entries for `crm` stay exactly as they are.
 
 ## Points to verify before building
 
-- `PROVIDER_ADAPTERS.md` §6 says Airtable API v0 is deprecated and gives `https://api.airtable.com/v1` as the base URL.
-  As far as this proposal's author knows, Airtable's Web API is still served under `/v0`. Check before an Airtable
-  adapter is written; if confirmed, §6 needs an owner correction.
-- The per-token rate limit in §6 (10 requests/second) should be checked against the provider's current docs.
+- **GHL:** `PROVIDER_ADAPTERS.md` §2 describes the v1 API (`rest.gohighlevel.com/v1`). `ghl_crm.md` says v1 is end of
+  support and to build on LeadConnector v2. The profile follows `ghl_crm.md`. §2 needs an owner correction when it is
+  next re-pinned.
+- **Airtable:** `PROVIDER_ADAPTERS.md` §6 says API v0 is deprecated and gives `/v1`. As far as this proposal's author
+  knows, Airtable's Web API is still served under `/v0`. Check before an Airtable adapter is written; the §6 rate limit
+  (10 requests/second per token) needs the same check.
 
 ## Not adopted (from the pyairtable review)
 
 | Idea | Why not |
 |---|---|
-| Hierarchical resource model in the contract | The contract is one kernel op per step; S9 plans compositions. Fine as a private helper inside an adapter. |
-| Lazy identity resolution at S12 | Binding drift (I-002, I-010) and an unbudgeted provider call. Resolve at S5 and freeze the id. |
-| Live schema introspection at run time | Registry facts are authoritative (A4); the deterministic pipeline must not depend on the network. Offline drift check only. |
-| Retry as an adapter property | Retry lives in the guard (guide §7.4) so the probe runs first and the budget stays locked. |
-| Side-effect ledger as an adapter contract | The ledger is the engine's; `MockAdapter`'s is a test oracle. Real adapters send the key where supported and implement `probe()` (guide §3.2). |
+| Hierarchical resource model in the contract | The contract is one kernel op per step; S9 plans compositions. Fine as a private helper inside an adapter |
+| Lazy identity resolution at S12 | Binding drift (I-002, I-010) and an unbudgeted provider call. Resolve at S5, or keep the id in the credential document's settings |
+| Live schema introspection at run time | Registry facts are authoritative (A4); the deterministic pipeline must not depend on the network |
+| Retry as an adapter property | Retry belongs to the guard (README §1, guide §7.4) |
+| Side-effect ledger as an adapter contract | The ledger is the engine's. Adapters send or stamp the key and implement `probe()` (guide §3.2) |
+| Paging many pages inside one call | One page per call, cursor in `data["next"]` (Layer A convention); simpler, and it stays inside the step deadline |
 
 ## Owner decisions needed (when the first new-adapter milestone starts)
 
-1. Accept the provider profile with its `kernels:` block, at `docs/catalog/providers/<provider>.yaml`.
-2. Accept the version rule ("`api_version` change ⇒ `versions.binding` bump").
-3. Add the profile to the Layer A spec template and to guide §12 item 4 as the format of "provider config".
-4. Optionally amend and re-pin `PROVIDER_ADAPTERS.md` (§6 Airtable rows if the v0 point is confirmed).
+1. Accept the profile, its location (`src/engines/<provider>/profile.yaml`) and the "stays out" list.
+2. Accept the version rule, the adapter's binding-version check and the rollout order.
+3. Update `TEMPLATE.md` and the Layer A header table to point to the profile, and add the profile to guide §12.
+4. Optional, separate CONF items: per-provider breaker and bulkhead settings (today one setting for all providers),
+   and per-key breakers (`ghl_crm.md` Q3).
+5. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned: the GHL §2 and Airtable §6 corrections above.
