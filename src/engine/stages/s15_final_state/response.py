@@ -9,6 +9,7 @@ from __future__ import annotations
 import types
 from dataclasses import dataclass
 
+from contracts.admission import DENIED, AdmissionOutcome
 from contracts.envelope import Envelope, EnvelopeError
 from contracts.execution_states import ExecutionStatus as R
 from contracts.execution_states import StepState as S
@@ -88,3 +89,23 @@ def build_envelope(summary: RunSummary) -> Envelope:
                                             details={"failed_steps": _where(summary, S.FAILED, S.CANCELLED)},
                                             recoverable=True, suggested_action="Check error details"))
     raise ValueError(f"run status {status!r} is not terminal: no response yet")
+
+
+def entry_denial_envelope(outcome: AdmissionOutcome, trace_id: str) -> Envelope:
+    """Pure: a frozen entry-denial AdmissionOutcome (never ran, so no data or step list).
+
+    quota_exhausted -> ``error`` with type ``budget_exceeded``, the upgrade text from _CANCELLED,
+    recoverable=True, and details ``{"retry_after_ms": n}`` for a soft quota (``{}`` for hard).
+    Any other DENIED reason -> ``error`` with type ``admission_denied``, recoverable=False.
+    A non-DENIED outcome raises ValueError.
+    """
+    if outcome.status != DENIED:
+        raise ValueError(f"admission outcome {outcome.status!r} is not DENIED: no entry-denial envelope")
+    meta = {"trace_id": trace_id}
+    if outcome.reason == "quota_exhausted":
+        kind, message, _ = _CANCELLED[T.BUDGET_EXHAUSTED]
+        details = {"retry_after_ms": outcome.retry_after_ms} if outcome.retry_after_ms is not None else {}
+        return Envelope("error", data=None, message=message, metadata=meta,
+                        error=EnvelopeError(kind, message, details=details, recoverable=True))
+    return Envelope("error", data=None, message="Admission denied.", metadata=meta,
+                    error=EnvelopeError("admission_denied", "Admission denied.", recoverable=False))
