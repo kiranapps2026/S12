@@ -48,6 +48,9 @@ _EXPIRE_LAPSED_FOR_EXECUTION = ("UPDATE worker_leases SET status = $3 WHERE tena
 _RUN_STATUS = "SELECT status FROM execution_runs WHERE tenant_id = $1 AND execution_id = $2"
 _USABLE_FOR_EXECUTION = ("SELECT 1 FROM worker_leases WHERE tenant_id = $1 AND execution_id = $2 AND status = $3"
                          " AND expires_at > now() LIMIT 1")
+_RELEASED_WITHIN_TTL = ("SELECT status = $3 AND released_at > now() - make_interval(secs => $4::float8)"
+                        " FROM worker_leases WHERE tenant_id = $1 AND execution_id = $2"
+                        " ORDER BY fence_token DESC, acquired_at DESC LIMIT 1")
 _NEXT_TOKEN = "SELECT nextval('fence_token_seq')"
 _INSERT_LEASE = ("INSERT INTO worker_leases (lease_id, tenant_id, worker_id, execution_id, fence_token, status,"
                  " expires_at) VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))")
@@ -119,6 +122,9 @@ class PostgresLeaseManager:
                 return None
             if await c.fetchval(_USABLE_FOR_EXECUTION, tenant_id, execution_id, LeaseStatus.ACTIVE):
                 return None
+            if holder is None and skip_locked and await c.fetchval(
+                    _RELEASED_WITHIN_TTL, tenant_id, execution_id, LeaseStatus.RELEASED, ttl):
+                return None     # CONF-046: released within TTL -> live owner between steps, not orphaned
 
             transitions.validate(MACHINE, None, LeaseStatus.ACTIVE, reason=ACQUIRED)
             token = await c.fetchval(_NEXT_TOKEN)
