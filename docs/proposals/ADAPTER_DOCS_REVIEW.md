@@ -1,6 +1,8 @@
 # Adapter documents: architecture review against the code
 
-**Status: review for the owner (2026-10-03).** Scope: `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (the guide, commit
+**Status: review for the owner (2026-10-03). Applied: the guide is corrected (revision 1.1, section B) and the
+proposal through revision 12 (sections C and the A1/A3 recommendations); the code fixes A4 and A5 and the start-up
+extension for A1 await owner decisions.** Scope: `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (the guide, commit
 `4181585`), `docs/proposals/PROVIDER_API_PROFILES.md` (the proposal, revision 9) and
 `docs/proposals/PROVIDER_ADAPTERS_CORRECTIONS.md`. Every finding was checked against the code on `s12-work`, not
 against another document; each cites the line that decides it. The guide is not edited here (DR-08 schedules its v2;
@@ -26,7 +28,10 @@ Severity: **High** = following the document gives a wrong or unsafe result, or t
 
 ## B. The guide (`docs/ADAPTER_IMPLEMENTATION_GUIDE.md`)
 
-Input for its v2 (DR-08). Line numbers are the current file.
+Input for its v2 (DR-08). Line numbers are those of commit `4181585`. **All 22 are fixed in the guide's revision 1.1
+(2026-10-03)**, together with the section A facts that concern it (A2, A3, A4, A5, A6, A7, A8, A9, A10) and one more
+found while editing: §6.1 said `MockAdapter` never raises, but its `raise_exception` mode raises on purpose. Sections
+the guide still lacks are listed in its new §17.
 
 | # | Sev | Line | Says | Code says | Fix |
 |---|---|---|---|---|---|
@@ -80,8 +85,9 @@ The rest of the file was rechecked against the code and stands.
 
 1. Owner decisions on A1 (composition plus a per-operation start-up check) and A3 (deadline, DR-17 setting), because
    both shape the first adapter.
-   The recommended answers are in `PROVIDER_API_PROFILES.md` revision 11 ("Per-operation verifiability",
-   "Deadlines", owner decisions 5 and 11).
+   The recommended answers are in `PROVIDER_API_PROFILES.md` ("Per-operation verifiability", "Deadlines", owner
+   decisions 5 and 11), as revised in revision 12: the client timeout is 8 s, so the three requests a call can make
+   fit in the 30 s step timeout.
 2. The two small code fixes in S12 files: `credential_valid` on the protocol (A5) and the `observed_state` type (A4).
-3. The guide's v2 (DR-08) from section B.
+3. The guide's v2 (DR-08): section B is applied (revision 1.1); what remains is the guide's §17.
 4. Then the first adapter, which also tests the proposal against real recorded responses.

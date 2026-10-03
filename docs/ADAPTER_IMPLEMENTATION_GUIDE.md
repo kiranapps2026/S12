@@ -5,6 +5,14 @@ will be executed after the `s12-s15-certified` tag. Nothing in this file changes
 migrations 001–015, or any frozen document. The milestone card for the first new-adapter milestone
 will reference the sections of this file that apply.
 
+**Revision 1.1 (2026-10-03).** Corrected against the code on `s12-work`: the 22 guide findings and the code facts of
+`docs/proposals/ADAPTER_DOCS_REVIEW.md` (sections A and B). It is still not the full v2 that DR-08 asks for: the
+worker-runtime composition (DR-14), routing several providers through one guard (DR-42), rate-limit sizing, the
+golden scans and the credential store (DR-11, MC-058) are not written yet; §17 lists them. Where this guide and the
+Layer A README disagree, the README and the code win. A proposed structure for real adapters (one engine, operation
+archetypes, provider profiles) is in `docs/proposals/PROVIDER_API_PROFILES.md`; it is a proposal, not part of this
+guide.
+
 ## 1. What "a new adapter" means in this architecture
 
 An adapter is one class implementing `contracts.adapter_interface.BaseAdapter` plus one
@@ -14,7 +22,9 @@ handling — is owned by the S12-S15 kernel and is **never** the adapter's respo
 
 A new adapter for a new provider (vision, market data, etc.) is therefore a **narrow, additive**
 change: one adapter class file, one credential provider file, and registry entries. It plugs into
-the execution kernel exactly the way `MockAdapter` and the Layer A (GoHighLevel, Gmail) adapters do.
+the execution kernel the way `MockAdapter` does, and the way the Layer A adapters will: `ghl_crm.md` and
+`gmail_mail.md` are specifications; no GoHighLevel or Gmail adapter exists in `src/` yet. Before any real adapter can
+run in production, the prerequisites in §14 must also exist.
 
 ## 2. The contracts that govern every adapter call
 
@@ -45,7 +55,7 @@ Each path is read from the reference implementation, not from documentation.
 
 **What the kernel provides**:
 
-- `kernel_op_id`: the operation identifier from the binding (e.g. `"vision.analyze_image"`, `"market.signal_query"`)
+- `kernel_op_id`: the operation identifier (e.g. `"crm.contact_create"`, `"mail.email_send"` from `docs/catalog/catalog.yaml`). For a rollback inverse it is the inverse operation, while `binding` is still the **create's** binding (§3.4)
 - `params`: the step's params dict — **never mutate this dict**
 - `binding`: `FrozenBindingIdentity` — contains `provider`, `effective_risk`, `effective_mutation`, `inverse_kernel_op_id`
 - `context`: `ExecutionContext` — contains `tenant_id`, `connection_id`, `trace_id`, `request_id`, and every other S0-S11 field
@@ -53,9 +63,9 @@ Each path is read from the reference implementation, not from documentation.
 
 **What the kernel expects back**: `AdapterResult(status, retryable, error_class, data)` where:
 - `status` is `"ok"`, `"error"`, or `"timeout"` — these are the only valid strings
-- `error_class` is one of `ErrorClass` values: `NOT_DISPATCHED`, `RATE_LIMITED`, `SERVER_ERROR`, `CLIENT_ERROR`, `ADAPTER_DEFECT`, `TIMEOUT`, `CIRCUIT_OPEN`, `RETRY_STORM`
+- `error_class`, on `"error"`, is one of the five adapter classes: `NOT_DISPATCHED`, `RATE_LIMITED`, `SERVER_ERROR`, `CLIENT_ERROR`, `ADAPTER_DEFECT`. An uncertain outcome is `status="timeout"`, not an error class. `TIMEOUT`, `CIRCUIT_OPEN` and `RETRY_STORM` are set by the guard (Layer A README §1)
 - `retryable` is ignored by the guard (it recomputes from `error_class` via `RETRYABLE`); set it anyway for documentation
-- `data` on `"ok"` must contain `result.data["id"]` (the operation's `identifier_field`); M15's deterministic verification layer reads it
+- `data` on `"ok"` must contain `result.data[identifier_field]`, the field named by the catalog's `observation.identifier_field` (usually `id`; `ref` for GHL notes and tasks after `ghl_crm.md` §0). M15's deterministic layer requires it to be a non-empty string or int (`verification.py:75`). For an update or delete, take it from the params when the response carries no id
 - `data` on `"error"` must be empty or at most `{"provider_status": <int>, "provider_code": <str>}` — **never include the provider's error body** (M18 redaction, M17 ledger safety)
 
 **What the guard does before and after** (read `engine/stages/s12_execute/reliability.py`):
@@ -80,20 +90,26 @@ Each path is read from the reference implementation, not from documentation.
 | D | 2 attempts | 2 attempts | 1 attempt |
 | IRREVERSIBLE | 1 | 1 | 1 |
 
-Backoff: reads use exponential (`base * 2^(n-1)`); writes/deletes use fixed (`base_s`).
-The retry ceiling is the *maximum* attempts; retry count = ceiling - 1.
+Backoff: reads use exponential (`base * 2^(n-1)`); writes, deletes and IRREVERSIBLE use fixed (`base_s`).
+The retry ceiling is the *maximum* attempts; retry count = ceiling - 1. The starter catalog sets
+`retry_safety: never` on every write and delete, so today every mutation gets one attempt.
 
 ### 3.2 Probe (`probe()` → `ProbeOutcome`)
 
 **Entry point**: `engine/stages/s13_reconciliation/probe.py` → `resolve_execution` → `guard.probe`
 
-**When it is called**: After a step's attempt produced `"timeout"` or `"uncertain"` (the step is now
-`PENDING_PROBE`). The ledger has no record for this idempotency key. The probe asks: did the call
-identified by `call_meta.idempotency_key` take effect?
+**When it is called**: After a W, D or IRREVERSIBLE step's attempt produced `"timeout"` or `"uncertain"` (the step is
+now `PENDING_PROBE`). The ledger has no record for this idempotency key. The probe asks: did the call
+identified by `call_meta.idempotency_key` take effect? A **read** that times out is never probed: it is re-executed
+(`loop.py` `read_reexecution_safe`). Up to `probe_max_attempts` probes run, immediately and then after `b` and `2b`
+more seconds (`b = probe_backoff_s`).
 
 **Guard behavior**:
-- Takes its own bulkhead slot (separate from the call slot)
-- Bounded by `probe_timeout_s` (not `step_timeout_s`)
+- Takes a slot from the **same** per-provider bulkhead as calls (`reliability.py:79`), so a slow probe costs call
+  capacity
+- Bounded by one `probe_timeout_s` for everything the probe does (`reliability.py:230`), not `step_timeout_s`. The
+  code default is **0.5 s**; real providers need 5–10 s, set through `S12_PROBE_TIMEOUT_S` (DR-17). Every request
+  inside the probe (a search, a GET per hit) must fit that one deadline
 - Bypasses the circuit breaker, budget tracker, and retry-storm guard entirely
 - Any exception → `INCONCLUSIVE` (never raises to the caller)
 
@@ -122,9 +138,9 @@ which is the safe outcome.
 
 **Entry point**: `engine/stages/s13_reconciliation/verification.py` → `_provider_state` → `guard.observe`
 
-**When it is called**: After a successful probe (EXECUTED_SUCCESS), M15's verification layer
-needs to compare the provider's current state against what the step expected. The spec passed
-to `observe()` is:
+**When it is called**: On **every** verification of a W, D or IRREVERSIBLE step: after a successful call
+(`_settle_success` → verification) and after a probe that returned EXECUTED_SUCCESS. Verification makes up to three
+observations, 1 s apart, until one is conclusive. The spec passed to `observe()` is:
 
 ```python
 spec = {
@@ -132,14 +148,15 @@ spec = {
     "identifier": result.data["id"],   # from the call result; None after probe path
     "expected": {
         "exists": True,                # True for W/IRREVERSIBLE, False for D
-        "properties": {"name": "..."}  # the step's full params (filtered per op)
+        "properties": {"name": "..."}  # the step's full params, unfiltered (verifiers.py:46); D ops have none
     },
     "idempotency_key": "{request_id}:{plan_step_id}"
 }
 ```
 
 **Guard behavior**:
-- Own bulkhead slot, bounded by `probe_timeout_s`
+- Same per-provider bulkhead as calls, bounded by one `probe_timeout_s` (`reliability.py:251`); timeout →
+  `error="observe_timeout"`
 - Bypasses breaker, budget, retry-storm guard
 - Any exception → `Observation(attempt=0, error="observe_error")`
 
@@ -152,6 +169,10 @@ spec = {
 | Read failed, timed out, 5xx, 429, permission error | `None` | set to error description | UNKNOWN (re-observed, never FAIL) |
 | Method not implemented | `None` | `"observe_not_supported"` | UNKNOWN |
 
+**`observed_state`**: only the compared keys' match results, never provider values (DR-60: it can reach the semantic
+layer). The contract types it `str | None` (`adapter_interface.py:48`) while the semantic assessor takes
+`dict | None` (`verification.py:54`); use the dict until the type is fixed.
+
 **The `identifier=None` case** (after the probe path): After EXECUTED_SUCCESS, verification has no
 adapter result, so `spec["identifier"]` is `None`. The adapter must find the resource from
 `spec["idempotency_key"]` — using the same lookup method the probe used. If it cannot, return
@@ -162,14 +183,17 @@ adapter result, so `spec["identifier"]` is `None`. The adapter must find the res
 **Entry point**: `engine/stages/s14_dead_letter/rollback.py` → `rollback_execution` → `guard.call`
 with `InverseBudget.check()` instead of `BudgetTracker.check()`
 
-**When it is called**: Never automatically. Only when an operator explicitly calls `retry_dead_letter`
-with a rollback resolution on a dead letter that has an `inverse_kernel_op_id`. Never for
-`IRREVERSIBLE` operations.
+**When it is called**: Never automatically. Only through the explicit `rollback_execution()` of a terminal run
+(gate D2, `rollback.py`), which today has no caller outside tests (DR-29). For each COMPLETED W/D step with an undo
+token, latest first, it first checks that the original executed (`confirm_executed`), then calls the inverse. Never
+for `IRREVERSIBLE` operations.
 
 **What changes**:
 - `call_meta.idempotency_key` ends with `:inverse` (e.g. `{request_id}:{plan_step_id}:inverse`)
 - `reservation_id` is `None` (the inverse call has no budget reservation)
 - `params` are the **original step's params** (not the created resource's id)
+- `binding` is the **original step's binding** (`rollback.py:109`): `binding.kernel_op_id` names the create and
+  `binding.effective_mutation` is `W`. Use the `kernel_op_id` argument (the inverse) to decide what to do
 
 **What the adapter must do**:
 1. Strip the `:inverse` suffix to get the original key
@@ -206,8 +230,8 @@ that leads to a probe, and the probe decides truth.
 | 400, 422 validation | `client_error` | `client_error` | `client_error` |
 | 401, 403 auth/permission | `client_error` | `client_error` | `client_error` |
 | 403 that is a rate limit (Google `rateLimitExceeded`) | `rate_limited` | `rate_limited` | `rate_limited` |
-| 404 addressed resource | `client_error` | `client_error` | `client_error` |
-| 409 duplicate with our key | `ok` (existing id) | per provider file | `ok` (provider replayed) |
+| 404 addressed resource | `client_error` | `client_error` (a delete may map a recorded not-found to `ok` with `already_absent`, `ghl_crm.md` §2) | `client_error` |
+| 409 duplicate with our key | — | per provider file | `ok` (provider replayed) |
 | 429 | `rate_limited` | `rate_limited` | `rate_limited` |
 | 408 | `server_error` | **`timeout`** | `server_error` |
 | 500, 502, 504 | `server_error` | **`timeout`** | `server_error` |
@@ -228,12 +252,14 @@ CONTRACT  call()
   - Signature: async def call(self, kernel_op_id, params, binding, context, *, call_meta=None) -> AdapterResult
   - Returns AdapterResult, never raises
   - Does not mutate params
+  - If context.connection_id is None → client_error, provider_code="no_connection", before anything else
   - Credentials via context.connection_id → CredentialProvider only (never env, never settings)
-  - result.data on ok contains the identifier field (result.data["id"])
+  - result.data on ok contains the catalog's identifier_field (usually "id")
   - result.data on error is empty or {"provider_status": int, "provider_code": str}
   - No secrets, tokens, PII in data, logs, or exception text (M18 redaction)
   - No own retry loop (retry is the kernel's job via retry_policy.ceiling)
-  - No own deadline (step_timeout_s and probe_timeout_s are the guard's)
+  - No deadline longer than the guard's (step_timeout_s for call, probe_timeout_s for probe and observe);
+    the HTTP client timeout is ExecutionSettings.adapter_client_timeout_s, injected at construction
   - Does not catch asyncio.CancelledError (the guard's TimeoutManager cancels the task)
   - Catches Exception at the top level; converts to AdapterResult
 
@@ -244,6 +270,7 @@ CONTRACT  probe()
   - Uses the idempotency key (call_meta.idempotency_key) to find the resource
   - NOT_EXECUTED only when a strongly consistent read by id/key returns nothing
   - Returns INCONCLUSIVE when the result is ambiguous or the read is eventually consistent
+  - Everything it does fits one probe_timeout_s (code default 0.5 s; set S12_PROBE_TIMEOUT_S, DR-17)
 
 CONTRACT  observe()
   - Signature: async def observe(self, kernel_op_id, observation_spec, binding, context) -> Observation
@@ -255,9 +282,11 @@ CONTRACT  observe()
 
 CONTRACT  credentials
   - Every call, probe, and observe invokes credential_provider.credential(tenant_id, connection_id)
-  - credential() returns str; never raises (the protocol says "never raise")
-  - If connection_id is None → return client_error, provider_code="no_connection" before sending
-  - credential_valid() is a cheap local check (token present, not expired); not a provider round trip
+  - credential() returns str and should never raise (the protocol says so); the adapter still treats a raise
+    as not_dispatched (Layer A README §5)
+  - credential_valid() is a cheap local check (token present, not expired); not a provider round trip.
+    M14 calls it before every step (live_authorization.py:81), but the CredentialProvider protocol in
+    adapter_interface.py does not declare it yet: implement it anyway
 
 CONTRACT  idempotency key
   - call_meta.idempotency_key = "{request_id}:{plan_step_id}" is stable across attempts and recovery
@@ -270,7 +299,7 @@ CONTRACT  isolation
   - No imports from engine.*, adapters.* (other than this file and mock_adapter in tests)
   - No calls to the control plane, other adapters, or S12 code
   - No authorization decisions (S8 and M14's live check own those)
-  - No filesystem writes, no environment reads, no settings reads
+  - No filesystem writes, no environment reads; settings are injected at construction, never read
 ```
 
 ## 6. How the existing adapters implement this
@@ -285,7 +314,8 @@ Key patterns to copy:
 - `probe()` reads from the effect ledger by idempotency key — in a real adapter this is a provider read-by-id
 - `observe()` reads by idempotency key when identifier is None — same pattern as probe
 - Credentials via injected `credentials.credential(tenant_id, connection_id)` — same pattern
-- Never raises: every exception path returns an `AdapterResult` or `ProbeOutcome`
+- Never raises, except in its `raise_exception` mode, which exists only so the guard's `adapter_defect` handling and the
+  redaction tests have something to catch; a real adapter has no such mode
 
 Key patterns NOT to copy:
 - `_HANG_S` sleep (the real adapter uses HTTP client timeouts)
@@ -312,8 +342,9 @@ contract. It has `execute`, `read_state`, `health_check`, `get_capabilities`. It
 
 `check_worker_runtime` runs before the runtime accepts work. It checks:
 1. The database role is not a superuser / does not have BYPASSRLS
-2. Every active PRODUCTION_ENABLED W/D/IRREVERSIBLE binding has an adapter class that overrides
-   both `probe` and `observe`
+2. Every active PRODUCTION_ENABLED W/D/IRREVERSIBLE binding has an adapter class whose **own class body** defines
+   both `probe` and `observe` (`startup.py:25` checks `adapter_class.__dict__`; methods inherited from a base class
+   do not count)
 
 This means **no W/D/IRREVERSIBLE binding can go live without a verifiable adapter**. A vision adapter
 or market-data adapter that only implements `call()` will be rejected at startup.
@@ -342,8 +373,8 @@ Recording order (every exit path):
 - InProcessBilling.record(call_meta, kernel_op_id, status, attempt)
 ```
 
-`probe()` and `observe()` take their own bulkhead slot and `probe_timeout_s`. They bypass the
-breaker, budget tracker, and retry-storm guard entirely.
+`probe()` and `observe()` take a slot from the same per-provider bulkhead and run under `probe_timeout_s`. They
+bypass the breaker, budget tracker, and retry-storm guard entirely.
 
 ### 7.2 CircuitBreaker (`adapters/runtime/circuit_breaker.py`)
 
@@ -408,24 +439,25 @@ Loop.run_execution(deps, tenant_id, execution_id)
   │   │   │     └─ Record outcome (breaker, health, billing)
   │   │   │
   │   │   ├─ On ok → store in idempotency ledger → SUCCESS
-  │   │   ├─ On timeout → UNCERTAIN → PENDING_PROBE
+  │   │   ├─ On timeout → UNCERTAIN → PENDING_PROBE (a read is re-executed instead)
   │   │   ├─ On error (retryable, attempts left) → sleep(backoff) → retry
   │   │   ├─ On error (retryable, exhausted) → FAILURE
   │   │   └─ On error (non-retryable) → FAILURE
   │   │
-  │   ├─ SUCCESS → S13 verification (M15):
-  │   │   ├─ guard.probe() ──► YOUR ADAPTER.probe()    [optional]
-  │   │   ├─ deterministic layer: result.data["id"] matches expected
-  │   │   ├─ guard.observe() ──► YOUR ADAPTER.observe()  [optional]
-  │   │   └─ semantic layer: LLM verdict
+  │   ├─ SUCCESS → S13 verification (M15), before the step commits:
+  │   │   ├─ schema layer: data is a JSON-serialisable dict
+  │   │   ├─ deterministic layer: data[identifier_field] is present
+  │   │   ├─ guard.observe() ──► YOUR ADAPTER.observe()  (up to 3, 1 s apart)
+  │   │   └─ semantic layer: LLM verdict (when required by mutation and risk)
   │   │
-  │   │   → COMPLETED, budget COMMITTED
-  │   │   → FAIL (semantic) → DEAD_LETTER, budget LOCKED
-  │   │   → UNKNOWN → VERIFICATION episode ×3 → DEAD_LETTER, budget LOCKED
+  │   │   → PASS → COMPLETED, budget COMMITTED
+  │   │   → FAIL (any layer) → FAILED, budget released, dead letter data / retry_mode NONE
+  │   │   → UNKNOWN → VERIFICATION episode → still UNKNOWN: dead letter, retry_mode VERIFY
   │   │
   │   ├─ FAILURE → DEAD_LETTER (M17):
-  │   │   ├─ retry_mode: NONE (W/D/IRREVERSIBLE) or PROBE (R)
-  │   │   └─ OR explicit rollback if inverse exists and operator requests it
+  │   │   ├─ retry_mode: PROBE after probe exhaustion, VERIFY after unresolved verification,
+  │   │   │   NONE for data failures and failed rollbacks
+  │   │   └─ explicit rollback_execution() of a terminal run is separate (§3.4)
   │   │
   │   └─ PENDING_PROBE → S13 probe path (M13):
   │       ├─ ledger lookup (may resolve without adapter call)
@@ -516,17 +548,19 @@ class <Provider>Adapter(BaseAdapter):
         *,
         call_meta: CallMeta | None = None,
     ) -> AdapterResult:
-        # 1. Resolve credential
+        # 1. No connection: refuse before anything else (Layer A README §5). Checking this after
+        #    credential() would turn a provider that raises for None into a retryable not_dispatched.
+        if context.connection_id is None:
+            return AdapterResult("error", False, ErrorClass.CLIENT_ERROR,
+                                 {"provider_code": "no_connection"})
+
+        # 2. Resolve credential
         try:
             credential = await self._credentials.credential(context.tenant_id, context.connection_id)
         except Exception:
             return AdapterResult("error", False, ErrorClass.NOT_DISPATCHED)
 
-        if context.connection_id is None:
-            return AdapterResult("error", False, ErrorClass.CLIENT_ERROR,
-                                 {"provider_code": "no_connection"})
-
-        # 2. Dispatch to provider based on kernel_op_id
+        # 3. Dispatch to provider based on kernel_op_id
         #    The dispatch table maps kernel_op_id → (HTTP method, path, handler)
         #    Each handler: sends request, classifies response per §4.2, returns AdapterResult
 
@@ -592,11 +626,11 @@ class CredentialProvider(Protocol):
 
 **Rules**:
 - Returns one `str` (JSON document). Per-connection settings live inside it.
-- Never raises. If the credential cannot be resolved, return a string that the adapter interprets
-  as "not available" — but the adapter must still return a valid `AdapterResult`, not raise.
+- Should never raise. If the credential cannot be resolved, return a string that the adapter interprets
+  as "not available". The adapter still treats a raise as `not_dispatched` (Layer A README §5), never raises itself.
 - `credential_valid(tenant_id, connection_id)` is a cheap local check (token present, not expired).
-  It is called by M14's `LiveAuthorizationCheck` before every step — it must not make a provider
-  round trip.
+  It is called by M14's `LiveAuthorizationCheck` before every step (`live_authorization.py:81`) — it must not make a
+  provider round trip. The protocol above does not declare it yet; implement it anyway.
 - Token refresh happens inside the credential provider, not the adapter.
 - The credential string is secret: never log it, never put any part of it in `data`, never include
   it in an exception message.
@@ -605,13 +639,17 @@ class CredentialProvider(Protocol):
 
 After the adapter class and credential provider are written, the following registry entries are needed:
 
-1. **Kernel operation** (`kernel_ops` table or catalog): one row per operation, with `mutation` and `retry_safety`
-2. **Binding** (`bindings` table): links `kernel_op_id` → `adapter_class`, with `provider`, `effective_risk`, `effective_mutation`
-3. **Catalog entry** (if using the catalog): `observation.method`, `observation.identifier_field`, `observation.compared_fields`
+1. **Kernel operation** (`kernel_ops` table or catalog): one row per operation, with `mutation`, `risk_floor`, `cost`,
+   `timeout_seconds`, `retry_safety`, `inverse` and `observation` (`method`, `identifier_field`, `expects_absent`).
+   The loader rejects any other field (`catalog.py:17`, `:20`); compared fields live in the provider spec
+2. **Binding** (`bindings` table): links `kernel_op` → `adapter_class`, with `capability`, `provider`,
+   `engine_module`, `priority`, `is_active` (`catalog.py:19`). Effective risk and mutation are computed at S5, never
+   stored on the binding
+3. **Readiness**: `tools/registry_readiness.py` exits 0 (every production W/D/IRREVERSIBLE op has an observation method)
 4. **Provider config**: bulkhead size (from provider's concurrency limit), breaker threshold and cooldown
 
 The `startup.py` guard (`check_worker_runtime`) will refuse to start if any W/D/IRREVERSIBLE binding
-points to an adapter that does not override both `probe` and `observe`.
+points to an adapter whose own class body does not define both `probe` and `observe` (§6.4).
 
 ## 13. Testing strategy (post-certification)
 
@@ -657,7 +695,11 @@ This guide explicitly does not require changes to:
 - `docs/implementation/**` — pinned
 - `docs/gates/**` — pinned
 
-A new adapter is additive: one class file, one credential file, registry entries. Nothing else.
+A new adapter is additive for the kernel: one class file, one credential file, registry entries. It is **not** yet
+enough to run in production. Prerequisites outside the adapter: a production Worker Runtime composition (DR-14; today
+the guard and loop are composed only in tests), routing when one runtime serves several providers (DR-42: the guard
+holds one adapter), an API path that admits a validated plan to S12 (DR-48), an encrypted per-connection credential
+store (DR-11, MC-058), and `S12_PROBE_TIMEOUT_S` set for real providers (DR-17).
 
 ## 15. Reference: full data flow for one adapter call
 
@@ -709,7 +751,7 @@ AttemptOutcome(kind, result, attempts)
   ▼
 loop.py:_execute
   │
-  ├─ "success"     → _settle_success → COMPLETED → S13 verification
+  ├─ "success"     → _settle_success → S13 verification → PASS: COMPLETED
   ├─ "failure"     → _settle_failure → FAILED → dead letter
   ├─ "uncertain"   → PENDING_PROBE → S13 probe path
   └─ "revoked"     → NOT_EXECUTED → release → run CANCELLED
@@ -728,3 +770,17 @@ loop.py:_execute
 | `batch_bundles/LAYER_A/ADAPTER_SPECS/TEMPLATE.md` | Provider spec template | When creating a new provider file |
 | `batch_bundles/LAYER_A/ADAPTER_SPECS/ghl_crm.md` | GoHighLevel adapter spec (reference implementation of the standard) | Reference for structure |
 | `batch_bundles/README.md` | Batch status, ten rules, module map, names the tests patch | Session start |
+| `docs/proposals/ADAPTER_DOCS_REVIEW.md` | Code-grounded review behind revision 1.1 of this guide | Before the v2 rewrite (DR-08) |
+| `docs/proposals/PROVIDER_API_PROFILES.md` | Proposed structure for real adapters: engine, archetypes, profiles (owner decisions pending) | Before the first real adapter |
+
+## 17. Not covered yet (for v2, DR-08)
+
+| Topic | Where it is today |
+|---|---|
+| Worker Runtime composition: settings from the environment, Postgres stores, guard, sweeper, lease renewal, start-up checks, run pickup | DR-14; composed only in test fixtures |
+| Several providers in one runtime (the guard holds one adapter) | DR-42 |
+| Rate limits → bulkhead size and breaker threshold (one setting for every provider today, `bootstrap.py:75`) | Layer A README §7; CONF-022 |
+| Timeout settings for real providers (`S12_PROBE_TIMEOUT_S`, `S12_ADAPTER_CLIENT_TIMEOUT_S`, `S12_STEP_TIMEOUT_S`) | DR-16, DR-17; recommended values in `PROVIDER_API_PROFILES.md` "Deadlines" |
+| Golden scans an adapter must pass (no exception text in logs, no unfenced writes, no direct adapter calls outside the guard) | Layer A README §7 |
+| Encrypted per-connection credential store | DR-11, MC-058 |
+
