@@ -273,13 +273,20 @@ def test_the_admission_snapshot_reads_each_database_backed_gate(db_schema, run, 
 # --- the operator path for dead letters (CONF-049) ---------------------------------------------------------------------
 
 def _principal(schema, run, state, role):
+    """An active member of the state's tenant with ``role``. Its own user and workspace: the fixture's ``user-1`` /
+    ``ws-1`` are shared by every state and owned by the first tenant seeded, so under RLS another tenant's live role
+    check could not see them."""
     from contracts.principal import Principal
-    ctx = state.execution_context
-    membership = f"m-{role}-{ctx.tenant_id}"
+    tenant = state.execution_context.tenant_id
+    user, workspace, membership = f"u-{role}-{tenant}", f"ws-{role}-{tenant}", f"m-{role}-{tenant}"
+    run(schema.execute("INSERT INTO users (user_id, tenant_id, status) VALUES ($1, $2, 'active') ON CONFLICT DO NOTHING",
+                       user, tenant, tenant=tenant))
+    run(schema.execute("INSERT INTO workspaces (workspace_id, tenant_id, name) VALUES ($1, $2, 'ops') ON CONFLICT DO NOTHING",
+                       workspace, tenant, tenant=tenant))
     run(schema.execute("INSERT INTO memberships (membership_id, tenant_id, user_id, workspace_id, role, is_active)"
-                       " VALUES ($1, $2, $3, $4, $5, true) ON CONFLICT DO NOTHING", membership, ctx.tenant_id,
-                       ctx.user_id, ctx.workspace_id, role, tenant=ctx.tenant_id))
-    return Principal(ctx.tenant_id, ctx.workspace_id, ctx.user_id, membership, "conn-1", "")
+                       " VALUES ($1, $2, $3, $4, $5, true) ON CONFLICT DO NOTHING", membership, tenant, user, workspace,
+                       role, tenant=tenant))
+    return Principal(tenant, workspace, user, membership, "conn-1", "")
 
 
 def _operator(schema, *, probe=None, reverify=None):
