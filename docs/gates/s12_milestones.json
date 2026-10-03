@@ -250,7 +250,7 @@
       "batch": "B5",
       "prototype_state": "not done",
       "scope": "10 injection points, no double execution",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
