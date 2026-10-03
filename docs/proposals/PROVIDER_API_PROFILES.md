@@ -1,9 +1,11 @@
 # Provider adapters: one engine, operation archetypes, provider profiles
 
-**Status: proposal for the owner (revision 9, 2026-10-03). No code, pinned document, catalog or milestone is changed by
-it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call
-real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row
-moves.
+**Status: proposal for the owner (revision 10, 2026-10-03). No code, pinned document, catalog or milestone is changed
+by it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not
+call real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or
+gate row moves. That milestone also needs two things this proposal does not provide: a production Worker Runtime
+(DR-14; today the guard and loop are composed only in tests) and an API path that admits a validated plan to S12
+(DR-48). Revision 10 follows the code review in `docs/proposals/ADAPTER_DOCS_REVIEW.md`.
 
 It builds on, and must agree with:
 
@@ -44,9 +46,15 @@ Three pieces, each with one owner:
 | **Profile** (`src/engines/<provider>/profile.yaml`) | Plain values: version, base URL, page size, and per operation its archetype, endpoint, stamp marker and compared fields | Per provider; changes when the provider's API changes |
 | **Hooks** (`src/engines/<provider>/adapter.py`) | The few things only the provider knows: build a request, extract the id from a response, provider-specific error rows, find resources by the step key, normalise a compared value, decide whether a record is ours | Per provider; changes when the provider's behaviour changes |
 
-A provider adapter is a subclass of the engine with those hooks, plus its `CredentialProvider` and its profile. The
-engine is extracted when the second provider is built (the first adapter is written in this shape from the start, so
-the extraction is a move, not a rewrite).
+A provider adapter **holds** an engine; it does not inherit from it. Its class body defines `call`, `probe` and
+`observe`, each one line that delegates to the engine, and implements the hooks; it comes with its `CredentialProvider`
+and its profile. Composition is required, not a style choice: the Worker Runtime start-up check accepts a class only if
+its **own** body defines `probe` and `observe` (`startup.py:25` checks `adapter_class.__dict__`), so an adapter that
+inherited them from an engine base class would be refused (`unverifiable_mutation`). Because the delegating methods
+make that class-level check pass for every operation, the engine also answers per operation whether it is verifiable
+(archetype not `custom`, required hooks present, `read` set), and the start-up check should ask it (owner decision 5).
+The engine is extracted when the second provider is built (the first adapter is written in this shape from the start,
+so the extraction is a move, not a rewrite).
 
 **What this makes dynamic, safely:** a new operation of an existing provider that fits an archetype needs a catalog row,
 a profile entry, a few lines of `build_request` / `extract`, and recorded fixtures. Its probe, observe and inverse come
@@ -94,18 +102,24 @@ owner decision, not a profile edit.
 | `read_one` | R | GET one resource by id | not called (reads retry) | — | — |
 | `list_page` | R | one page, at most `max_page_size`; cursor in `data["next"]` | not called | — | — |
 | `create` | W | build the request with the stamp (or the provider key), send; `data` carries the identifier (see "Identifier rule") | `find_by_key`: exactly one of ours → `EXECUTED_SUCCESS`; none → `NOT_EXECUTED` **only** if the operation's `lookup` is `consistent`, else `INCONCLUSIVE`; several → `INCONCLUSIVE` and an ERROR log | read via `reads[read]`; with no identifier, `find_by_key` first; compare the written `compare` fields; check `owns` | is the inverse **target**: located by `find_by_key`, never by a natural key alone |
-| `update` | W | merge only the fields in params | read by id: every written compared field equal → `EXECUTED_SUCCESS`; otherwise `INCONCLUSIVE` (never `NOT_EXECUTED`: a differing field may be someone else's later write) | as `create`, by identifier | — |
+| `update` | W | merge only the fields in params | read by id: every written compared field equal → `EXECUTED_SUCCESS`; otherwise `INCONCLUSIVE` (never `NOT_EXECUTED`: a differing field may be someone else's later write) | as `create`, by identifier; on the probe path (no identifier) the id comes from `expected.properties`, which are the step's params (`verifiers.py:46`) | — |
 | `replace` | W | send the full record; clears what is not sent | as `update` | as `update` | — (off the allow-list until a recorded response shows the clearing) |
 | `delete` | D | planned: by id; "not found" (see the shared rules) → `ok` with `data["already_absent"] = true` (`ghl_crm.md` §2). Inverse (key ends `:inverse`, the create's params): `find_by_key` on the create's resource; exactly one → delete; none → `client_error` `inverse_target_not_found`; several → `inverse_target_ambiguous` | read by id: not found → `EXECUTED_SUCCESS`; present and ours → `NOT_EXECUTED` only if `read_by_id` is `consistent`, else `INCONCLUSIVE` | not found → `True`; present → `False`; no identifier (probe path) → `UNKNOWN` (`observe_no_identifier`, `ghl_crm.md` §4) | — |
 | `send` | IRREVERSIBLE | send once with a deterministic id derived from the step key (Gmail `Message-ID`) | `find_by_key` on the deterministic id, with the same `lookup` rule as `create` (Gmail: `eventual`, so never `NOT_EXECUTED`) | find by the deterministic id, compare | none (README §1.1: never for IRREVERSIBLE) |
 | `custom` | any | the hook implements the call path itself | hook | hook | hook |
 
-The engine picks the README §2.2 column itself: read or mutation from `binding.effective_mutation`, and "provider
-honours the key" from the profile's `idempotency`.
+The engine picks the README §2.2 column itself: read or mutation from the **archetype** (whose fit with the catalog
+mutation the catalog check proves), and "provider honours the key" from the profile's `idempotency`. It never takes
+behaviour from the binding: a rollback inverse arrives with the **create's** binding and params and the delete's
+`kernel_op_id` (`rollback.py:109`), so `binding.kernel_op_id` and `binding.effective_mutation` describe the create.
+The engine looks the operation up by the `kernel_op_id` argument and uses the binding only for `provider` and
+`binding_version`.
 
 **Identifier rule.** A W, D or IRREVERSIBLE operation names its observation read (`read`, equal to the catalog's
 `observation.method`), and the engine composes the catalog's identifier value from the parts of that read's
-`identifier` pattern (GHL `ref` = `"{contactId}/{id}"`). Where the parts come from depends on the archetype:
+`identifier` pattern (GHL `ref` = `"{contactId}/{id}"`) and writes it to `data[identifier_field]`, the field
+verification's deterministic layer reads (`verification.py:75`: a non-empty string or int). Where the parts come from
+depends on the archetype:
 
 - `create` and `send`: from the response, through `extract`. A 2xx without them is `timeout` (the write may have
   happened; the probe decides), as README §2.2 and `ghl_crm.md` §2 ("2xx without `contact.id`") require.
@@ -113,6 +127,19 @@ honours the key" from the profile's `idempotency`.
   body `{succeded: true}` carry no id and need none.
 
 For a read, a response `extract` cannot parse is `adapter_defect`.
+
+**Observed state.** `observe` puts only the compared keys' match results and `stamp_ok` in `observed_state`, never
+provider values (DR-60: it can reach the semantic layer). The contract types it `str | None`
+(`adapter_interface.py:48`) while the semantic assessor takes `dict | None` (`verification.py:54`); the engine emits
+the dict, and the type fix is owner decision 10.
+
+**Deadlines.** A call runs under the guard's `step.timeout_s`; a probe or an observation runs under one
+`probe_timeout_s` for **everything** it does (`reliability.py:230`, `:251`), whose code default is 0.5 s; deployments
+must set 5–10 s (DR-17). Each HTTP request uses the smaller of `adapter_client_timeout_s` and the time left. A probe
+or observation makes at most three sequential requests (for example a stamp search, one GET, one parent read); more
+hits than that are `INCONCLUSIVE`. Running out of time is safe: the guard returns `INCONCLUSIVE` or
+`observe_timeout`. Probes and observations take a slot from the same per-provider bulkhead as calls
+(`reliability.py:79`), so a slow probe costs call capacity.
 
 Rules every archetype shares, implemented once in the engine:
 
@@ -149,7 +176,7 @@ The provider writes these, and only these (each has a safe default where one exi
 
 `op` is the operation's profile entry, so hooks read `stamp_marker` and the other values from it rather than
 repeating them in code. Hooks make provider calls only through the engine's client (`http`), never their own: same
-transport (`retries=0`), same deadline (`adapter_client_timeout_s`), same trace line.
+transport (`retries=0`), same deadline rule (above), same trace line.
 
 The GHL duplicate-contact rule (`ghl_crm.md` §2) is a `classify` row that does one `GET` through `http`; the stamp hash is
 `ghl_crm.md` §0's `stamp()`; the trailing `[ref:…]` stripping is `normalize`. Nothing else in `ghl_crm.md` needs
@@ -192,6 +219,7 @@ defined nowhere a machine can check; the block gives each one its endpoint.
 |---|---|---|
 | `endpoint` | GET path template | required |
 | `identifier` | how the catalog's `identifier_field` value splits into placeholders | `"{id}"` (GHL notes and tasks: `"{contactId}/{id}"`, the composite `ref` of `ghl_crm.md` §0) |
+| `identifier_field` | the catalog's `observation.identifier_field` for the operations using this read; the engine writes the composed value there | `id` |
 | `parent` | GET path template of the parent, for `not_found: needs_parent_read` | none (then a 404 is never "gone") |
 | `absent_when` | field values that mean deleted | `{}` |
 
@@ -233,7 +261,9 @@ ETag flow (C36), `null_means`, `field_reference`, `redact_paths`. Revision 6 rep
 ## Connection settings: the credential document
 
 `CredentialProvider.credential()` returns one string: `{"token": …, "settings": {…}}` (README §5). The whole string is
-secret.
+secret. The provider must also implement `credential_valid(tenant_id, connection_id)`: M14 calls it before every step
+(`live_authorization.py:81`), though the protocol in `adapter_interface.py` does not declare it yet (owner decision
+10).
 
 | Setting | Example |
 |---|---|
@@ -497,7 +527,9 @@ kernels:
 3. Accept the profile, its location, the `reads:` block as the definition of `observation.method` names, and the
    `not_found` rule (default `needs_parent_read`).
 4. Accept the version rule with `compatible_binding_versions` and the per-provider rollout.
-5. Add the catalog check to the Worker Runtime start-up check (S12 code, next to `unverifiable_mutation`).
+5. Extend the Worker Runtime start-up check (S12 code, next to `unverifiable_mutation`): add the catalog check, and
+   ask the adapter per operation whether it is verifiable, since composition makes the class-level check pass for
+   every operation.
 6. Optional CONF items: a per-provider binding version in the catalog; per-provider breaker and bulkhead settings;
    per-key breakers (`ghl_crm.md` Q3); the routing adapter for several providers in one runtime (DR-42).
 7. Update `TEMPLATE.md`: point its header table, endpoints and compared fields to the profile; add "Cannot do" and
@@ -505,3 +537,6 @@ kernels:
 8. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned, apply `PROVIDER_ADAPTERS_CORRECTIONS.md`.
 9. Correct `ghl_crm.md` §4: the stamp check applies to the create's observation and the inverse, not to update
    observations (see the finding under the GHL example).
+10. Two small fixes in S12 code (not frozen): declare `credential_valid` on the `CredentialProvider` protocol, and type
+    `Observation.observed_state` as `dict | None`, matching the semantic assessor.
+11. Set `S12_PROBE_TIMEOUT_S` for real providers (DR-17) and accept the three-request limit per probe or observation.
