@@ -2,9 +2,7 @@
 
 Generated 2026-10-03 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 0 not_started, 0 red_confirmed, 1 in_progress, 18 green, 4 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 2 defects.
-
-**Next:** M21 Journeys, architecture suite, seams, certification (model: sonnet, complexity: high, status: in_progress)
+**Summary:** 0 not_started, 0 red_confirmed, 0 in_progress, 18 green, 5 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 2 defects.
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -30,7 +28,7 @@ Generated 2026-10-03 by `tools/s12_tracker.py report`. Do not edit by hand: chan
 | M18 S15 response and redaction | B4 | green | medium | sonnet |  | not done | 1 | 0 | 0 | 0 |
 | M19 Crash recovery and fault injection | B5 | green | very high | opus |  | not done | 3 | 0 | 0 | 0 |
 | M20 Multi-process: subprocess kills, two runtimes, tenant isolation | B5 | green | very high | opus |  | not done | 2 | 0 | 0 | 0 |
-| M21 Journeys, architecture suite, seams, certification | B5 | in_progress | high | sonnet | ★ | not done | 3 | 0 | 0 | 0 |
+| M21 Journeys, architecture suite, seams, certification | B5 | reviewed | high | sonnet | ★ | not done | 3 | 0 | 0 | 0 |
 
 ## Rule violations
 
