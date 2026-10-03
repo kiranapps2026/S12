@@ -80,6 +80,8 @@ The rest of the file was rechecked against the code and stands.
 
 1. Owner decisions on A1 (composition plus a per-operation start-up check) and A3 (deadline, DR-17 setting), because
    both shape the first adapter.
+   The recommended answers are in `PROVIDER_API_PROFILES.md` revision 11 ("Per-operation verifiability",
+   "Deadlines", owner decisions 5 and 11).
 2. The two small code fixes in S12 files: `credential_valid` on the protocol (A5) and the `observed_state` type (A4).
 3. The guide's v2 (DR-08) from section B.
 4. Then the first adapter, which also tests the proposal against real recorded responses.

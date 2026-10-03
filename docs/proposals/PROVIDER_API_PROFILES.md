@@ -1,11 +1,12 @@
 # Provider adapters: one engine, operation archetypes, provider profiles
 
-**Status: proposal for the owner (revision 10, 2026-10-03). No code, pinned document, catalog or milestone is changed
+**Status: proposal for the owner (revision 11, 2026-10-03). No code, pinned document, catalog or milestone is changed
 by it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not
 call real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or
 gate row moves. That milestone also needs two things this proposal does not provide: a production Worker Runtime
 (DR-14; today the guard and loop are composed only in tests) and an API path that admits a validated plan to S12
-(DR-48). Revision 10 follows the code review in `docs/proposals/ADAPTER_DOCS_REVIEW.md`.
+(DR-48). Revision 10 follows the code review in `docs/proposals/ADAPTER_DOCS_REVIEW.md`; revision 11 adds the recommended
+answers to its A1 (start-up check) and A3 (deadlines).
 
 It builds on, and must agree with:
 
@@ -50,9 +51,50 @@ A provider adapter **holds** an engine; it does not inherit from it. Its class b
 `observe`, each one line that delegates to the engine, and implements the hooks; it comes with its `CredentialProvider`
 and its profile. Composition is required, not a style choice: the Worker Runtime start-up check accepts a class only if
 its **own** body defines `probe` and `observe` (`startup.py:25` checks `adapter_class.__dict__`), so an adapter that
-inherited them from an engine base class would be refused (`unverifiable_mutation`). Because the delegating methods
-make that class-level check pass for every operation, the engine also answers per operation whether it is verifiable
-(archetype not `custom`, required hooks present, `read` set), and the start-up check should ask it (owner decision 5).
+inherited them from an engine base class would be refused (`unverifiable_mutation`).
+
+```python
+class CrmAdapter:                                   # catalog adapter_class: CrmAdapter
+    PROFILE = load_profile("crm")                   # loaded and checked once, at import
+    HOOKS = CrmHooks
+
+    def __init__(self, credentials, settings):     # settings injected, never read (README §1)
+        self._engine = Engine(self.PROFILE, self.HOOKS(), credentials, settings)
+
+    async def call(self, kernel_op_id, params, binding, context, *, call_meta=None):
+        return await self._engine.call(kernel_op_id, params, binding, context, call_meta=call_meta)
+
+    async def probe(self, kernel_op_id, params, binding, context, *, call_meta):
+        return await self._engine.probe(kernel_op_id, params, binding, context, call_meta=call_meta)
+
+    async def observe(self, kernel_op_id, observation_spec, binding, context):
+        return await self._engine.observe(kernel_op_id, observation_spec, binding, context)
+
+    @classmethod
+    def verifiable_operations(cls) -> frozenset[str]:
+        return Engine.verifiable_operations(cls.PROFILE, cls.HOOKS)
+```
+
+**Per-operation verifiability.** The delegating methods make the class-level check pass for every operation of the
+class, so on its own that check no longer proves an operation can be probed and observed. `verifiable_operations()` is
+a classmethod because start-up receives classes, not instances (`adapters: dict[str, type]`). An operation is in the
+set only if:
+
+- its archetype is not `custom`, or its `custom` hook implements its own probe and observe;
+- every hook its archetype requires exists on `HOOKS`;
+- its `read` names a `reads:` entry, and a `create` has a `stamp_marker`.
+
+If the profile fails its profile check, the set is empty and every operation is refused: fail closed.
+
+**Start-up extension (owner decision 5, additive).** In `unverifiable_mutations`, after `verifiable(cls)` passes, add
+one condition: if the class has `verifiable_operations` and this operation is not in it, list it. `MockAdapter` has no
+such method, so its result is unchanged, and the pinned M21 golden (`verifiable(MockAdapter)`, `Bare` and
+`ProbeOnly` refused) still passes. `check_worker_runtime` repeats the same query and loop instead of calling
+`unverifiable_mutations`; the same change makes it call the shared helper, so the two cannot drift. Cost: about 15 lines
+in `startup.py`, a `tests_agent` test, a CONF ruling (M21-area code). Changing `verifiable()` to accept inherited
+methods was considered and rejected: it rewrites certified M21 behaviour and would pass every engine-based adapter
+without proving anything.
+
 The engine is extracted when the second provider is built (the first adapter is written in this shape from the start,
 so the extraction is a move, not a rewrite).
 
@@ -134,12 +176,45 @@ provider values (DR-60: it can reach the semantic layer). The contract types it 
 the dict, and the type fix is owner decision 10.
 
 **Deadlines.** A call runs under the guard's `step.timeout_s`; a probe or an observation runs under one
-`probe_timeout_s` for **everything** it does (`reliability.py:230`, `:251`), whose code default is 0.5 s; deployments
-must set 5–10 s (DR-17). Each HTTP request uses the smaller of `adapter_client_timeout_s` and the time left. A probe
-or observation makes at most three sequential requests (for example a stamp search, one GET, one parent read); more
-hits than that are `INCONCLUSIVE`. Running out of time is safe: the guard returns `INCONCLUSIVE` or
-`observe_timeout`. Probes and observations take a slot from the same per-provider bulkhead as calls
-(`reliability.py:79`), so a slow probe costs call capacity.
+`probe_timeout_s` for **everything** it does (`reliability.py:230`, `:251`), whose code default is 0.5 s (DR-17).
+
+Recommended settings (owner decision 11):
+
+| Setting | Value | Why |
+|---|---|---|
+| `S12_STEP_TIMEOUT_S` | 30 (current default) | bounds a call, including a rollback inverse |
+| `S12_ADAPTER_CLIENT_TIMEOUT_S` | 10 | one HTTP request; below the step timeout (C37) |
+| `S12_PROBE_TIMEOUT_S` | 8 | a whole probe or observation; three sequential requests at normal SaaS latency; below the step timeout (C37) |
+
+Worst cases these imply: the probe path is about 27 s (three probes of 8 s plus the 1 s and 2 s backoffs); a
+verification is about 26 s (three observations of 8 s, 1 s apart). Check both against lease renewal (M20) before
+adopting the values.
+
+Engine rules:
+
+- **Budget-aware requests.** The engine receives `probe_timeout_s` and `adapter_client_timeout_s` at construction and
+  keeps a deadline of `start + probe_timeout_s − 0.5 s`. Each request's timeout is the smaller of
+  `adapter_client_timeout_s` and the time left. With less than 1 s left it starts no new request and returns
+  `INCONCLUSIVE` or `observe_timeout` itself, rather than being cancelled mid-request by the guard: the same outcome,
+  with clean evidence.
+- **At most three requests** per probe or observation, enforced by a counter. Every archetype fits:
+
+  | Path | Requests |
+  |---|---|
+  | `create` probe | stamp search + GET of the one hit = 2 (1 when the search result already shows the stamp); two or more hits stop at `INCONCLUSIVE` without fetching them |
+  | `create` observe | 1 GET with an identifier; search + GET without one |
+  | `delete` probe or observe | GET, plus the parent read when `not_found: needs_parent_read` = 2 |
+  | `update` and `replace` probe or observe | 1 GET |
+
+  A fourth request is a bug: `INCONCLUSIVE`, and an engine sabotage case. A call path (including the inverse: search,
+  GET, DELETE; and GHL's duplicate rule) runs under the step timeout, not this limit.
+- **No retries inside a probe or observation.** A 429, a 5xx or the deadline gives `INCONCLUSIVE` / `UNKNOWN`; M13's
+  probe spacing and verification's attempts are the retries.
+- **`min_probe_timeout_s` in the profile** (e.g. 5): the engine refuses to construct when the injected
+  `probe_timeout_s` is lower, so the Worker Runtime fails at start instead of answering every probe with a silent
+  `INCONCLUSIVE`. This turns DR-17 from "deployments must remember" into a check, with no change to `startup.py`.
+- **Bulkhead headroom.** Probes and observations take slots from the same per-provider bulkhead as calls
+  (`reliability.py:79`); size it with that in mind (GHL: 8).
 
 Rules every archetype shares, implemented once in the engine:
 
@@ -209,6 +284,7 @@ Defaults fail safe where the field affects behaviour. A field without a default 
 | `limits` | documented limits, informational (guard sizing) | `{}` | `{burst: "100 per 10 s per location", bulkhead: 8}` |
 | `verified` | `{docs: <date and source> or null, recorded: <date of the last recorded response in this repo> or null}` | required | `{docs: null, recorded: null}` |
 | `review_by` | date of the next docs and changelog check | required | `2026-12-31` |
+| `min_probe_timeout_s` | the shortest `probe_timeout_s` this provider's probes and observations can work in; the engine refuses to construct below it | required | `5` |
 
 ### `reads:` block
 
@@ -363,7 +439,9 @@ registry (README §1, isolation):
 - `version_scheme: path` ⇒ `base_url` contains `{api_version}`; `header` ⇒ `version_header` set;
 - every placeholder in an endpoint, a `reads:` entry or a `stamp_marker` is a step param, an `identifier` part,
   `{api_version}` or a `{settings.name}`;
-- the subclass implements every hook its archetypes require; the count of `custom` entries is reported.
+- the hooks class implements every hook its archetypes require; the count of `custom` entries is reported;
+- `verifiable_operations()` equals the W, D and IRREVERSIBLE operations the profile defines (a `tests_agent`
+  assertion, so an operation silently dropping out of the set is caught before start-up refuses it).
 
 **Catalog check** (`tests_agent`, against `docs/catalog/catalog.yaml`):
 
@@ -386,8 +464,10 @@ archetype, so a new operation gets its cases automatically and fails until its r
 reaches every provider at once. It gets its own README §6 matrix against a fake provider, plus sabotage patches in the
 M10 pattern: `NOT_EXECUTED` from an `eventual` lookup, a 404 taken as gone without the parent read, an unencoded path
 parameter, a `fixed_params` value overridden by params, a probe or observe that skips `owns`, a write answered 2xx
-without its identifier taken as `ok`, a `delete` inverse that deletes a record without our stamp. Each must be
-caught.
+without its identifier taken as `ok`, a `delete` inverse that deletes a record without our stamp, a request started
+after the deadline, a fourth request in one probe or observation, construction with `probe_timeout_s` below
+`min_probe_timeout_s`. Each must be caught. With a fake transport that delays responses, three slow requests must end
+`INCONCLUSIVE`, never `NOT_EXECUTED`.
 
 **Date checks** (reported, never blocking unrelated work): `sunset_at` within N days; `review_by` passed.
 
@@ -408,6 +488,7 @@ max_page_size: 100
 idempotency: stamp
 not_found: absent               # GHL answers "no access" with 403 (ghl_crm.md §2)
 read_by_id: consistent          # ghl_crm.md: GET by id treated as authoritative (VERIFY)
+min_probe_timeout_s: 5          # search + GET within one probe; VERIFY against recorded latency
 verified: {docs: null, recorded: null}
 review_by: 2026-12-31
 limits: {burst: "100 per 10 s per location", daily: "200000 per location", bulkhead: 8}
@@ -527,9 +608,9 @@ kernels:
 3. Accept the profile, its location, the `reads:` block as the definition of `observation.method` names, and the
    `not_found` rule (default `needs_parent_read`).
 4. Accept the version rule with `compatible_binding_versions` and the per-provider rollout.
-5. Extend the Worker Runtime start-up check (S12 code, next to `unverifiable_mutation`): add the catalog check, and
-   ask the adapter per operation whether it is verifiable, since composition makes the class-level check pass for
-   every operation.
+5. **Recommended:** extend the Worker Runtime start-up check additively (S12 code, CONF ruling): the per-operation
+   `verifiable_operations()` condition and the catalog check, with `check_worker_runtime` calling the shared
+   `unverifiable_mutations` helper. Keep `verifiable()` unchanged (see "Per-operation verifiability").
 6. Optional CONF items: a per-provider binding version in the catalog; per-provider breaker and bulkhead settings;
    per-key breakers (`ghl_crm.md` Q3); the routing adapter for several providers in one runtime (DR-42).
 7. Update `TEMPLATE.md`: point its header table, endpoints and compared fields to the profile; add "Cannot do" and
@@ -539,4 +620,6 @@ kernels:
    observations (see the finding under the GHL example).
 10. Two small fixes in S12 code (not frozen): declare `credential_valid` on the `CredentialProvider` protocol, and type
     `Observation.observed_state` as `dict | None`, matching the semantic assessor.
-11. Set `S12_PROBE_TIMEOUT_S` for real providers (DR-17) and accept the three-request limit per probe or observation.
+11. **Recommended:** `S12_STEP_TIMEOUT_S` 30, `S12_ADAPTER_CLIENT_TIMEOUT_S` 10, `S12_PROBE_TIMEOUT_S` 8, the
+    three-request limit per probe or observation, and `min_probe_timeout_s` per profile (see "Deadlines"), after
+    checking the worst cases against lease renewal (M20).
