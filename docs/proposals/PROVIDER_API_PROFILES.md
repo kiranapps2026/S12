@@ -1,6 +1,6 @@
 # Provider adapters: one engine, operation archetypes, provider profiles
 
-**Status: proposal for the owner (revision 8, 2026-10-03). No code, pinned document, catalog or milestone is changed by
+**Status: proposal for the owner (revision 9, 2026-10-03). No code, pinned document, catalog or milestone is changed by
 it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call
 real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row
 moves.
@@ -19,7 +19,7 @@ are in `docs/proposals/PROVIDER_ADAPTERS_CORRECTIONS.md`.
 
 Revisions 1–5 described a data file next to hand-written adapters. Revision 6 changed the structure, not the rules:
 one shared engine and a closed set of operation archetypes, so most of an adapter's behaviour is written once, and a
-provider writes only what is really its own. Revisions 7 and 8 are consistency reviews of that structure.
+provider writes only what is really its own. Revisions 7–9 are consistency reviews of that structure.
 
 ## Problem
 
@@ -93,7 +93,7 @@ owner decision, not a profile edit.
 |---|---|---|---|---|---|
 | `read_one` | R | GET one resource by id | not called (reads retry) | — | — |
 | `list_page` | R | one page, at most `max_page_size`; cursor in `data["next"]` | not called | — | — |
-| `create` | W | build the request with the stamp (or the provider key), send; `data` carries the identifier (see "Identifier rule") | `find_by_key`: exactly one of ours → `EXECUTED_SUCCESS`; none → `NOT_EXECUTED` **only** if the operation's `lookup` is `consistent`, else `INCONCLUSIVE`; several → `INCONCLUSIVE` and an ERROR log | read via `reads[observation.method]`; with no identifier, `find_by_key` first; compare the written `compare` fields; check `owns` | is the inverse **target**: located by `find_by_key`, never by a natural key alone |
+| `create` | W | build the request with the stamp (or the provider key), send; `data` carries the identifier (see "Identifier rule") | `find_by_key`: exactly one of ours → `EXECUTED_SUCCESS`; none → `NOT_EXECUTED` **only** if the operation's `lookup` is `consistent`, else `INCONCLUSIVE`; several → `INCONCLUSIVE` and an ERROR log | read via `reads[read]`; with no identifier, `find_by_key` first; compare the written `compare` fields; check `owns` | is the inverse **target**: located by `find_by_key`, never by a natural key alone |
 | `update` | W | merge only the fields in params | read by id: every written compared field equal → `EXECUTED_SUCCESS`; otherwise `INCONCLUSIVE` (never `NOT_EXECUTED`: a differing field may be someone else's later write) | as `create`, by identifier | — |
 | `replace` | W | send the full record; clears what is not sent | as `update` | as `update` | — (off the allow-list until a recorded response shows the clearing) |
 | `delete` | D | planned: by id; "not found" (see the shared rules) → `ok` with `data["already_absent"] = true` (`ghl_crm.md` §2). Inverse (key ends `:inverse`, the create's params): `find_by_key` on the create's resource; exactly one → delete; none → `client_error` `inverse_target_not_found`; several → `inverse_target_ambiguous` | read by id: not found → `EXECUTED_SUCCESS`; present and ours → `NOT_EXECUTED` only if `read_by_id` is `consistent`, else `INCONCLUSIVE` | not found → `True`; present → `False`; no identifier (probe path) → `UNKNOWN` (`observe_no_identifier`, `ghl_crm.md` §4) | — |
@@ -104,10 +104,15 @@ The engine picks the README §2.2 column itself: read or mutation from `binding.
 honours the key" from the profile's `idempotency`.
 
 **Identifier rule.** A W, D or IRREVERSIBLE operation names its observation read (`read`, equal to the catalog's
-`observation.method`). After a 2xx, `extract` must return every part of that read's `identifier` pattern; the engine
-composes the catalog's identifier value from them (GHL `ref` = `"{contactId}/{id}"`). A 2xx without them is
-`timeout` for a mutation (the write may have happened; the probe decides) and `adapter_defect` for a read, as README
-§2.2 and `ghl_crm.md` §2 ("2xx without `contact.id`") require.
+`observation.method`), and the engine composes the catalog's identifier value from the parts of that read's
+`identifier` pattern (GHL `ref` = `"{contactId}/{id}"`). Where the parts come from depends on the archetype:
+
+- `create` and `send`: from the response, through `extract`. A 2xx without them is `timeout` (the write may have
+  happened; the probe decides), as README §2.2 and `ghl_crm.md` §2 ("2xx without `contact.id`") require.
+- `update`, `replace` and `delete`: from the step's params (the addressed resource). Responses such as GHL's delete
+  body `{succeded: true}` carry no id and need none.
+
+For a read, a response `extract` cannot parse is `adapter_defect`.
 
 Rules every archetype shares, implemented once in the engine:
 
@@ -120,8 +125,11 @@ Rules every archetype shares, implemented once in the engine:
 - **Compare what was written.** Only `compare` fields present in the step's params are compared (`ghl_crm.md` §4:
   "compared, if present"); an entry naming an object (`fields`, `properties`) compares the keys written inside it. An
   absent field equals an empty value written (`false`, `""`, `[]`).
-- **Ours means ours.** Every read used by probe, observe or inverse passes the `owns` hook (stamp and account scope
-  match, `ghl_crm.md` §4 "always checked"); a record that is not ours is never adopted or deleted.
+- **Ours means ours, in two strengths.** `owns(op, record, settings, stamped)` always checks the account scope (GHL
+  `locationId`). It also checks the stamp **only** where S12 created the record in this step: `create` and `send`
+  probes and observations, and the `delete` inverse. A planned `update` or `delete` addresses a record the user named,
+  which may predate S12 or carry another step's stamp, so there the stamp is not checked. A record failing the check
+  is never adopted or deleted.
 - `custom` is the escape hatch for an operation no archetype fits. Each `custom` entry needs a line in the spec saying
   why, and the profile check reports the count per provider; many `custom` entries mean a missing archetype or an
   operation that should not exist.
@@ -134,10 +142,10 @@ The provider writes these, and only these (each has a safe default where one exi
 |---|---|---|
 | `build_request(op, params, key, settings)` | every call: returns the query and the body. It computes the stamp or the deterministic id from the step key (the spec's format, e.g. `ghl_crm.md` §0 `stamp()`, `gmail_mail.md` §3 `Message-ID`); paging values and `fixed_params` are added by the engine afterwards | required |
 | `extract(op, response)` | every call: the identifier, or `items` and `next` for `list_page`; only named fields, never the whole record | required |
-| `classify(op, response)` | every call: the provider's own rows (Layer A spec §2), returning an error class, `ok`, `not_found` (a provider-specific not-found shape, e.g. GHL's recorded "note not found" 400, which then follows the `not_found` rule), or "not mine" | "not mine": the engine's README §2 table decides; a plain 404 is `not_found` |
-| `find_by_key(op, params, key, settings)` | `create` and `send` probes, observe without identifier, `delete` inverse: the resources carrying our stamp or deterministic id, or "lookup failed" | required when a `create` or `send` exists |
+| `classify(op, response)` | every call: the provider's own rows (Layer A spec §2), returning an error class, `ok`, `not_found` (a provider-specific not-found shape, e.g. GHL's recorded "note not found" 400), or "not mine" | "not mine": the engine's README §2 table decides; a plain 404 is `not_found`. `not_found` follows the `not_found` rule for a `delete` call and for probe and observe reads; anywhere else it is `client_error` |
+| `find_by_key(op, params, key, settings)` | `create` and `send` probes, observe without identifier, `delete` inverse: the resources carrying our stamp or deterministic id, or "lookup failed". For the inverse the engine passes the step key with `:inverse` removed (`ghl_crm.md` §0 `step_key()`), so the create's stamp is found | required when a `create` or `send` exists |
 | `normalize(op, field, value)` | comparisons | identity |
-| `owns(op, record, settings)` | every read used by probe, observe, inverse | required unless the provider has only reads |
+| `owns(op, record, settings, stamped)` | every read used by probe, observe, inverse (the two strengths above) | required unless the provider has only reads |
 
 `op` is the operation's profile entry, so hooks read `stamp_marker` and the other values from it rather than
 repeating them in code. Hooks make provider calls only through the engine's client (`http`), never their own: same
@@ -332,7 +340,8 @@ registry (README §1, isolation):
 - every `kernels:` key is an operation of this provider, and every operation of this provider has an entry;
 - archetype fits the catalog mutation (`read_one`/`list_page` ↔ R; `create`/`update`/`replace` ↔ W; `delete` ↔ D;
   `send` ↔ IRREVERSIBLE; `custom` any);
-- every operation's `read` equals its catalog `observation.method`, and that name has a `reads:` entry; every
+- every W, D and IRREVERSIBLE operation's `read` equals its catalog `observation.method`, and that name has a
+  `reads:` entry; every
   `create` with a catalog `inverse` points at a `delete`;
 - `versions.binding` is in every profile's `compatible_binding_versions`.
 
@@ -347,7 +356,8 @@ archetype, so a new operation gets its cases automatically and fails until its r
 reaches every provider at once. It gets its own README §6 matrix against a fake provider, plus sabotage patches in the
 M10 pattern: `NOT_EXECUTED` from an `eventual` lookup, a 404 taken as gone without the parent read, an unencoded path
 parameter, a `fixed_params` value overridden by params, a probe or observe that skips `owns`, a write answered 2xx
-without its identifier taken as `ok`. Each must be caught.
+without its identifier taken as `ok`, a `delete` inverse that deletes a record without our stamp. Each must be
+caught.
 
 **Date checks** (reported, never blocking unrelated work): `sunset_at` within N days; `review_by` passed.
 
@@ -405,6 +415,12 @@ catalog change `ghl_crm.md` §0 already asks for (`identifier_field: ref`); unti
 stay UNKNOWN, as the spec says. The hooks GHL needs: `build_request`, `extract`, `classify` (duplicate-contact rule),
 `find_by_key`, `normalize` (stamp-line stripping, E.164 phones, lower-cased email), `owns` (stamp and `locationId`).
 `classify` also maps GHL's recorded "note not found" / "contact not found" 400s to `not_found`.
+
+**A finding in `ghl_crm.md` itself (owner decision 9):** its §4 says `get_contact` "always" checks `s12_ref` = the
+stamp. `crm.contact_update` and `crm.task_update` observe through the same reads, and the record they update carries
+the stamp of the step that created it, or none if it predates S12. Under that rule every update verification would
+FAIL. It is latent today (updates are off the launch list), and the "two strengths" rule above resolves it: the stamp
+is checked only where S12 created the record in this step.
 
 ## Sketches for other providers (illustrative; need catalog rows and VERIFY)
 
@@ -487,3 +503,5 @@ kernels:
 7. Update `TEMPLATE.md`: point its header table, endpoints and compared fields to the profile; add "Cannot do" and
    "Fails silently" sections; list the hooks the provider implements.
 8. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned, apply `PROVIDER_ADAPTERS_CORRECTIONS.md`.
+9. Correct `ghl_crm.md` §4: the stamp check applies to the create's observation and the inverse, not to update
+   observations (see the finding under the GHL example).
