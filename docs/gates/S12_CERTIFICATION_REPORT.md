@@ -3,7 +3,11 @@
 Gate §20 template, filled from the certified code and the owner's verification run, with the evidence for each row.
 
 - **Status:** draft for the owner's sign-off, 2026-10-03.
-- **Companion:** `docs/gates/S12_DEFERRED_REGISTER.md` (gate §21).
+- **Revision 2:** after a stage-by-stage re-check. It adds the `tests_postgres` results, four pre-tag decisions
+  (section 5), the API-wiring gaps and a proposed DEF-006, and corrects the S8 and blocker rows.
+- **Companions:**
+  - `docs/gates/S12_DEFERRED_REGISTER.md` (gate §21, DR-01–DR-60);
+  - `docs/gates/S0_S15_STAGE_REFERENCE.md` (per-stage logic, what works, limits, inconsistencies).
 
 | Item | Value |
 |---|---|
@@ -59,7 +63,10 @@ Cancellation:              PASS   (golden M14, 28 cases)
 Two Worker Runtimes:       PASS   (double executions: 0; takeovers: 4 scenarios — 3 killed-process recoveries, 1 shared
                                    run with takeover; sweepers claim every orphan exactly once; 5 x M20)
 Tenant isolation:          PASS   (forced RLS on every S12 table; cross-tenant read/change/forge refused — M20; I15)
-Journeys S0→S15:           8/8 PASS (plus a ninth on the real admission and pre-flight sources, CONF-027)
+Journeys S0→S15:           8/8 PASS (plus a ninth on the real admission and pre-flight sources, CONF-027);
+                           each starts from a state the real S0–S11 pipeline certified and is admitted by S12
+                           entry. The S11→S12 handoff is done by the test fixture (fixtures/certified.py); the
+                           application has no such handoff (DR-48)
 Invariants I1–I18:         PASS   (checker implements I1–I3, I5–I16, called at 123 sites across the goldens; I4 asserted
                                    per test from provider side-effect counts; I17 by CHECK used_count <= limit_value and
                                    M8a; I18 by M8a test_only_an_eligible_worker_is_ever_leased)
@@ -67,22 +74,30 @@ Worker management (C39):   PASS   (quota overshoots: 0 — I17 CHECK; leases on 
 Scale-readiness S1–S9:     PASS   (S1 settings from env (M2, M21); S2 InProcessDispatcher (M12); S3 no module state (M10);
                                    S4 SKIP LOCKED sweepers (M20); S5 correlated logs + no-op metrics (M12, M21);
                                    S6 CredentialProvider + redaction (M10, M18); S7 superseded by C34 (M1, M20);
-                                   S8 semantic never overrides deterministic FAIL (M15); S9 portability (M20).
-                                   Not met in production terms: see section 4)
+                                   S8 PARTIAL: a semantic PASS never overrides a deterministic FAIL (M15), but
+                                   the provider-text-instructs-PASS test needs a real assessor (DR-21, DR-60);
+                                   S9 portability (M20). Not met in production terms: see section 4)
 Performance baseline:      p50/p95 S12 overhead per step = 42/55 ms (Linux, 210 steps, three runs:
                            41.3/55.0, 41.9/54.6, 42.4/53.8; recorded, no threshold)
 
 S0–S11 regression:         19/19 PASS (tools/owner_certify.py; tests/ 836 passed)
 Full regression:           1826/1826 PASS (tests 836, tests_golden 896, tests_agent 94)
+tests_postgres (S0–S11 integration, not run by any certifier):
+                           294 passed; 12 live-model tests need DEEPSEEK_API_KEY (not run here);
+                           1 FAIL test_schema_audit (stale SQL parser, DR-59);
+                           2 files cannot import (test_step_loop, test_chain_full_stack: CONF-035 port never
+                           done, DR-58)
 Skipped: 0   XFail: 0
 
-Recorded blockers:         none open (CONF-001..052: 2 fixed, 50 ruled, 0 open; STOP-001..005 applied;
-                           DEF-001, DEF-005 fixed; DEF-003 wontfix by ruling; DEF-002, DEF-004 fixed in code,
-                           rows to be closed by the owner — section 3)
+Recorded blockers:         CONF-001..052: 2 fixed, 50 ruled, 0 open (but CONF-035's follow-on was never
+                           applied, DR-58); STOP-001..005 applied; DEF-001, DEF-005 fixed; DEF-003 wontfix by
+                           ruling; DEF-002, DEF-004 fixed in code but still open in the records (section 3);
+                           proposed DEF-006, admission budget gate (DR-55)
 Open questions:            DR-19 (no post-execution human-approval run state); all others in the deferred register
 Deleted tests:             none
 
-Final:                     CERTIFIED — subject to the owner's sign-off (section 6)
+Final:                     CERTIFIED — subject to the owner's four pre-tag decisions (section 5) and sign-off
+                           (section 7)
 ```
 
 ## 2. Milestones
@@ -134,6 +149,12 @@ Sabotage: every milestone's sabotage patches caught (X rows); M21 patches caught
       reservation reasons allowed by A.3; I5 checked by assert_system_invariants across the goldens`
     - DEF-004: `fixed in M12 (591fc73): step pending→running and reservation reserved→locked in one set_step
       transaction (I-3); golden M09 test_lock_joins_the_callers_transaction and M12`
+  - **Proposed DEF-006** (caused by M21, severity minor, found 2026-10-03 in the stage re-check). Row text:
+    `adapters/postgres/admission_snapshot.py:36-42: admission gate 10 reads execution_steps.effective_risk (0–1) as
+    step_cost and compares it to tenants.budget_pool, so for any pool >= 1 the gate is "pool > 0" and never refuses an
+    over-cost step early; money stays safe because the step's reservation enforces the real cost (I1, M9)`.
+    A milestone cannot be `reviewed` while a defect it caused is open, so this needs a decision before M21 is
+    reviewed (section 5).
 
 ## 4. What this certification does and does not mean
 
@@ -144,18 +165,37 @@ goldens and verified by the owner.
 
 **Not certified. These must be true before anything is called production-ready** (details in the register):
 
-1. **No production Worker Runtime exists.** The kernel is composed only in tests; `main.py --worker` is a stub (DR-14).
+1. **The kernel is not reachable from the application.**
+   - The API runs S0–S11 and never admits a plan to S12 (DR-48).
+   - No route returns a run's outcome (DR-49).
+   - No Worker Runtime exists; the kernel is composed only in tests, and `main.py --worker` is a stub (DR-14).
+   - The dead-letter operator has no HTTP route (DR-57).
 2. **Only the mock adapter is on `s12-work`.** Real adapters are the next phase (DR-38–DR-43). The cross-check found
    two S0–S11 gaps that block them: single-capability plans reach S12 with no params (DR-39), and S15 returns no
    step data (DR-40).
 3. **No production semantic assessor.** Steps that require the semantic layer (risk ≥ 0.7 or IRREVERSIBLE) end in a
    dead letter (DR-21).
-4. **Security items:**
+4. **Admission is partly sourced.** Seven of the eleven gates are hard-coded to pass (DR-26), and gate 10 has a
+   defect (DR-55). The step's budget reservation, the live authorisation check and the guard's breaker remain the
+   effective controls.
+5. **Security items:**
    - team test keys must be removed (DR-11);
    - EXECUTE on the recovery function must be revoked from PUBLIC (DR-12);
    - DEF-003's predicate is still to be added (DR-09).
 
-## 5. Issues found and fixed during M15–M21 certification
+## 5. Pre-tag decisions (owner)
+
+The tag says "certified", so each of these needs an explicit owner decision first. The recommendation is the
+first option.
+
+| # | Item | Options |
+|---|---|---|
+| P1 | DR-58: CONF-035 port never done (2 `tests_postgres` files cannot import) | (a) port them now to the M12 interface with the same scenarios (an implementation task, then this report updated); (b) amend CONF-035 to defer the port, with the reason recorded |
+| P2 | DR-59: stale schema-audit heuristic | (a) teach the audit to skip SQL functions and `FOR UPDATE OF`; (b) record it as known and defer |
+| P3 | DR-55 / proposed DEF-006: admission budget gate | (a) record DEF-006 and fix it before the tag (read the step's cost from its reservation or plan; a golden case by the test-author); (b) record DEF-006 `wontfix` this phase, citing the M9 reservation as the control |
+| P4 | DEF-002 and DEF-004 | close as fixed (section 3 text) |
+
+## 6. Issues found and fixed during M15–M21 certification
 
 | Issue | Root cause | Fix | Evidence |
 |---|---|---|---|
@@ -163,12 +203,13 @@ goldens and verified by the owner.
 | S0–S11 certifier 18/19 (OWN-11) | the regression test carried a `pytest.skip` guard under `tests/` | `ee9c334` (moved to `tests_agent/`, no skip) | `owner_certify.py` 19/19 |
 | M21 marked `reviewed` without a green checkpoint (`f1e4535`) | made outside `owner_verify_s12.ps1` while a row failed | reverted `df957d0`; M21 then certified properly, `3c2a515` | owner run 34/34 |
 
-## 6. Owner sign-off
+## 7. Owner sign-off
 
 The owner, in this order:
 
-1. Review this report and `S12_DEFERRED_REGISTER.md`.
-2. Close DEF-002 and DEF-004 (section 3 text), then commit.
+1. Review this report, `S12_DEFERRED_REGISTER.md` and `S0_S15_STAGE_REFERENCE.md`.
+2. Decide P1–P4 (section 5), record the decisions (CONF-035 amendment or port; DEF-002, DEF-004 closed; DEF-006
+   recorded), then commit.
 3. Review M21: `python tools\s12_tracker.py set M21 reviewed`, then commit and push.
 4. Run `python tools\owner_certify_s12.py --milestone M21 --fast`. Every row must PASS.
 5. Tag, then push the tags:
