@@ -7,11 +7,14 @@ moves.
 
 It builds on, and must agree with:
 
-- `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (the guide): adapter contract, error rules (§4), probe methods (§3.2),
-  credentials (§11), registry entries (§12);
-- `batch_bundles/LAYER_A/ADAPTER_SPECS/` (the Layer A specs): `README.md` (the standard), `TEMPLATE.md`, and the
-  per-provider files `ghl_crm.md` and `gmail_mail.md`;
-- `docs/catalog/catalog.yaml` and its loader `src/adapters/postgres/catalog.py`.
+- `batch_bundles/LAYER_A/ADAPTER_SPECS/` (the Layer A specs): `README.md` (the standard: contract §1, error rules §2,
+  probe §3, credentials §5, tests §6, definition of done §7), `TEMPLATE.md`, and the per-provider files `ghl_crm.md`
+  and `gmail_mail.md`;
+- `docs/catalog/catalog.yaml` and its loader `src/adapters/postgres/catalog.py`;
+- the ADAPTERS items of `docs/gates/S12_DEFERRED_REGISTER.md` (DR-08, DR-38, DR-41, DR-42).
+
+It does not rely on `docs/ADAPTER_IMPLEMENTATION_GUIDE.md`: DR-08 records that the guide has about 15 factual errors
+and that agents use the Layer A README and template until its v2.
 
 ## Problem
 
@@ -31,7 +34,7 @@ Capabilities, bindings, `catalog.yaml`, the planner, S5, the guard and every fro
 |---|---|
 | Capability, binding, `FrozenBindingIdentity` | None |
 | `catalog.yaml` kernel op (mutation, risk, cost, `timeout_seconds`, `retry_safety`, inverse, observation) | None: these stay registry facts (A4) |
-| `AdapterResult`, `CallMeta`, `BaseAdapter`, `CredentialProvider` | None (guide §14) |
+| `AdapterResult`, `CallMeta`, `BaseAdapter`, `CredentialProvider` | None (README §1) |
 | Guard, breaker, bulkhead, retry policy | None |
 | Layer A spec | Its header values (version, base URL, idempotency, page size) move to the profile; the spec links to it and keeps the prose, the VERIFY marks and the rules |
 | **Provider profile** (new) | `src/engines/<provider>/profile.yaml`, next to the adapter (`ghl_crm.md` puts the `crm` adapter in `src/engines/crm/adapter.py`) |
@@ -91,7 +94,7 @@ Keyed by catalog kernel op id. An entry states only what it needs; most need two
 | `pagination` | `none` to switch paging off | profile's (reads only) |
 | `batch_max_items` | int; **reads only**, writes are always `1` | `1` |
 | `update_semantics` | `patch_merge` / `put_replace`, for update ops (a label: the request code follows the spec) | — |
-| `probe_method` | `provider_key` / `deterministic_id` / `stamp` / `natural_key` (guide §3.2) / `by_id` (deletes and updates) | required for W, D, IRREVERSIBLE |
+| `probe_method` | `provider_key` / `deterministic_id` / `stamp` / `natural_key` (README §3) / `by_id` (deletes and updates) | required for W, D, IRREVERSIBLE |
 | `marker` | where the stamp lives, for `stamp`: e.g. `custom_field:s12_ref`, `body_suffix` | — |
 | `required_scopes` | list | `[]` |
 | `deprecated_at`, `sunset_at`, `replacement_kernel_op_id` | dates, kernel op id | — |
@@ -111,11 +114,11 @@ Revision 1 also had `partial_success`, `async_mode`, `concurrency_control`, `nul
 - **`redact_paths`.** Not needed (see the table above).
 
 `probe_method` and `marker` are **labels checked by the load check** (below). The probe logic itself stays in code and
-follows the spec's §3, including guide §3.2's rule that a natural-key search alone never returns `NOT_EXECUTED`.
+follows the spec's §3, including README §3's rule that a natural-key search alone never returns `NOT_EXECUTED`.
 
 ## Connection settings: the credential document
 
-`CredentialProvider.credential()` returns one string (guide §11). Per-connection values travel inside it, as the Layer A
+`CredentialProvider.credential()` returns one string (README §5). Per-connection values travel inside it, as the Layer A
 standard already defines (README §5): `{"token": …, "settings": {…}}`. The whole string is secret. Examples:
 
 | Setting | Example |
@@ -176,9 +179,9 @@ Error classification, probe, observe, stamping and inverse location are unchange
 - the profile parses, `profile_format` is known, required fields are present, and enum values are valid;
 - every `kernels:` key is a kernel op of this provider in the catalog, and every catalog op of this provider has an
   entry;
-- every W, D and IRREVERSIBLE kernel has a `probe_method`, and `stamp` has a `marker`. The startup guard already
-  refuses W/D/IRREVERSIBLE bindings without `probe` and `observe` overrides (guide §12); this check makes sure each one
-  has a defined method;
+- every W, D and IRREVERSIBLE kernel has a `probe_method`, and `stamp` has a `marker`. The Worker Runtime start-up already
+  refuses a W/D/IRREVERSIBLE binding whose adapter does not override `probe` and `observe` (`unverifiable_mutation`,
+  M21, DR-41); this check makes sure each operation also has a defined method;
 - no write has `batch_max_items` > 1;
 - `version_scheme: path` ⇒ `base_url` contains `{api_version}`; `header` ⇒ `version_header` is set.
 
@@ -186,7 +189,7 @@ Error classification, probe, observe, stamping and inverse location are unchange
 
 - `binding_version` in every profile equals `versions.binding` in `catalog.yaml`;
 - a kernel with `sunset_at` within N days fails;
-- recorded response fixtures exist for the current `api_version` (guide §13.1 layout).
+- recorded response fixtures exist for the current `api_version` (README §6 test plan).
 
 A drift report against the provider's published schema can be added later, offline only. Nothing checks the network at
 run time.
@@ -242,15 +245,19 @@ label records that. The catalog entries for `crm` stay exactly as they are.
 | Hierarchical resource model in the contract | The contract is one kernel op per step; S9 plans compositions. Fine as a private helper inside an adapter |
 | Lazy identity resolution at S12 | Binding drift (I-002, I-010) and an unbudgeted provider call. Resolve at S5, or keep the id in the credential document's settings |
 | Live schema introspection at run time | Registry facts are authoritative (A4); the deterministic pipeline must not depend on the network |
-| Retry as an adapter property | Retry belongs to the guard (README §1, guide §7.4) |
-| Side-effect ledger as an adapter contract | The ledger is the engine's. Adapters send or stamp the key and implement `probe()` (guide §3.2) |
+| Retry as an adapter property | Retry belongs to the guard (README §1) |
+| Side-effect ledger as an adapter contract | The ledger is the engine's. Adapters send or stamp the key and implement `probe()` (README §3) |
 | Paging many pages inside one call | One page per call, cursor in `data["next"]` (Layer A convention); simpler, and it stays inside the step deadline |
 
 ## Owner decisions needed (when the first new-adapter milestone starts)
 
-1. Accept the profile, its location (`src/engines/<provider>/profile.yaml`) and the "stays out" list.
-2. Accept the version rule, the adapter's binding-version check and the rollout order.
-3. Update `TEMPLATE.md` and the Layer A header table to point to the profile, and add the profile to guide §12.
-4. Optional, separate CONF items: per-provider breaker and bulkhead settings (today one setting for all providers),
-   and per-key breakers (`ghl_crm.md` Q3).
-5. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned: the GHL §2 and Airtable §6 corrections above.
+1. Check the profile against the Notion and Airtable v2 adapter package (DR-38, prepared for `adapters-work`, not in
+   this repository): it is the first real code the format must fit, and it settles the Airtable `/v0` point.
+2. Accept the profile, its location (`src/engines/<provider>/profile.yaml`) and the "stays out" list.
+3. Accept the version rule, the adapter's binding-version check and the rollout order.
+4. Update `TEMPLATE.md`, the Layer A header tables and README §7 (definition of done) to point to the profile; include
+   it in the guide's v2 (DR-08).
+5. Optional, separate CONF items: per-provider breaker and bulkhead settings (today one setting for all providers),
+   per-key breakers (`ghl_crm.md` Q3), and the routing adapter for several providers in one runtime (DR-42; each
+   adapter keeps loading only its own profile).
+6. When `PROVIDER_ADAPTERS.md` is next amended and re-pinned: the GHL §2 and Airtable §6 corrections above.
