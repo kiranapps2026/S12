@@ -262,7 +262,7 @@
       "batch": "B5",
       "prototype_state": "not done",
       "scope": "Real process kills x3, SKIP LOCKED, RLS",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     },
     {
