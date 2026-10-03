@@ -1,6 +1,6 @@
 # Provider adapters: one engine, operation archetypes, provider profiles
 
-**Status: proposal for the owner (revision 7, 2026-10-03). No code, pinned document, catalog or milestone is changed by
+**Status: proposal for the owner (revision 8, 2026-10-03). No code, pinned document, catalog or milestone is changed by
 it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call
 real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row
 moves.
@@ -17,9 +17,9 @@ It does not rely on `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (DR-08: about 15 fact
 README and template until its v2). Provider facts and the corrections they imply for the pinned `PROVIDER_ADAPTERS.md`
 are in `docs/proposals/PROVIDER_ADAPTERS_CORRECTIONS.md`.
 
-Revision 6 changes the structure, not the rules: revisions 1–5 described a data file next to hand-written adapters.
-This revision adds one shared engine and a closed set of operation archetypes, so most of an adapter's behaviour is
-written once, and a provider writes only what is really its own.
+Revisions 1–5 described a data file next to hand-written adapters. Revision 6 changed the structure, not the rules:
+one shared engine and a closed set of operation archetypes, so most of an adapter's behaviour is written once, and a
+provider writes only what is really its own. Revisions 7 and 8 are consistency reviews of that structure.
 
 ## Problem
 
@@ -93,15 +93,21 @@ owner decision, not a profile edit.
 |---|---|---|---|---|---|
 | `read_one` | R | GET one resource by id | not called (reads retry) | — | — |
 | `list_page` | R | one page, at most `max_page_size`; cursor in `data["next"]` | not called | — | — |
-| `create` | W | build the request with the stamp (or the provider key), send; `data` carries the identifier | `find_by_key`: exactly one of ours → `EXECUTED_SUCCESS`; none → `NOT_EXECUTED` **only** if the operation's `lookup` is `consistent`, else `INCONCLUSIVE`; several → `INCONCLUSIVE` and an ERROR log | read via `reads[observation.method]`; with no identifier, `find_by_key` first; compare the written `compare` fields; check `owns` | is the inverse **target**: located by `find_by_key`, never by a natural key alone |
+| `create` | W | build the request with the stamp (or the provider key), send; `data` carries the identifier (see "Identifier rule") | `find_by_key`: exactly one of ours → `EXECUTED_SUCCESS`; none → `NOT_EXECUTED` **only** if the operation's `lookup` is `consistent`, else `INCONCLUSIVE`; several → `INCONCLUSIVE` and an ERROR log | read via `reads[observation.method]`; with no identifier, `find_by_key` first; compare the written `compare` fields; check `owns` | is the inverse **target**: located by `find_by_key`, never by a natural key alone |
 | `update` | W | merge only the fields in params | read by id: every written compared field equal → `EXECUTED_SUCCESS`; otherwise `INCONCLUSIVE` (never `NOT_EXECUTED`: a differing field may be someone else's later write) | as `create`, by identifier | — |
 | `replace` | W | send the full record; clears what is not sent | as `update` | as `update` | — (off the allow-list until a recorded response shows the clearing) |
-| `delete` | D | planned: by id; "not found" (see the shared rules) → `ok` with `data["already_absent"] = true` (`ghl_crm.md` §2). Inverse (key ends `:inverse`, the create's params): `find_by_key` on the create's resource; exactly one → delete; none → `client_error` `inverse_target_not_found`; several → `inverse_target_ambiguous` | read by id: not found → `EXECUTED_SUCCESS`; present and ours → `NOT_EXECUTED` only if `read_by_id` is `consistent`, else `INCONCLUSIVE` | not found → `True`; present → `False` | — |
+| `delete` | D | planned: by id; "not found" (see the shared rules) → `ok` with `data["already_absent"] = true` (`ghl_crm.md` §2). Inverse (key ends `:inverse`, the create's params): `find_by_key` on the create's resource; exactly one → delete; none → `client_error` `inverse_target_not_found`; several → `inverse_target_ambiguous` | read by id: not found → `EXECUTED_SUCCESS`; present and ours → `NOT_EXECUTED` only if `read_by_id` is `consistent`, else `INCONCLUSIVE` | not found → `True`; present → `False`; no identifier (probe path) → `UNKNOWN` (`observe_no_identifier`, `ghl_crm.md` §4) | — |
 | `send` | IRREVERSIBLE | send once with a deterministic id derived from the step key (Gmail `Message-ID`) | `find_by_key` on the deterministic id, with the same `lookup` rule as `create` (Gmail: `eventual`, so never `NOT_EXECUTED`) | find by the deterministic id, compare | none (README §1.1: never for IRREVERSIBLE) |
 | `custom` | any | the hook implements the call path itself | hook | hook | hook |
 
 The engine picks the README §2.2 column itself: read or mutation from `binding.effective_mutation`, and "provider
 honours the key" from the profile's `idempotency`.
+
+**Identifier rule.** A W, D or IRREVERSIBLE operation names its observation read (`read`, equal to the catalog's
+`observation.method`). After a 2xx, `extract` must return every part of that read's `identifier` pattern; the engine
+composes the catalog's identifier value from them (GHL `ref` = `"{contactId}/{id}"`). A 2xx without them is
+`timeout` for a mutation (the write may have happened; the probe decides) and `adapter_defect` for a read, as README
+§2.2 and `ghl_crm.md` §2 ("2xx without `contact.id`") require.
 
 Rules every archetype shares, implemented once in the engine:
 
@@ -128,13 +134,14 @@ The provider writes these, and only these (each has a safe default where one exi
 |---|---|---|
 | `build_request(op, params, key, settings)` | every call: returns the query and the body. It computes the stamp or the deterministic id from the step key (the spec's format, e.g. `ghl_crm.md` §0 `stamp()`, `gmail_mail.md` §3 `Message-ID`); paging values and `fixed_params` are added by the engine afterwards | required |
 | `extract(op, response)` | every call: the identifier, or `items` and `next` for `list_page`; only named fields, never the whole record | required |
-| `classify(op, response)` | every call: the provider's own rows (Layer A spec §2), returning an error class, `ok`, or "not mine" | "not mine": the engine's README §2 table decides |
+| `classify(op, response)` | every call: the provider's own rows (Layer A spec §2), returning an error class, `ok`, `not_found` (a provider-specific not-found shape, e.g. GHL's recorded "note not found" 400, which then follows the `not_found` rule), or "not mine" | "not mine": the engine's README §2 table decides; a plain 404 is `not_found` |
 | `find_by_key(op, params, key, settings)` | `create` and `send` probes, observe without identifier, `delete` inverse: the resources carrying our stamp or deterministic id, or "lookup failed" | required when a `create` or `send` exists |
 | `normalize(op, field, value)` | comparisons | identity |
-| `owns(op, record, settings)` | every read used by probe, observe, inverse | required when a `create` exists |
+| `owns(op, record, settings)` | every read used by probe, observe, inverse | required unless the provider has only reads |
 
-Hooks make provider calls only through the engine's client (`http`), never their own: same transport (`retries=0`),
-same deadline (`adapter_client_timeout_s`), same trace line.
+`op` is the operation's profile entry, so hooks read `stamp_marker` and the other values from it rather than
+repeating them in code. Hooks make provider calls only through the engine's client (`http`), never their own: same
+transport (`retries=0`), same deadline (`adapter_client_timeout_s`), same trace line.
 
 The GHL duplicate-contact rule (`ghl_crm.md` §2) is a `classify` row that does one `GET` through `http`; the stamp hash is
 `ghl_crm.md` §0's `stamp()`; the trailing `[ref:…]` stripping is `normalize`. Nothing else in `ghl_crm.md` needs
@@ -190,6 +197,8 @@ Keyed by catalog kernel op id.
 | `method`, `endpoint` | HTTP method; path template: `{name}` a step param, `{settings.name}` a credential setting | required |
 | `api_version` | override, only when this operation uses another version (Notion markdown endpoints `2026-03-11`) | profile's |
 | `paging` | override of the provider's paging names (GHL search: body `pageLimit`, `searchAfter`) | provider's |
+| `long_url_endpoint` | for a GET read: the POST form used when the URL would exceed `max_url_length` (Airtable `/{baseId}/{tableId}/listRecords`); query values move to the body | none (above the limit: `client_error` `url_too_long`) |
+| `read` | the `reads:` entry used to observe this operation; must equal the catalog's `observation.method` | required for W, D, IRREVERSIBLE |
 | `stamp_marker` | where the stamp lives, for `create`: e.g. `custom_field:s12_ref`, `body_suffix` | required for `create` with `idempotency: stamp` |
 | `lookup` | `consistent` / `eventual`: may an empty `find_by_key` prove `NOT_EXECUTED`? | `eventual` (never) |
 | `compare` | fields `observe` and `probe` compare (only those the step wrote) | required for `create`, `update`, `replace`, `send` |
@@ -208,7 +217,7 @@ ETag flow (C36), `null_means`, `field_reference`, `redact_paths`. Revision 6 rep
 | Request bodies and filters | `build_request` | Provider bodies are nested and typed; body templates in data are where the earlier app's complexity grew |
 | Provider error rows | `classify` + Layer A spec §2 | They match on body text, sometimes need a lookup (GHL duplicates) |
 | Timeouts and retries | `ExecutionSettings.adapter_client_timeout_s` (< `step_timeout_s`, C37); `retry_policy` | The adapter never sets its own deadline or retries (README §1) |
-| Mutation, risk, cost, `retry_safety`, inverse, observation method | `catalog.yaml` | Registry facts (A4) |
+| Mutation, risk, cost, `retry_safety`, inverse, observation method | `catalog.yaml` | Registry facts (A4). The profile's `read` repeats the observation method because the engine never reads the registry; the catalog check keeps them equal |
 | Credentials, per-connection settings | the credential document | Secret |
 | Breaker threshold, cooldown, bulkhead size | guard wiring | One setting for every provider today (`bootstrap.py:75`), keyed by `binding.provider`; `limits` informs sizing |
 | Per-key breakers (Airtable per base, GHL per location) | not possible today | CONF-022; `ghl_crm.md` Q3 |
@@ -235,7 +244,8 @@ S5 copies the catalog's one `versions.binding` into `FrozenBindingIdentity.bindi
 whose binding row version no longer matches (`binding_version_mismatch`, C32, G2).
 
 **Rule:** every profile change bumps `versions.binding`, except changes to `verified`, `review_by`, `limits`,
-`compare`, `deprecated_at`, `sunset_at` and `replacement_kernel_op_id`. (A list of what does *not* bump is shorter and
+`deprecated_at`, `sunset_at` and `replacement_kernel_op_id`. (`compare` bumps: dropping a field makes probe and
+verification check less for executions already running.) (A list of what does *not* bump is shorter and
 safer than a list of what does: a new field bumps until someone decides otherwise.) In the same change, the changed
 provider's profile lists **only** the new value; every other profile **adds** it to its list.
 
@@ -269,8 +279,7 @@ per-provider binding version in the catalog would remove the extra list entries;
 3. **URL**: `base_url` + `endpoint`; `{api_version}` and `{settings.*}` filled from the profile and the document; each
    `{name}` filled from step params **as one URL-encoded path segment** (a value containing `/`, `?`, `#` or `..` is
    refused before send, `client_error` `bad_path_param`); a placeholder left unfilled is refused the same way. A
-   read above `max_url_length` switches to its POST form (which endpoint that is, e.g. Airtable `/listRecords`, is
-   hook code).
+   read whose URL would exceed `max_url_length` switches to its `long_url_endpoint`, or is refused.
 4. **Request**: `build_request` gives the query and body; the engine adds the paging values, the version header,
    the provider key for `native_header` / `body_field`, and `fixed_params` last.
 5. **Archetype** runs the call (and, for probe, observe and inverse, the paths in the archetype table) with the hooks.
@@ -312,6 +321,7 @@ registry (README §1, isolation):
 
 - parses; `profile_format` known; required fields present; enum values valid;
 - every `create` with `stamp` has a `stamp_marker`; every `create`, `update`, `replace` and `send` has `compare`;
+  every W, D and IRREVERSIBLE operation has a `read` that names a `reads:` entry; no value is a `VERIFY` placeholder;
 - `version_scheme: path` ⇒ `base_url` contains `{api_version}`; `header` ⇒ `version_header` set;
 - every placeholder in an endpoint, a `reads:` entry or a `stamp_marker` is a step param, an `identifier` part,
   `{api_version}` or a `{settings.name}`;
@@ -322,8 +332,8 @@ registry (README §1, isolation):
 - every `kernels:` key is an operation of this provider, and every operation of this provider has an entry;
 - archetype fits the catalog mutation (`read_one`/`list_page` ↔ R; `create`/`update`/`replace` ↔ W; `delete` ↔ D;
   `send` ↔ IRREVERSIBLE; `custom` any);
-- every `observation.method` of this provider's operations has a `reads:` entry, and every `create` with a catalog
-  `inverse` points at a `delete`;
+- every operation's `read` equals its catalog `observation.method`, and that name has a `reads:` entry; every
+  `create` with a catalog `inverse` points at a `delete`;
 - `versions.binding` is in every profile's `compatible_binding_versions`.
 
 For a deployment, whose catalog lives in the database, the same catalog check belongs in the Worker Runtime start-up
@@ -336,7 +346,8 @@ archetype, so a new operation gets its cases automatically and fails until its r
 **Engine tests** (`tests_agent`, once, for all providers): the engine concentrates the safety rules, so a bug in it
 reaches every provider at once. It gets its own README §6 matrix against a fake provider, plus sabotage patches in the
 M10 pattern: `NOT_EXECUTED` from an `eventual` lookup, a 404 taken as gone without the parent read, an unencoded path
-parameter, a `fixed_params` value overridden by params, a probe or observe that skips `owns`. Each must be caught.
+parameter, a `fixed_params` value overridden by params, a probe or observe that skips `owns`, a write answered 2xx
+without its identifier taken as `ok`. Each must be caught.
 
 **Date checks** (reported, never blocking unrelated work): `sunset_at` within N days; `review_by` passed.
 
@@ -368,22 +379,23 @@ reads:
 
 kernels:
   crm.contact_list:   {archetype: list_page, method: POST, endpoint: /contacts/search,
-                       paging: {size: pageLimit, cursor: searchAfter, next: VERIFY}}
-  crm.contact_create: {archetype: create, method: POST, endpoint: /contacts/, stamp_marker: "custom_field:s12_ref",
+                       paging: {size: pageLimit, cursor: searchAfter, next: VERIFY}}   # the profile check refuses VERIFY: record it first
+  crm.contact_create: {archetype: create, method: POST, endpoint: /contacts/, read: get_contact,
+                       stamp_marker: "custom_field:s12_ref",
                        compare: [firstName, lastName, email, phone, tags, source, customFields]}
-  crm.contact_update: {archetype: update, method: PUT, endpoint: "/contacts/{id}",
+  crm.contact_update: {archetype: update, method: PUT, endpoint: "/contacts/{id}", read: get_contact,
                        compare: [firstName, lastName, email, phone, tags, source, customFields]}
-  crm.contact_delete: {archetype: delete, method: DELETE, endpoint: "/contacts/{id}"}
+  crm.contact_delete: {archetype: delete, method: DELETE, endpoint: "/contacts/{id}", read: get_contact}
   crm.note_list:      {archetype: list_page, method: GET, endpoint: "/contacts/{contactId}/notes"}
-  crm.note_create:    {archetype: create, method: POST, endpoint: "/contacts/{contactId}/notes",
+  crm.note_create:    {archetype: create, method: POST, endpoint: "/contacts/{contactId}/notes", read: get_note,
                        stamp_marker: body_suffix, compare: [body]}
-  crm.note_delete:    {archetype: delete, method: DELETE, endpoint: "/contacts/{contactId}/notes/{id}"}
+  crm.note_delete:    {archetype: delete, method: DELETE, endpoint: "/contacts/{contactId}/notes/{id}", read: get_note}
   crm.task_list:      {archetype: list_page, method: GET, endpoint: "/contacts/{contactId}/tasks"}
-  crm.task_create:    {archetype: create, method: POST, endpoint: "/contacts/{contactId}/tasks",
+  crm.task_create:    {archetype: create, method: POST, endpoint: "/contacts/{contactId}/tasks", read: get_task,
                        stamp_marker: body_suffix, compare: [title, body, dueDate, completed, assignedTo]}
-  crm.task_update:    {archetype: update, method: PUT, endpoint: "/contacts/{contactId}/tasks/{id}",
+  crm.task_update:    {archetype: update, method: PUT, endpoint: "/contacts/{contactId}/tasks/{id}", read: get_task,
                        compare: [title, body, dueDate, completed, assignedTo]}
-  crm.task_delete:    {archetype: delete, method: DELETE, endpoint: "/contacts/{contactId}/tasks/{id}"}
+  crm.task_delete:    {archetype: delete, method: DELETE, endpoint: "/contacts/{contactId}/tasks/{id}", read: get_task}
 ```
 
 `lookup` stays `eventual` everywhere: GHL's contact search is an eventually consistent index, and the note and
@@ -392,6 +404,7 @@ only the fields in params (`ghl_crm.md` §1), so its archetype is `update`. The 
 catalog change `ghl_crm.md` §0 already asks for (`identifier_field: ref`); until it is made, their delete observations
 stay UNKNOWN, as the spec says. The hooks GHL needs: `build_request`, `extract`, `classify` (duplicate-contact rule),
 `find_by_key`, `normalize` (stamp-line stripping, E.164 phones, lower-cased email), `owns` (stamp and `locationId`).
+`classify` also maps GHL's recorded "note not found" / "contact not found" 400s to `not_found`.
 
 ## Sketches for other providers (illustrative; need catalog rows and VERIFY)
 
@@ -411,11 +424,13 @@ reads:
   get_record: {endpoint: "/{baseId}/{tableId}/{id}", identifier: "{baseId}/{tableId}/{id}",
                parent: "/{baseId}/{tableId}"}   # the engine asks the parent for one item
 kernels:
-  airtable.record_list:   {archetype: list_page, method: GET, endpoint: "/{baseId}/{tableId}"}
-  airtable.record_create: {archetype: create, method: POST, endpoint: "/{baseId}/{tableId}",
+  airtable.record_list:   {archetype: list_page, method: GET, endpoint: "/{baseId}/{tableId}",
+                           long_url_endpoint: "/{baseId}/{tableId}/listRecords"}
+  airtable.record_create: {archetype: create, method: POST, endpoint: "/{baseId}/{tableId}", read: get_record,
                            stamp_marker: "field:{settings.stamp_field_id}", compare: [fields]}
-  airtable.record_update: {archetype: update, method: PATCH, endpoint: "/{baseId}/{tableId}/{id}", compare: [fields]}
-  airtable.record_delete: {archetype: delete, method: DELETE, endpoint: "/{baseId}/{tableId}/{id}"}
+  airtable.record_update: {archetype: update, method: PATCH, endpoint: "/{baseId}/{tableId}/{id}", read: get_record,
+                           compare: [fields]}
+  airtable.record_delete: {archetype: delete, method: DELETE, endpoint: "/{baseId}/{tableId}/{id}", read: get_record}
 ```
 
 Notion, showing a soft delete through `PATCH` and `absent_when` (Notion has no `DELETE /v1/pages`):
@@ -432,10 +447,10 @@ not_found: needs_parent_read    # VERIFY whether an unshared page answers 403 or
 reads:
   get_page: {endpoint: "/pages/{id}", absent_when: {in_trash: true}, parent: "/data_sources/{settings.data_source_id}"}
 kernels:
-  notion.row_create:  {archetype: create, method: POST, endpoint: /pages,
+  notion.row_create:  {archetype: create, method: POST, endpoint: /pages, read: get_page,
                        stamp_marker: "property:{settings.stamp_property}", compare: [properties]}
-  notion.page_update: {archetype: update, method: PATCH, endpoint: "/pages/{id}", compare: [properties]}
-  notion.page_trash:  {archetype: delete, method: PATCH, endpoint: "/pages/{id}"}   # build_request sends {in_trash: true}
+  notion.page_update: {archetype: update, method: PATCH, endpoint: "/pages/{id}", read: get_page, compare: [properties]}
+  notion.page_trash:  {archetype: delete, method: PATCH, endpoint: "/pages/{id}", read: get_page}   # build_request sends {in_trash: true}
 ```
 
 ## Not adopted
