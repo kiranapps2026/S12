@@ -1,10 +1,10 @@
 # S12-S15 tracker
 
-Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
+Generated 2026-10-03 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 7 not_started, 0 red_confirmed, 0 in_progress, 12 green, 4 reviewed of 23 milestones. Open: 7 conflicts, 0 stops, 3 defects.
+**Summary:** 6 not_started, 0 red_confirmed, 1 in_progress, 12 green, 4 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 2 defects.
 
-**Next:** M15 Verification and VERIFICATION episodes (model: sonnet, complexity: high, status: not_started)
+**Next:** M15 Verification and VERIFICATION episodes (model: sonnet, complexity: high, status: in_progress)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -24,13 +24,13 @@ Generated 2026-10-02 by `tools/s12_tracker.py report`. Do not edit by hand: chan
 | M12 S12 loop, dependents, terminal reasons | B3 | green | high | sonnet |  | prototype | 0 | 0 | 0 | 2 |
 | M13 Probe path and EXECUTION episodes | B3 | green | very high | opus |  | not done | 0 | 0 | 0 | 0 |
 | M14 Live revalidation and cancellation | B3 | reviewed | very high | opus | ★ | partial | 0 | 0 | 0 | 0 |
-| M15 Verification and VERIFICATION episodes | B4 | not_started | high | sonnet |  | port only | 1 | 1 | 0 | 0 |
+| M15 Verification and VERIFICATION episodes | B4 | in_progress | high | sonnet |  | port only | 1 | 0 | 0 | 0 |
 | M16 Consolidation | B4 | not_started | medium | sonnet |  | minimal | 0 | 0 | 0 | 0 |
 | M17 Dead letter and explicit rollback | B4 | not_started | high | opus |  | not done | 0 | 0 | 0 | 0 |
-| M18 S15 response and redaction | B4 | not_started | medium | sonnet |  | not done | 0 | 0 | 0 | 0 |
-| M19 Crash recovery and fault injection | B5 | not_started | very high | opus |  | not done | 0 | 5 | 0 | 0 |
-| M20 Multi-process: subprocess kills, two runtimes, tenant isolation | B5 | not_started | very high | opus |  | not done | 0 | 1 | 0 | 0 |
-| M21 Journeys, architecture suite, seams, certification | B5 | not_started | high | sonnet | ★ | not done | 0 | 0 | 0 | 0 |
+| M18 S15 response and redaction | B4 | not_started | medium | sonnet |  | not done | 1 | 0 | 0 | 0 |
+| M19 Crash recovery and fault injection | B5 | not_started | very high | opus |  | not done | 3 | 0 | 0 | 0 |
+| M20 Multi-process: subprocess kills, two runtimes, tenant isolation | B5 | not_started | very high | opus |  | not done | 2 | 0 | 0 | 0 |
+| M21 Journeys, architecture suite, seams, certification | B5 | not_started | high | sonnet | ★ | not done | 3 | 0 | 0 | 0 |
 
 ## Rule violations
 
@@ -40,7 +40,7 @@ None.
 
 - CONF-003 (M5, ruled): Gate §2 item 10 / C20: store receives `tenant_id`, `execution_id` "as keyword-only arguments". Code: `src/adapters/postgres/confirmations.py:20` and `src/engine/stages/s10_confirmation/store.py:25,43` take them positional-or-keyword; S10 passes them positionally (`s10_confirmation/handler.py:79`). Both required and validated; tested (`tests/stages/test_s10_confirmation.py:58`)
 - CONF-004 (M8a, ruled): Gate §2 item 17 names the S0 handler and `tests/stages/test_s0_entry.py`. Code: check at `src/engine/control_plane/pipeline_state_runner.py:182-186` (S0.1) and `:215`; tests in `tests/stages/test_s0_activation.py:49-108` (19 cases)
-- CONF-005 (M15, open): Gate D6 (`S12_S15_EXECUTION_GATE.md:1442`) and suite 9 layer selection by autonomy: no `AutonomyLevel` source exists in code (no match in src/, tests/, tests_postgres/). D6 says STOP and report
+- CONF-005 (M15, ruled): Gate D6 (`S12_S15_EXECUTION_GATE.md:1442`) and suite 9 layer selection by autonomy: no `AutonomyLevel` source exists in code (no match in src/, tests/, tests_postgres/). D6 says STOP and report
 - CONF-006 (M3, ruled): `src/contracts/state_validators.py:41` StateTransitionValidator (DATA_CONTRACTS §26) contradicts gate Appendix A: run machine `:72-92` uses budget states; step machine `:94-118` uses SUCCESS/TIME_OUT/PROBE_FAILED and allows UNKNOWN→FAILED, RUNNING→UNKNOWN. Loaded at `src/main.py:25,48`. Prototype `s12_execute/transitions.py` matches A.1/A.2 exactly
 - CONF-007 (M1, ruled): Gate §7.3 (C39): `operation_quotas` has `worker_id` in `UNIQUE NULLS NOT DISTINCT (tenant_id, workspace_id, worker_id, resource_type, period_start)` and `CHECK (worker_id IS NULL)`. Code `009_execution_admission.sql:113-129`: no `worker_id` column, unique key without it. M8a golden "rejects a non-NULL worker_id" cannot hold
 - CONF-008 (M6, ruled): Gate D1 / C32 assume metadata read "at the pinned versions". Code: `kernel_ops` has no version column; `registry_versions` is a singleton (`001_s0_s11_schema.sql:104`); `registry.py:125-132` returns None when versions moved, so every earlier-certified plan is denied after a bump
@@ -77,12 +77,16 @@ None.
 - CONF-039 (M18, ruled): §12 maps CANCELLED to `error`; the DATA_CONTRACTS Envelope error types (`unknown_capability` … `unmapped_engine`) have none for a user cancellation, a revocation, a kill switch or an invalid binding
 - CONF-040 (M15, ruled): §9 "EXECUTED_SUCCESS: step PENDING_PROBE → COMPLETED (after verification if required)"; the schema and deterministic layers check the adapter's result (FINAL_ARCHITECTURE §43 "Output matches expected structure"), and after a probe there is no adapter result, only the probe outcome
 - CONF-041 (M15, ruled): FINAL_ARCHITECTURE §43 (table, `FINAL_ARCHITECTURE.md:2413-2420`) and PIPELINE_STAGES §15 table: semantic for the "AGENTIC path, high-risk", human for "IRREVERSIBLE, D mutations, low-confidence"; the normative `required_verification_layers` of both documents (`FINAL_ARCHITECTURE.md:2423-2433`, `PIPELINE_STAGES.md:1114-1122`): semantic when `risk >= 0.7 or mutation == IRREVERSIBLE`, human when `mutation == IRREVERSIBLE or autonomy == CONFIRM_ALL`. With CONF-005 open (no AutonomyLevel source)
-- CONF-042 (M19, open): §13: "The sweeper finds runs in RUNNING or RECONCILING whose ownership lease is expired or absent"; row-level security is forced on every S12 table and on `tenants` itself (`001_s0_s11_schema.sql:146-154`, `015_s12_schema.sql:174-180`), so a sweeper connected as the application role can see only the tenant it sets and cannot discover another tenant's orphaned runs
-- CONF-043 (M19, open): §7.3: on a digest mismatch during recovery "move the run to DEAD_LETTER with reason `plan_integrity` ... Do not execute any new step"; §13 step 3 resolves the in-flight step first, and its probe or verification rebuilds the call from the plan, which is exactly what can no longer be trusted
-- CONF-044 (M19, open): §8 steps 7 and 11 "Write the checkpoint"; §15.2 names `after_commit_before_checkpoint`; §13: "The DB state is the source of truth. The checkpoint is a hint", and no recovery rule reads a checkpoint
-- CONF-045 (M20, open): §8 step 8: "Renew the lease in the background at TTL/3"; no milestone card or golden exercises renewal during a step, and a step longer than the TTL would otherwise be taken over while it runs (the new owner then fences the old one out, C25)
-- CONF-046 (M19, open): §13: the sweeper takes runs "whose ownership lease is expired or absent". Read literally, "absent" also covers two live states: a run its admitting runtime is about to lease (entry, §7.2, commits the RUNNING run and its ownership before the first lease), and a run between two steps (the loop releases its lease when a step commits and leases the next step at once). Another runtime's sweeper would take either at once: safe under fencing (C25), but a needless takeover that fences out a live loop, and it made golden M20's "claimed exactly once" nondeterministic. Separately, a `SECURITY DEFINER` function (CONF-042) resolves a caller's temporary table before its schema's table unless `pg_temp` is listed last
-- CONF-047 (M19, open): C13: a run is RECONCILING only when every other step is terminal and one is UNKNOWN or PENDING_PROBE, and "from RECONCILING the run must go to a terminal state"; §9's NOT_EXECUTED path returns the step to PENDING for a retry, which a RECONCILING run cannot perform (A.1 has no RECONCILING → RUNNING)
+- CONF-042 (M19, ruled): §13: "The sweeper finds runs in RUNNING or RECONCILING whose ownership lease is expired or absent"; row-level security is forced on every S12 table and on `tenants` itself (`001_s0_s11_schema.sql:146-154`, `015_s12_schema.sql:174-180`), so a sweeper connected as the application role can see only the tenant it sets and cannot discover another tenant's orphaned runs
+- CONF-043 (M19, ruled): §7.3: on a digest mismatch during recovery "move the run to DEAD_LETTER with reason `plan_integrity` ... Do not execute any new step"; §13 step 3 resolves the in-flight step first, and its probe or verification rebuilds the call from the plan, which is exactly what can no longer be trusted
+- CONF-044 (M19, ruled): §8 steps 7 and 11 "Write the checkpoint"; §15.2 names `after_commit_before_checkpoint`; §13: "The DB state is the source of truth. The checkpoint is a hint", and no recovery rule reads a checkpoint
+- CONF-045 (M20, ruled): §8 step 8: "Renew the lease in the background at TTL/3"; no milestone card or golden exercises renewal during a step, and a step longer than the TTL would otherwise be taken over while it runs (the new owner then fences the old one out, C25)
+- CONF-046 (M19, ruled): §13: the sweeper takes runs "whose ownership lease is expired or absent". Read literally, "absent" also covers two live states: a run its admitting runtime is about to lease (entry, §7.2, commits the RUNNING run and its ownership before the first lease), and a run between two steps (the loop releases its lease when a step commits and leases the next step at once). Another runtime's sweeper would take either at once: safe under fencing (C25), but a needless takeover that fences out a live loop, and it made golden M20's "claimed exactly once" nondeterministic. Separately, a `SECURITY DEFINER` function (CONF-042) resolves a caller's temporary table before its schema's table unless `pg_temp` is listed last
+- CONF-047 (M19, ruled): C13: a run is RECONCILING only when every other step is terminal and one is UNKNOWN or PENDING_PROBE, and "from RECONCILING the run must go to a terminal state"; §9's NOT_EXECUTED path returns the step to PENDING for a retry, which a RECONCILING run cannot perform (A.1 has no RECONCILING → RUNNING)
+- CONF-048 (M19, ruled): Recovery must name `StepState.UNKNOWN` in its in-flight step set; the set must survive the M03 bare-literal scan
+- CONF-049 (M21, ruled): §11 and D5 define dead-letter retry and resolution, but no milestone builds an operator entry point; a LOCKED reservation has no release path in production
+- CONF-050 (M19, ruled): At after_verification_before_step_commit with a FAIL recorded, recovery must not let the FAIL flip; §13 opens a VERIFICATION episode and C19 re-runs; §8 step 9 says FAIL is not retryable
+- CONF-051 (M11, ruled): Gate §8 makes idempotency_key the ledger key; request_id is unique only per tenant; migration 018 made the key (tenant_id, idempotency_key) and M11 was edited to accept it
+- CONF-052 (M21, ruled): By design (C32), an adapter without observe() makes provider_state verification UNKNOWN, so every W/D/IRREVERSIBLE step on it ends DEAD_LETTER with its money LOCKED
 - DEF-002 (M12, open): M4 (reading prototype)
-- DEF-003 (no milestone, open): B2 drafting (M5)
 - DEF-004 (M12, open): M9 (adapting the prototype loop to the BudgetReserver interface)
