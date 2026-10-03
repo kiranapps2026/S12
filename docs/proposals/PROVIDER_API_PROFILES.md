@@ -1,6 +1,6 @@
 # Provider API profiles — one data file for the provider-API facts that change
 
-**Status: proposal for the owner (revision 3, 2026-10-03). No code, pinned document, catalog or milestone is changed by
+**Status: proposal for the owner (revision 4, 2026-10-03). No code, pinned document, catalog or milestone is changed by
 it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call
 real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row
 moves.
@@ -48,8 +48,9 @@ is the catalog's `provider` id (`crm`, `mail`), the same key the breaker and bul
 An earlier app (OpenClaw) built Notion and Airtable adapters and failed on complexity: about 30 artefact files per
 provider, two ID systems, alias files, business-entity and composite matrices, per-provider policy YAMLs, and status
 counts written by hand. Its own audit found "37 bindings, all verified" where the source said 32, with 10 verified.
-Its reviews (the Notion tool-level appendix and the Airtable architecture sections 1–10) still hold useful provider
-facts. This proposal keeps the facts and turns the failures into six guardrails:
+Its reviews (the Notion tool-level appendix, the Notion backend reference, the Airtable architecture sections 1–10)
+and its two live-tested API references (Airtable 2026-08-15, Notion 2026-08-20) still hold useful provider facts. This
+proposal keeps the facts and turns the failures into eight guardrails:
 
 | Failure in the earlier app | Guardrail here |
 |---|---|
@@ -59,6 +60,8 @@ facts. This proposal keeps the facts and turns the failures into six guardrails:
 | Two ID systems (UC-, NC-) plus aliases and endpoint ids | One id: the catalog kernel op id. No aliases, no endpoint-id layer |
 | Per-provider frameworks: policy YAMLs, undo journals, assertion modules, reconciliation engines, client retries, in-adapter breakers | None. The S12 kernel already owns retry, breaker, ledger, verification and rollback; an adapter is one class, one credential provider, one profile |
 | Silent provider behaviour hidden by the adapter (endpoint remapping, dropped fields) | The adapter never hides one. It refuses before send or lets verification see it (see "Provider behaviours the adapter must not hide") |
+| A direct tool path (`notion_execute`) that called the adapter with no planner, no step graph and no ledger, plus silent fallbacks (a "degraded" adapter registered without a token, a resolver that fell back to another provider, a fresh random idempotency key per request) | Every adapter call goes through the guard; no API or tool path calls an adapter directly (README §7 scan). Missing credentials, an unknown provider or a missing key are refusals, never fallbacks. The idempotency key is always `call_meta.idempotency_key`, never generated |
+| Limitations declared from calls that failed because of the app's own request: "append children returns 400 for integrations" came from sending `POST`, while Notion's append is `PATCH /v1/blocks/{id}/children` | A limitation enters a spec only with the provider's docs and a recorded response that show it. A failing call is first treated as a defect in our request. Missing capabilities are never emulated |
 
 ## What stays out of the profile (on purpose)
 
@@ -198,7 +201,7 @@ lines to a provider spec but no machinery.
 
 | Provider behaviour (example) | Rule |
 |---|---|
-| A write is accepted with HTTP 200 but only partly applied (Airtable `details.message: "partialSuccess"`, e.g. an attachment failed) | Return `ok` with the identifier: the resource exists, so verification and rollback must be able to see it. Never return `error` for a write that took effect, because that leaves an orphan no inverse will remove. `observe` then compares the fields and fails the step |
+| A write is accepted with HTTP 200 but only partly applied (Airtable `details.message: "partialSuccess"`, e.g. an attachment failed) | Return `ok` with the identifier: the resource exists, so verification and rollback must be able to see it. Never return `error` for a write that took effect, because that leaves an orphan no inverse will remove. `observe` then compares the fields and fails the step. The Airtable reference's own rule ("never yield an `ok` envelope for `partialSuccess`") is still met: the step ends FAIL, never success |
 | Fields silently ignored on write (Airtable computed fields; legacy Notion database create dropping `properties`) | `observe` compares every field the step wrote (Layer A README §4, "observe fields"), so a silent drop becomes a verification FAIL, not a success |
 | `PUT` clears every field it does not send (Airtable `records.replace`) | A replace is its own kernel op with its own risk, never a variant or flag of an update |
 | Deprecated endpoints quietly remapped by the adapter (Notion `/v1/data_sources` → `/v1/databases`) | Never. An endpoint change is a new profile version (see "Version rule") |
@@ -206,6 +209,11 @@ lines to a provider spec but no machinery.
 | No delete endpoint, or the action notifies people (Airtable and Notion comments) | The catalog marks it `IRREVERSIBLE` |
 | A secret returned only once (Airtable webhook `macSecretBase64`) | Never in `data`. The operation stays off the allow-list until a secret store can take it (DR-11, MC-058) |
 | No connection mapped for the caller | `client_error`, `provider_code: "no_connection"` (README §5). Never fall back to a default account, a token file or an environment variable |
+| Empty values are left out of responses (Airtable: `false`, `""` and `[]` come back absent) | `observe` treats an absent field as equal to an empty value the step wrote. It never invents a value for an absent field, and never fails a step because an empty value is absent |
+| A 404 can mean "no access", not "gone" (Airtable answers 404 for every record of a base the token is not granted, and for webhooks without the scope) | For a delete, a 404 counts as "absent" only when a read of the parent (the table, the page) in the same `observe` or `probe` succeeds. Otherwise `INCONCLUSIVE` / `UNKNOWN`. A revoked grant must never look like a successful delete |
+| A request flag that changes the provider's schema as a side effect (Airtable `typecast: true` creates new select options) | The adapter always sends it off; step params cannot turn it on |
+| Responses keyed by names that users can rename (Airtable field names, table names) | Requests and comparisons use ids (Airtable `returnFieldsByFieldId: true`, table and field ids in paths) |
+| Very large or data-bearing error bodies (Notion answers an invalid emoji with a 60 KB body) | Never logged or stored; `data` on failure holds only `provider_status` and `provider_code` (README §1) |
 
 ## Checks
 
