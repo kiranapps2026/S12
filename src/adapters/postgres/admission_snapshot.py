@@ -1,4 +1,4 @@
-"""Database-backed admission snapshot (CONF-027 as amended, M21).
+"""Database-backed admission snapshot (CONF-027 as amended, M21; DEF-006).
 
 ``PostgresAdmissionSnapshot`` is an awaitable callable::
 
@@ -6,10 +6,24 @@
 
 Every field on the returned ``AdmissionSnapshot`` is read from the database under the
 tenant's RLS.  Fields with no database source default to their passing value.
+
+Gate 10 (budget_available) says whether the reserve step would succeed: cost comes from
+the frozen plan's canonical_plan, available = ``adapters.postgres.budget.AVAILABLE_SQL``
+(pool minus reserved/locked/committed reservations in the current period), and a step
+that already holds a live reservation passes regardless of pool state.  Unknown execution
+or step fails closed (DEF-006).
 """
 from __future__ import annotations
 
+from adapters.postgres.budget import AVAILABLE_SQL
+from adapters.postgres.budget_reserver import LIVE
 from engine.stages.s12_execute.admission_control import AdmissionSnapshot
+
+_STEP_COST = ("SELECT (s->>'cost')::int FROM execution_plans p"
+              " CROSS JOIN LATERAL jsonb_array_elements(p.canonical_plan->'steps') s"
+              " WHERE p.tenant_id = $1 AND p.execution_id = $2 AND s->>'id' = $3")
+_HOLDS_LIVE = ("SELECT EXISTS (SELECT 1 FROM budget_reservations WHERE tenant_id = $1 AND step_id = $2"
+               " AND status = ANY($3::text[]))")
 
 
 class PostgresAdmissionSnapshot:
@@ -21,7 +35,7 @@ class PostgresAdmissionSnapshot:
     async def __call__(self, tenant_id: str, execution_id: str, plan_step_id: str) -> AdmissionSnapshot:
         async with self._db.tenant_transaction(tenant_id) as c:
             tenant = await c.fetchrow(
-                "SELECT kill_switch_engaged, (status = 'active') AS is_active, budget_pool"
+                "SELECT kill_switch_engaged, (status = 'active') AS is_active"
                 " FROM tenants WHERE tenant_id = $1", tenant_id)
             if tenant is None:
                 return AdmissionSnapshot(
@@ -33,14 +47,15 @@ class PostgresAdmissionSnapshot:
             kill_switch = tenant["kill_switch_engaged"]
             tenant_active = tenant["is_active"]
 
-            budget_available = tenant["budget_pool"] > 0
-
-            step_cost = await c.fetchval(
-                "SELECT effective_risk FROM execution_steps"
-                " WHERE tenant_id = $1 AND execution_id = $2 AND plan_step_id = $3",
-                tenant_id, execution_id, plan_step_id)
-            if step_cost is not None:
-                budget_available = budget_available and step_cost <= tenant["budget_pool"]
+            cost = await c.fetchval(_STEP_COST, tenant_id, execution_id, plan_step_id)
+            if cost is None:
+                budget_available = False
+            elif await c.fetchval(_HOLDS_LIVE, tenant_id, f"{execution_id}:{plan_step_id}",
+                                  [str(s) for s in LIVE]):
+                budget_available = True
+            else:
+                available = await c.fetchval(AVAILABLE_SQL, tenant_id)
+                budget_available = available is not None and available >= cost
 
             worker_capacity = await c.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM workers WHERE tenant_id = $1"
