@@ -1,12 +1,12 @@
 # Provider adapters: one engine, operation archetypes, provider profiles
 
-**Status: proposal for the owner (revision 11, 2026-10-03). No code, pinned document, catalog or milestone is changed
+**Status: proposal for the owner (revision 12, 2026-10-03). No code, pinned document, catalog or milestone is changed
 by it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not
 call real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or
 gate row moves. That milestone also needs two things this proposal does not provide: a production Worker Runtime
 (DR-14; today the guard and loop are composed only in tests) and an API path that admits a validated plan to S12
 (DR-48). Revision 10 follows the code review in `docs/proposals/ADAPTER_DOCS_REVIEW.md`; revision 11 adds the recommended
-answers to its A1 (start-up check) and A3 (deadlines).
+answers to its A1 (start-up check) and A3 (deadlines); revision 12 is a consistency review of those.
 
 It builds on, and must agree with:
 
@@ -14,7 +14,8 @@ It builds on, and must agree with:
   probe §3, observe §4, credentials §5, tests §6, definition of done §7), `TEMPLATE.md`, and the per-provider files
   `ghl_crm.md` and `gmail_mail.md`;
 - `docs/catalog/catalog.yaml` and its loader `src/adapters/postgres/catalog.py`;
-- the ADAPTERS items of `docs/gates/S12_DEFERRED_REGISTER.md` (DR-08, DR-38, DR-40, DR-41, DR-42).
+- the ADAPTERS items of `docs/gates/S12_DEFERRED_REGISTER.md` (DR-08, DR-14, DR-16, DR-17, DR-38, DR-40, DR-41, DR-42,
+  DR-48, DR-60).
 
 It does not rely on `docs/ADAPTER_IMPLEMENTATION_GUIDE.md` (DR-08: about 15 factual errors; agents use the Layer A
 README and template until its v2). Provider facts and the corrections they imply for the pinned `PROVIDER_ADAPTERS.md`
@@ -43,7 +44,7 @@ Three pieces, each with one owner:
 
 | Piece | What it is | Who writes it |
 |---|---|---|
-| **Engine** (`src/engines/_http/`) | One `BaseAdapter` implementation that runs every call path (`call`, `probe`, `observe`, the inverse) for every archetype: URL and headers, binding-version and scope checks, the README §2 classification table, the README §3 probe rules, the README §4 observe rules, inverse location, one trace log line | Once, for all providers |
+| **Engine** (`src/engines/_http/`) | One helper, held by every provider adapter (not a base class, see below), that runs every call path (`call`, `probe`, `observe`, the inverse) for every archetype: URL and headers, binding-version and scope checks, the README §2 classification table, the README §3 probe rules, the README §4 observe rules, inverse location, one trace log line | Once, for all providers |
 | **Profile** (`src/engines/<provider>/profile.yaml`) | Plain values: version, base URL, page size, and per operation its archetype, endpoint, stamp marker and compared fields | Per provider; changes when the provider's API changes |
 | **Hooks** (`src/engines/<provider>/adapter.py`) | The few things only the provider knows: build a request, extract the id from a response, provider-specific error rows, find resources by the step key, normalise a compared value, decide whether a record is ours | Per provider; changes when the provider's behaviour changes |
 
@@ -55,7 +56,7 @@ inherited them from an engine base class would be refused (`unverifiable_mutatio
 
 ```python
 class CrmAdapter:                                   # catalog adapter_class: CrmAdapter
-    PROFILE = load_profile("crm")                   # loaded and checked once, at import
+    PROFILE = load_profile("crm")                   # loaded and checked once, at import; never raises
     HOOKS = CrmHooks
 
     def __init__(self, credentials, settings):     # settings injected, never read (README §1)
@@ -84,7 +85,10 @@ set only if:
 - every hook its archetype requires exists on `HOOKS`;
 - its `read` names a `reads:` entry, and a `create` has a `stamp_marker`.
 
-If the profile fails its profile check, the set is empty and every operation is refused: fail closed.
+If the profile fails its profile check, the set is empty and every operation is refused: fail closed. For that,
+`load_profile` never raises at import (a raise would make the whole runtime fail to import, with no reason recorded):
+it returns the profile with its check errors, `verifiable_operations()` is then empty, and the engine refuses to
+construct, naming the errors.
 
 **Start-up extension (owner decision 5, additive).** In `unverifiable_mutations`, after `verifiable(cls)` passes, add
 one condition: if the class has `verifiable_operations` and this operation is not in it, list it. `MockAdapter` has no
@@ -108,8 +112,9 @@ before S5 freezes the binding.
 |---|---|
 | Capability, binding, `FrozenBindingIdentity`, `ExecutionManifest` | None |
 | `catalog.yaml` kernel op (mutation, risk, cost, `timeout_seconds`, `retry_safety`, inverse, observation) | None: registry facts (A4) |
-| `AdapterResult`, `CallMeta`, `BaseAdapter`, `CredentialProvider` | None (README §1) |
+| `AdapterResult`, `CallMeta`, `BaseAdapter`, `CredentialProvider` | None required. Owner decision 10 proposes two small fixes in S12 code (`credential_valid` on the protocol, the `observed_state` type) |
 | Guard, breaker, bulkhead, retry policy, probe and verification stages | None |
+| Worker Runtime start-up check (`startup.py`) | Additive extension, owner decision 5 |
 | Layer A spec | Keeps its prose, VERIFY marks and provider rules; its header values, endpoints and compared fields move to the profile, and the spec links to it |
 
 `<provider>` is the catalog's `provider` id (`crm`, `mail`), the key the breaker and bulkhead already use (CONF-022).
@@ -183,7 +188,7 @@ Recommended settings (owner decision 11):
 | Setting | Value | Why |
 |---|---|---|
 | `S12_STEP_TIMEOUT_S` | 30 (current default) | bounds a call, including a rollback inverse |
-| `S12_ADAPTER_CLIENT_TIMEOUT_S` | 10 | one HTTP request; below the step timeout (C37) |
+| `S12_ADAPTER_CLIENT_TIMEOUT_S` | 8 | one HTTP request; three of them (the most a call makes) fit in the step timeout: 24 s < 30 s |
 | `S12_PROBE_TIMEOUT_S` | 8 | a whole probe or observation; three sequential requests at normal SaaS latency; below the step timeout (C37) |
 
 Worst cases these imply: the probe path is about 27 s (three probes of 8 s plus the 1 s and 2 s backoffs); a
@@ -192,7 +197,7 @@ adopting the values.
 
 Engine rules:
 
-- **Budget-aware requests.** The engine receives `probe_timeout_s` and `adapter_client_timeout_s` at construction and
+- **Budget-aware requests.** The engine receives `probe_timeout_s`, `adapter_client_timeout_s` and `step_timeout_s` at construction and
   keeps a deadline of `start + probe_timeout_s − 0.5 s`. Each request's timeout is the smaller of
   `adapter_client_timeout_s` and the time left. With less than 1 s left it starts no new request and returns
   `INCONCLUSIVE` or `observe_timeout` itself, rather than being cancelled mid-request by the guard: the same outcome,
@@ -201,13 +206,16 @@ Engine rules:
 
   | Path | Requests |
   |---|---|
-  | `create` probe | stamp search + GET of the one hit = 2 (1 when the search result already shows the stamp); two or more hits stop at `INCONCLUSIVE` without fetching them |
+  | `create` probe | stamp search + a GET per hit, at most two hits = 3 (1 when the search result already shows the stamp and scope). Exactly one confirmed hit → `EXECUTED_SUCCESS`, as `ghl_crm.md` §3; two confirmed → `INCONCLUSIVE` and an ERROR log (a duplicate side effect); three or more search hits → `INCONCLUSIVE` without fetching them |
   | `create` observe | 1 GET with an identifier; search + GET without one |
   | `delete` probe or observe | GET, plus the parent read when `not_found: needs_parent_read` = 2 |
   | `update` and `replace` probe or observe | 1 GET |
 
-  A fourth request is a bug: `INCONCLUSIVE`, and an engine sabotage case. A call path (including the inverse: search,
-  GET, DELETE; and GHL's duplicate rule) runs under the step timeout, not this limit.
+  A fourth request is a bug: `INCONCLUSIVE`, and an engine sabotage case.
+- **Call paths have a budget too.** `adapter.call` is not told the step timeout, and the guard cancels at
+  `step.timeout_s` (DR-16: 30 s by default). A call makes at most three requests as well (a create with GHL's
+  duplicate rule: POST + GET = 2; the inverse: search, GET, DELETE = 3), so the engine requires
+  `3 × adapter_client_timeout_s < step_timeout_s` and refuses to construct otherwise.
 - **No retries inside a probe or observation.** A 429, a 5xx or the deadline gives `INCONCLUSIVE` / `UNKNOWN`; M13's
   probe spacing and verification's attempts are the retries.
 - **`min_probe_timeout_s` in the profile** (e.g. 5): the engine refuses to construct when the injected
@@ -328,7 +336,7 @@ ETag flow (C36), `null_means`, `field_reference`, `redact_paths`. Revision 6 rep
 |---|---|---|
 | Request bodies and filters | `build_request` | Provider bodies are nested and typed; body templates in data are where the earlier app's complexity grew |
 | Provider error rows | `classify` + Layer A spec §2 | They match on body text, sometimes need a lookup (GHL duplicates) |
-| Timeouts and retries | `ExecutionSettings.adapter_client_timeout_s` (< `step_timeout_s`, C37); `retry_policy` | The adapter never sets its own deadline or retries (README §1) |
+| Timeouts and retries | `ExecutionSettings` (injected), `retry_policy` | The adapter never retries and never sets a deadline longer than the guard's (README §1); the engine's own deadline ("Deadlines") is always inside the guard's |
 | Mutation, risk, cost, `retry_safety`, inverse, observation method | `catalog.yaml` | Registry facts (A4). The profile's `read` repeats the observation method because the engine never reads the registry; the catalog check keeps them equal |
 | Credentials, per-connection settings | the credential document | Secret |
 | Breaker threshold, cooldown, bulkhead size | guard wiring | One setting for every provider today (`bootstrap.py:75`), keyed by `binding.provider`; `limits` informs sizing |
@@ -357,8 +365,10 @@ from `params`").
 S5 copies the catalog's one `versions.binding` into `FrozenBindingIdentity.binding_version`; S12 entry denies a plan
 whose binding row version no longer matches (`binding_version_mismatch`, C32, G2).
 
-**Rule:** every profile change bumps `versions.binding`, except changes to `verified`, `review_by`, `limits`,
-`deprecated_at`, `sunset_at` and `replacement_kernel_op_id`. (`compare` bumps: dropping a field makes probe and
+**Rule:** every profile change bumps `versions.binding`, except changes to `compatible_binding_versions` itself
+(otherwise every bump would demand another), `verified`, `review_by`, `limits`, `min_probe_timeout_s`,
+`request_id_header`, `deprecated_at`, `sunset_at` and `replacement_kernel_op_id`; none of these changes what is sent
+or how a result is judged. (`compare` bumps: dropping a field makes probe and
 verification check less for executions already running.) (A list of what does *not* bump is shorter and
 safer than a list of what does: a new field bumps until someone decides otherwise.) In the same change, the changed
 provider's profile lists **only** the new value; every other profile **adds** it to its list.
@@ -440,8 +450,9 @@ registry (README §1, isolation):
 - every placeholder in an endpoint, a `reads:` entry or a `stamp_marker` is a step param, an `identifier` part,
   `{api_version}` or a `{settings.name}`;
 - the hooks class implements every hook its archetypes require; the count of `custom` entries is reported;
-- `verifiable_operations()` equals the W, D and IRREVERSIBLE operations the profile defines (a `tests_agent`
-  assertion, so an operation silently dropping out of the set is caught before start-up refuses it).
+- `verifiable_operations()` equals the profile's W, D and IRREVERSIBLE operations, less any `custom` operation whose
+  hook does not implement probe and observe (a `tests_agent` assertion, so an operation silently dropping out of the
+  set is caught before start-up refuses it).
 
 **Catalog check** (`tests_agent`, against `docs/catalog/catalog.yaml`):
 
@@ -465,8 +476,8 @@ reaches every provider at once. It gets its own README §6 matrix against a fake
 M10 pattern: `NOT_EXECUTED` from an `eventual` lookup, a 404 taken as gone without the parent read, an unencoded path
 parameter, a `fixed_params` value overridden by params, a probe or observe that skips `owns`, a write answered 2xx
 without its identifier taken as `ok`, a `delete` inverse that deletes a record without our stamp, a request started
-after the deadline, a fourth request in one probe or observation, construction with `probe_timeout_s` below
-`min_probe_timeout_s`. Each must be caught. With a fake transport that delays responses, three slow requests must end
+after the deadline, a fourth request in one probe, observation or call, construction with `probe_timeout_s` below
+`min_probe_timeout_s` or with `3 × adapter_client_timeout_s` not below `step_timeout_s`. Each must be caught. With a fake transport that delays responses, three slow requests must end
 `INCONCLUSIVE`, never `NOT_EXECUTED`.
 
 **Date checks** (reported, never blocking unrelated work): `sunset_at` within N days; `review_by` passed.
@@ -620,6 +631,7 @@ kernels:
    observations (see the finding under the GHL example).
 10. Two small fixes in S12 code (not frozen): declare `credential_valid` on the `CredentialProvider` protocol, and type
     `Observation.observed_state` as `dict | None`, matching the semantic assessor.
-11. **Recommended:** `S12_STEP_TIMEOUT_S` 30, `S12_ADAPTER_CLIENT_TIMEOUT_S` 10, `S12_PROBE_TIMEOUT_S` 8, the
-    three-request limit per probe or observation, and `min_probe_timeout_s` per profile (see "Deadlines"), after
-    checking the worst cases against lease renewal (M20).
+11. **Recommended:** `S12_STEP_TIMEOUT_S` 30, `S12_ADAPTER_CLIENT_TIMEOUT_S` 8, `S12_PROBE_TIMEOUT_S` 8, the
+    three-request limit per probe, observation and call, and `min_probe_timeout_s` per profile (see "Deadlines"),
+    after checking the worst cases against lease renewal (M20). The Worker Runtime composition (DR-14) must construct
+    every adapter before it accepts work, so the engine's construction checks stop it at start.
