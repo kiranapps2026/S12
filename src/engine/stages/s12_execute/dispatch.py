@@ -7,7 +7,23 @@ through a single, instrumentable entry point.  No other S12-to-S15 module calls
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Awaitable, Callable
+
+
+async def run_alongside(main: Awaitable, side_factory: Callable[[asyncio.Task], Awaitable], *,
+                        timeout_s: float) -> object:
+    """Run ``main`` with a side task created by ``side_factory(main_task)``; the side task is always stopped
+    and awaited. Returns main's result; propagates its exception or cancellation."""
+    main_task = asyncio.ensure_future(main)
+    side_task = asyncio.ensure_future(side_factory(main_task))
+    try:
+        return await asyncio.wait_for(main_task, timeout=timeout_s)
+    finally:
+        if not side_task.done():
+            side_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await side_task
 
 
 class InProcessDispatcher:

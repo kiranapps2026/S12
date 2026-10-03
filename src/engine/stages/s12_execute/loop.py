@@ -191,19 +191,19 @@ async def run_execution(deps: LoopDeps, tenant_id: str, execution_id: str) -> Lo
     except FencedOut:
         deps.metrics.increment(m.FENCED_OUT)
         state.log("fenced_out", level=logging.WARNING, reason=FENCED_OUT)
-        await _safe_release(state)
+        await _safe_release(state, FENCED_OUT)
         return LoopResult(loaded.run_status, dict(state.statuses), FENCED_OUT)
     except LeaseLost:
         state.log("lease_lost", level=logging.WARNING, reason=LEASE_LOST)
         deps.metrics.increment("lease_lost")
-        await _safe_release(state)
+        await _safe_release(state, FENCED_OUT)
         return LoopResult(loaded.run_status, dict(state.statuses), LEASE_LOST)
 
 
-async def _safe_release(state: _Run) -> None:
+async def _safe_release(state: _Run, reason: str) -> None:
     """Release the held lease, suppressing ``FencedOut`` and ``LeaseLost`` — the lease is gone either way."""
     try:
-        await state.release()
+        await state.release(reason)
     except (FencedOut, LeaseLost):
         pass
 
@@ -685,7 +685,7 @@ async def recover_execution(deps: LoopDeps, tenant_id: str, execution_id: str) -
             return LoopResult(loaded.run_status, dict(state.statuses), NOT_ORPHANED)
         ended = await _recover_owned(state, flying, target)
     except FencedOut:
-        await _safe_release(state)
+        await _safe_release(state, FENCED_OUT)
         return LoopResult(loaded.run_status, dict(state.statuses), FENCED_OUT)
     except LeaseLost:
         return LoopResult(loaded.run_status, dict(state.statuses), LEASE_LOST)
