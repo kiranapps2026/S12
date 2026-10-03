@@ -33,6 +33,8 @@ from engine.stages.s12_execute.eligibility import (
     step_context,
 )
 from engine.stages.s12_execute.fault_injection import NoFaults
+from adapters.postgres.leases import LeaseLost
+from engine.stages.s12_execute.renewal import RenewingGuard
 from engine.stages.s12_execute.retry_policy import max_attempts
 from engine.stages.s12_execute.selection import lease_for_step
 from engine.stages.s13_reconciliation import probe
@@ -43,7 +45,16 @@ LAYER_EVENT = "verification_layer"
 REVOKED_EVENT = "authorization_revoked"
 REVOCATION, BUDGET = "revocation", "budget"
 _TERMINAL_STEP = frozenset({S.COMPLETED, S.FAILED, S.CANCELLED, S.SKIPPED, S.DEAD_LETTER})
-FENCED_OUT, PLAN_INTEGRITY = "fenced_out", "plan_integrity"
+FENCED_OUT, PLAN_INTEGRITY, LEASE_LOST = "fenced_out", "plan_integrity", "lease_lost"
+
+
+@dataclass
+class _LiveFence:
+    """Mutable holder whose fence_token is updated in place so every captured reference sees the current token."""
+    tenant_id: str
+    execution_id: str
+    runtime_instance_id: str
+    fence_token: int
 
 
 def topological_order(steps) -> list:
@@ -78,6 +89,7 @@ class LoopSettings:
     verification_backoff_s: float = 1.0
     queue_retry_after_ms: int = 1000   # admission QUEUE retry (IMP-M08-1)
     delay_retry_after_ms: int = 500    # admission DELAY retry (IMP-M08-1)
+    lease_renewal_interval_s: float | None = None   # CONF-045: None = no renewal
 
 
 @dataclass(frozen=True)
@@ -99,12 +111,14 @@ class LoopDeps:
     consolidate: Callable
     sleep: Callable
     settings: LoopSettings
+    database: Any = None              # PostgresCheckpoints source when checkpoints is None
     episodes: Any = None
     verification: Any = None          # M15 StepVerifier; None: the injected ``verify`` decides
     dead_letters: Any = None          # M17 PostgresDeadLetters; None: no records
     cancel_run: Any = None            # M16 PostgresConsolidator.cancel; None: the store moves the run
     faults: Any = NoFaults()          # M19 fault injection (§15.2): inert unless a test injects one
     metrics: Any = NoMetrics()        # M21 metrics hook (§21 S5): a no-op unless one is injected
+    checkpoints: Any = None          # M19 checkpoint rows (CONF-044); None: auto-constructed from database
 
 
 @dataclass(frozen=True)
@@ -119,8 +133,8 @@ class _Run:
     def __init__(self, deps: LoopDeps, loaded) -> None:
         self.deps, self.loaded = deps, loaded
         self.statuses = {sid: (row.status, None) for sid, row in loaded.steps.items()}
-        self.holder = FenceHolder(tenant_id=loaded.tenant_id, execution_id=loaded.execution_id,
-                                  runtime_instance_id=deps.runtime_instance_id, fence_token=loaded.owner_token)
+        self.holder = _LiveFence(tenant_id=loaded.tenant_id, execution_id=loaded.execution_id,
+                                 runtime_instance_id=deps.runtime_instance_id, fence_token=loaded.owner_token)
         self.owner_worker: str | None = None
         self.requirements: dict = {}
         self.lease = None                       # the lease this loop holds right now, if any
@@ -174,11 +188,24 @@ async def run_execution(deps: LoopDeps, tenant_id: str, execution_id: str) -> Lo
         return LoopResult(loaded.run_status, dict(state.statuses), FENCED_OUT)
     try:
         return await _drive(state)
-    except FencedOut:                                          # §8 step 8, C25: stop all work at once
+    except FencedOut:
         deps.metrics.increment(m.FENCED_OUT)
         state.log("fenced_out", level=logging.WARNING, reason=FENCED_OUT)
-        await state.release(FENCED_OUT)
+        await _safe_release(state)
         return LoopResult(loaded.run_status, dict(state.statuses), FENCED_OUT)
+    except LeaseLost:
+        state.log("lease_lost", level=logging.WARNING, reason=LEASE_LOST)
+        deps.metrics.increment("lease_lost")
+        await _safe_release(state)
+        return LoopResult(loaded.run_status, dict(state.statuses), LEASE_LOST)
+
+
+async def _safe_release(state: _Run) -> None:
+    """Release the held lease, suppressing ``FencedOut`` and ``LeaseLost`` — the lease is gone either way."""
+    try:
+        await state.release()
+    except (FencedOut, LeaseLost):
+        pass
 
 
 async def _drive(state: _Run) -> LoopResult:
@@ -199,6 +226,14 @@ async def _drive(state: _Run) -> LoopResult:
         ended = await _run_step(state, step)
         if ended is not None:
             return ended
+    if deps.store is not None:
+        db = getattr(deps.store, "_db", None)
+        if db is not None:
+            from adapters.postgres.checkpoints import PostgresCheckpoints
+            ck = deps.checkpoints or PostgresCheckpoints(db)
+            completed = [sid for sid, (s, _) in state.statuses.items()
+                         if s in (S.COMPLETED, S.FAILED, S.SKIPPED, S.DEAD_LETTER)]
+            await ck.write(state.holder, completed_steps=completed, pending_steps=[], current_step=None)
     await deps.consolidate(state.holder, tenant_id, execution_id)
     return LoopResult(R.RUNNING, dict(state.statuses))
 
@@ -270,8 +305,7 @@ async def _run_step_timed(state: _Run, step) -> LoopResult | None:
     if isinstance(lease, str):
         return await _end_run(state, step.id, lease, "consolidate")
     state.owner_worker, state.lease = lease.worker_id, lease
-    state.holder = FenceHolder(tenant_id=loaded.tenant_id, execution_id=loaded.execution_id,
-                               runtime_instance_id=deps.runtime_instance_id, fence_token=lease.fence_token)
+    state.holder.fence_token = lease.fence_token   # mutate in place; captured refs (recorder, run_attempts) see it
     deps.faults.hit("after_lease_acquire")
 
     first_attempt = (row.dispatched_attempt or 0) + 1       # after a recovered NOT_EXECUTED: the next attempt
@@ -319,6 +353,16 @@ async def _execute(state: _Run, step, row, binding, first_attempt: int):
     await state.set_step(step.id, S.RUNNING, reason="started", budget=deps.budget, reservation_id=rid,
                          budget_move="lock", budget_reason="step_started")
     state.log("step_started", step_id=row.step_id)
+    if deps.store is not None:
+        db = getattr(deps.store, "_db", None)
+        if db is not None:
+            from adapters.postgres.checkpoints import PostgresCheckpoints
+            ck = deps.checkpoints or PostgresCheckpoints(db)
+            completed = [sid for sid, (s, _) in state.statuses.items()
+                         if s in (S.COMPLETED, S.FAILED, S.SKIPPED, S.DEAD_LETTER)]
+            pending = [sid for sid, (s, _) in state.statuses.items()
+                       if s == S.PENDING]
+            await ck.write(state.holder, completed_steps=completed, pending_steps=pending, current_step=step.id)
     deps.faults.hit("after_budget_lock")
 
     # 8. attempts
@@ -332,8 +376,12 @@ async def _execute(state: _Run, step, row, binding, first_attempt: int):
                           step_max_attempts=step.retry_policy.get("max_attempts"), reservation_id=rid,
                           timeout_s=timeout, binding=binding, context=_context(loaded))
     recorder = state.recorder(row.step_id)
+    if deps.settings.lease_renewal_interval_s is not None:
+        guard = RenewingGuard(deps.guard, state, deps.settings.lease_renewal_interval_s, deps.settings.lease_ttl_s)
+    else:
+        guard = deps.guard
     outcome = await run_attempts(attempt, state.holder, AttemptDeps(
-        guard=deps.guard, ledger=deps.idempotency, attempts=deps.attempts, live=deps.live, events=recorder,
+        guard=guard, ledger=deps.idempotency, attempts=deps.attempts, live=deps.live, events=recorder,
         sleep=deps.sleep, backoff_base_s=deps.settings.backoff_base_s, ledger_ttl_s=deps.settings.ledger_ttl_s,
         faults=deps.faults),
         first_attempt=first_attempt)
@@ -637,8 +685,10 @@ async def recover_execution(deps: LoopDeps, tenant_id: str, execution_id: str) -
             return LoopResult(loaded.run_status, dict(state.statuses), NOT_ORPHANED)
         ended = await _recover_owned(state, flying, target)
     except FencedOut:
-        await state.release(FENCED_OUT)
+        await _safe_release(state)
         return LoopResult(loaded.run_status, dict(state.statuses), FENCED_OUT)
+    except LeaseLost:
+        return LoopResult(loaded.run_status, dict(state.statuses), LEASE_LOST)
     if ended is None and loaded.run_status == R.RECONCILING:      # C13: from RECONCILING only to a terminal state;
         await state.cancel_remaining(T.NOT_EXECUTED_NO_RETRY)      # a step found not executed cannot run again
         await deps.consolidate(state.holder, tenant_id, execution_id)
@@ -671,8 +721,7 @@ async def _take_over(state: _Run, target):
                                           ttl_s=deps.settings.lease_ttl_s, skip_locked=True)
         if lease is not None:
             state.owner_worker, state.lease = lease.worker_id, lease
-            state.holder = FenceHolder(tenant_id=loaded.tenant_id, execution_id=loaded.execution_id,
-                                       runtime_instance_id=deps.runtime_instance_id, fence_token=lease.fence_token)
+            state.holder.fence_token = lease.fence_token
             state.log("recovery_takeover", reason="recovery")
             return lease
     return None
