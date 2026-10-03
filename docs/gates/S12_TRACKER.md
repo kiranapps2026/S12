@@ -2,9 +2,9 @@
 
 Generated 2026-10-03 by `tools/s12_tracker.py report`. Do not edit by hand: change status with `python tools/s12_tracker.py set Mxx <status>`. The owner certifier output (S12_PROGRESS.md), when it exists, overrides this file.
 
-**Summary:** 5 not_started, 0 red_confirmed, 0 in_progress, 14 green, 4 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 2 defects.
+**Summary:** 4 not_started, 0 red_confirmed, 1 in_progress, 14 green, 4 reviewed of 23 milestones. Open: 0 conflicts, 0 stops, 2 defects.
 
-**Next:** M17 Dead letter and explicit rollback (model: opus, complexity: high, status: not_started)
+**Next:** M17 Dead letter and explicit rollback (model: opus, complexity: high, status: in_progress)
 
 | Milestone | Batch | Status | Complexity | Model | Review | Prototype state | Commits | Open CONF | Open STOP | Open DEF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -26,7 +26,7 @@ Generated 2026-10-03 by `tools/s12_tracker.py report`. Do not edit by hand: chan
 | M14 Live revalidation and cancellation | B3 | reviewed | very high | opus | ★ | partial | 0 | 0 | 0 | 0 |
 | M15 Verification and VERIFICATION episodes | B4 | green | high | sonnet |  | port only | 1 | 0 | 0 | 0 |
 | M16 Consolidation | B4 | green | medium | sonnet |  | minimal | 0 | 0 | 0 | 0 |
-| M17 Dead letter and explicit rollback | B4 | not_started | high | opus |  | not done | 0 | 0 | 0 | 0 |
+| M17 Dead letter and explicit rollback | B4 | in_progress | high | opus |  | not done | 0 | 0 | 0 | 0 |
 | M18 S15 response and redaction | B4 | not_started | medium | sonnet |  | not done | 1 | 0 | 0 | 0 |
 | M19 Crash recovery and fault injection | B5 | not_started | very high | opus |  | not done | 3 | 0 | 0 | 0 |
 | M20 Multi-process: subprocess kills, two runtimes, tenant isolation | B5 | not_started | very high | opus |  | not done | 2 | 0 | 0 | 0 |
