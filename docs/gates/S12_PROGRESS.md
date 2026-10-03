@@ -1,6 +1,6 @@
 # S12–S15 progress (generated)
 
-Generated 2026-10-03 by `tools/owner_certify_s12.py --progress` at commit `c06cdff`, target M18. Do not edit. This file, not the agent's log, is the progress of record (plan §6).
+Generated 2026-10-03 by `tools/owner_certify_s12.py --progress` at commit `25a7f98`, target M19. Do not edit. This file, not the agent's log, is the progress of record (plan §6).
 
 | Milestone | Golden | Concurrency x5 | Sabotage |
 |---|---|---|---|
@@ -22,7 +22,8 @@ Generated 2026-10-03 by `tools/owner_certify_s12.py --progress` at commit `c06cd
 | M15 | PASS 51 passed | — | — |
 | M16 | PASS 31 passed | — | — |
 | M17 | PASS 37 passed | — | — |
-| M18 | PASS 19 passed | — | PASS  |
+| M18 | PASS 19 passed | — | — |
+| M19 | PASS 44 passed | — | PASS  |
 
 | Standing check | Result |
 |---|---|
