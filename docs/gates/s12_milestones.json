@@ -274,7 +274,7 @@
       "batch": "B5",
       "prototype_state": "not done",
       "scope": "8 journeys, owner_certify_s12.py, tag s12-s15-certified",
-      "status": "not_started",
+      "status": "in_progress",
       "notes": ""
     }
   ]
