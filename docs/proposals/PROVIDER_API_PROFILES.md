@@ -1,6 +1,6 @@
 # Provider adapters: one engine, operation archetypes, provider profiles
 
-**Status: proposal for the owner (revision 6, 2026-10-03). No code, pinned document, catalog or milestone is changed by
+**Status: proposal for the owner (revision 7, 2026-10-03). No code, pinned document, catalog or milestone is changed by
 it.** It applies when the first new-adapter milestone starts, after the `s12-s15-certified` tag. S12–S15 does not call
 real providers (`S12_S15_EXECUTION_GATE.md:18`) and runs on `MockAdapter`, so no milestone card, golden test or gate row
 moves.
@@ -42,14 +42,14 @@ Three pieces, each with one owner:
 |---|---|---|
 | **Engine** (`src/engines/_http/`) | One `BaseAdapter` implementation that runs every call path (`call`, `probe`, `observe`, the inverse) for every archetype: URL and headers, binding-version and scope checks, the README §2 classification table, the README §3 probe rules, the README §4 observe rules, inverse location, one trace log line | Once, for all providers |
 | **Profile** (`src/engines/<provider>/profile.yaml`) | Plain values: version, base URL, page size, and per operation its archetype, endpoint, stamp marker and compared fields | Per provider; changes when the provider's API changes |
-| **Hooks** (`src/engines/<provider>/adapter.py`) | The few things only the provider knows: build a request body, extract the id from a response, provider-specific error rows, find resources by stamp, normalise a compared value, decide whether a record is ours | Per provider; changes when the provider's behaviour changes |
+| **Hooks** (`src/engines/<provider>/adapter.py`) | The few things only the provider knows: build a request, extract the id from a response, provider-specific error rows, find resources by the step key, normalise a compared value, decide whether a record is ours | Per provider; changes when the provider's behaviour changes |
 
 A provider adapter is a subclass of the engine with those hooks, plus its `CredentialProvider` and its profile. The
 engine is extracted when the second provider is built (the first adapter is written in this shape from the start, so
 the extraction is a move, not a rewrite).
 
 **What this makes dynamic, safely:** a new operation of an existing provider that fits an archetype needs a catalog row,
-a profile entry, a few lines of `build_body` / `extract`, and recorded fixtures. Its probe, observe and inverse come
+a profile entry, a few lines of `build_request` / `extract`, and recorded fixtures. Its probe, observe and inverse come
 from the engine, already tested. It is enabled for production on its own `truth_state` (DR-41) once its recorded tests
 pass. Nothing is discovered or decided at run time: archetypes, endpoints and compared fields are fixed in the profile
 before S5 freezes the binding.
@@ -93,19 +93,27 @@ owner decision, not a profile edit.
 |---|---|---|---|---|---|
 | `read_one` | R | GET one resource by id | not called (reads retry) | — | — |
 | `list_page` | R | one page, at most `max_page_size`; cursor in `data["next"]` | not called | — | — |
-| `create` | W | build body, apply the stamp (or send the provider key), send; `data` carries the identifier | find by stamp: exactly one of ours → `EXECUTED_SUCCESS`; none → `NOT_EXECUTED` **only** if the operation's `stamp_lookup` is `consistent`, else `INCONCLUSIVE`; several → `INCONCLUSIVE` and an ERROR log | read via `reads[observation.method]`; with no identifier, find by stamp first; compare `compare` fields; check the record is ours | is the inverse **target**: located by the stamp, never by a natural key |
-| `update` | W | merge only the fields in params | read by id: every compared field equal → `EXECUTED_SUCCESS`; otherwise `INCONCLUSIVE` (never `NOT_EXECUTED`: a differing field may be someone else's later write) | as `create`, by identifier | — |
+| `create` | W | build the request with the stamp (or the provider key), send; `data` carries the identifier | `find_by_key`: exactly one of ours → `EXECUTED_SUCCESS`; none → `NOT_EXECUTED` **only** if the operation's `lookup` is `consistent`, else `INCONCLUSIVE`; several → `INCONCLUSIVE` and an ERROR log | read via `reads[observation.method]`; with no identifier, `find_by_key` first; compare the written `compare` fields; check `owns` | is the inverse **target**: located by `find_by_key`, never by a natural key alone |
+| `update` | W | merge only the fields in params | read by id: every written compared field equal → `EXECUTED_SUCCESS`; otherwise `INCONCLUSIVE` (never `NOT_EXECUTED`: a differing field may be someone else's later write) | as `create`, by identifier | — |
 | `replace` | W | send the full record; clears what is not sent | as `update` | as `update` | — (off the allow-list until a recorded response shows the clearing) |
-| `delete` | D | planned: by id. Inverse (key ends `:inverse`): find the create's resource by stamp; exactly one → delete; none → `client_error` `inverse_target_not_found`; several → `inverse_target_ambiguous` | read by id: absent → `EXECUTED_SUCCESS`; present → `NOT_EXECUTED` only if `read_by_id` is `consistent` | absent → `True` | — |
-| `send` | IRREVERSIBLE | send once with a deterministic id derived from the key | find by the deterministic id (README §3 method 2) | read by the deterministic id | none |
+| `delete` | D | planned: by id; "not found" (see the shared rules) → `ok` with `data["already_absent"] = true` (`ghl_crm.md` §2). Inverse (key ends `:inverse`, the create's params): `find_by_key` on the create's resource; exactly one → delete; none → `client_error` `inverse_target_not_found`; several → `inverse_target_ambiguous` | read by id: not found → `EXECUTED_SUCCESS`; present and ours → `NOT_EXECUTED` only if `read_by_id` is `consistent`, else `INCONCLUSIVE` | not found → `True`; present → `False` | — |
+| `send` | IRREVERSIBLE | send once with a deterministic id derived from the step key (Gmail `Message-ID`) | `find_by_key` on the deterministic id, with the same `lookup` rule as `create` (Gmail: `eventual`, so never `NOT_EXECUTED`) | find by the deterministic id, compare | none (README §1.1: never for IRREVERSIBLE) |
 | `custom` | any | the hook implements the call path itself | hook | hook | hook |
+
+The engine picks the README §2.2 column itself: read or mutation from `binding.effective_mutation`, and "provider
+honours the key" from the profile's `idempotency`.
 
 Rules every archetype shares, implemented once in the engine:
 
-- **Absent means absent.** For `delete` and `observe`, a 404 is "absent" only when a read of the parent (`parent`
-  read in the profile) succeeds in the same call; otherwise `client_error` / `INCONCLUSIVE` / `UNKNOWN`. Soft deletes
-  count as absent through `absent_when` (Notion `in_trash: true`).
-- **Empty means absent.** In comparisons, an absent field equals an empty value written (`false`, `""`, `[]`).
+- **Not found means gone only where the provider says so.** The profile's `not_found` decides. `absent`: the provider
+  answers "no access" with 403, so a 404 means gone (GHL: 403 "does not have access to this location", `ghl_crm.md`
+  §2). `needs_parent_read`: the provider answers "no access" with 404 too (Airtable), so a 404 counts as gone only when
+  a read of the `parent` succeeds in the same call; otherwise the call returns `client_error`, the probe
+  `INCONCLUSIVE`, the observation `UNKNOWN`. The default is `needs_parent_read`, and without a `parent` a 404 is never
+  "gone". Soft deletes count as gone through `absent_when` (Notion `in_trash: true`).
+- **Compare what was written.** Only `compare` fields present in the step's params are compared (`ghl_crm.md` §4:
+  "compared, if present"); an entry naming an object (`fields`, `properties`) compares the keys written inside it. An
+  absent field equals an empty value written (`false`, `""`, `[]`).
 - **Ours means ours.** Every read used by probe, observe or inverse passes the `owns` hook (stamp and account scope
   match, `ghl_crm.md` §4 "always checked"); a record that is not ours is never adopted or deleted.
 - `custom` is the escape hatch for an operation no archetype fits. Each `custom` entry needs a line in the spec saying
@@ -118,15 +126,17 @@ The provider writes these, and only these (each has a safe default where one exi
 
 | Hook | Used by | Default |
 |---|---|---|
-| `build_body(op, params, stamp)` | `create`, `update`, `replace`, `send` | required for those archetypes |
+| `build_request(op, params, key, settings)` | every call: returns the query and the body. It computes the stamp or the deterministic id from the step key (the spec's format, e.g. `ghl_crm.md` §0 `stamp()`, `gmail_mail.md` §3 `Message-ID`); paging values and `fixed_params` are added by the engine afterwards | required |
 | `extract(op, response)` | every call: the identifier, or `items` and `next` for `list_page`; only named fields, never the whole record | required |
 | `classify(op, response)` | every call: the provider's own rows (Layer A spec §2), returning an error class, `ok`, or "not mine" | "not mine": the engine's README §2 table decides |
-| `find_by_stamp(op, params, stamp)` | `create` probe, observe without identifier, `delete` inverse | required when a `create` exists |
+| `find_by_key(op, params, key, settings)` | `create` and `send` probes, observe without identifier, `delete` inverse: the resources carrying our stamp or deterministic id, or "lookup failed" | required when a `create` or `send` exists |
 | `normalize(op, field, value)` | comparisons | identity |
 | `owns(op, record, settings)` | every read used by probe, observe, inverse | required when a `create` exists |
-| `derive_id(op, key)` | `send` | required for `send` |
 
-The GHL duplicate-contact rule (`ghl_crm.md` §2) is a `classify` row that does its own `GET`; the stamp hash is
+Hooks make provider calls only through the engine's client (`http`), never their own: same transport (`retries=0`),
+same deadline (`adapter_client_timeout_s`), same trace line.
+
+The GHL duplicate-contact rule (`ghl_crm.md` §2) is a `classify` row that does one `GET` through `http`; the stamp hash is
 `ghl_crm.md` §0's `stamp()`; the trailing `[ref:…]` stripping is `normalize`. Nothing else in `ghl_crm.md` needs
 provider code.
 
@@ -145,13 +155,15 @@ Defaults fail safe where the field affects behaviour. A field without a default 
 | `version_scheme` | `header` / `path` / `none` | `none` | GHL, Notion `header`; Airtable `path` |
 | `version_header` | header name, for `header` | — | `Version`, `Notion-Version` |
 | `base_url` | URL; `{api_version}` for `path`; `{settings.name}` for per-tenant parts | required | `https://services.leadconnectorhq.com`, `https://api.airtable.com/{api_version}`, `{settings.instance_url}/services/data/v{api_version}` |
-| `pagination` | `cursor` / `offset_token` / `page` / `link_header` / `page_token` / `none` | `none` | GHL search `cursor`, Airtable `offset_token` |
+| `paging` | names the engine uses for one page: `{size: <param>, cursor: <param>, next: <response path or "header:Link">}`; in the query for GET, in the body otherwise | none (no paging) | Airtable `{size: pageSize, cursor: offset, next: offset}`; Notion `{size: page_size, cursor: start_cursor, next: next_cursor}` |
 | `max_page_size` | int | `1` | `100` |
+| `not_found` | `absent` / `needs_parent_read` (shared rules) | `needs_parent_read` | GHL `absent`; Airtable `needs_parent_read` |
 | `idempotency` | `native_header` / `body_field` / `stamp` | `stamp` | Stripe `native_header`; GHL, Airtable, Notion `stamp` |
 | `idempotency_header` / `idempotency_field` | name | — | `Idempotency-Key` |
 | `read_by_id` | `consistent` / `eventual` | `eventual` | GHL `consistent` (VERIFY) |
 | `max_url_length` | int | none | Airtable `16000` |
-| `fixed_params` | values the engine always sends; step params cannot override them | `{}` | Airtable `{typecast: false, returnFieldsByFieldId: true}` |
+| `fixed_params` | values the engine always sends, last, so params cannot override them; in the query for GET and DELETE, in the body otherwise | `{}` | Airtable `{typecast: false, returnFieldsByFieldId: true}` |
+| `request_id_header` | the response header carrying the provider's request id, for the trace line | none | VERIFY per provider |
 | `limits` | documented limits, informational (guard sizing) | `{}` | `{burst: "100 per 10 s per location", bulkhead: 8}` |
 | `verified` | `{docs: <date and source> or null, recorded: <date of the last recorded response in this repo> or null}` | required | `{docs: null, recorded: null}` |
 | `review_by` | date of the next docs and changelog check | required | `2026-12-31` |
@@ -164,7 +176,8 @@ defined nowhere a machine can check; the block gives each one its endpoint.
 | Field | Values | Default |
 |---|---|---|
 | `endpoint` | GET path template | required |
-| `parent` | GET path template of the parent, for the 404 rule | none (then a 404 is never "absent") |
+| `identifier` | how the catalog's `identifier_field` value splits into placeholders | `"{id}"` (GHL notes and tasks: `"{contactId}/{id}"`, the composite `ref` of `ghl_crm.md` §0) |
+| `parent` | GET path template of the parent, for `not_found: needs_parent_read` | none (then a 404 is never "gone") |
 | `absent_when` | field values that mean deleted | `{}` |
 
 ### `kernels:` block
@@ -176,21 +189,23 @@ Keyed by catalog kernel op id.
 | `archetype` | one of the table above | required |
 | `method`, `endpoint` | HTTP method; path template: `{name}` a step param, `{settings.name}` a credential setting | required |
 | `api_version` | override, only when this operation uses another version (Notion markdown endpoints `2026-03-11`) | profile's |
+| `paging` | override of the provider's paging names (GHL search: body `pageLimit`, `searchAfter`) | provider's |
 | `stamp_marker` | where the stamp lives, for `create`: e.g. `custom_field:s12_ref`, `body_suffix` | required for `create` with `idempotency: stamp` |
-| `stamp_lookup` | `consistent` / `eventual`: may an empty stamp search prove `NOT_EXECUTED`? | `eventual` (never) |
-| `compare` | fields `observe` and `probe` compare | required for `create`, `update`, `replace` |
+| `lookup` | `consistent` / `eventual`: may an empty `find_by_key` prove `NOT_EXECUTED`? | `eventual` (never) |
+| `compare` | fields `observe` and `probe` compare (only those the step wrote) | required for `create`, `update`, `replace`, `send` |
 | `required_scopes` | list | `[]` |
 | `deprecated_at`, `sunset_at`, `replacement_kernel_op_id` | dates, kernel op id | — |
 
 Dropped in earlier revisions and still out: batches (one resource per operation), partial-success flags, async jobs,
-ETag flow (C36), `null_means`, `field_reference`, `redact_paths`. Revision 6 also replaces `probe_method` and
-`update_semantics` with `archetype`, which decides the behaviour instead of labelling it.
+ETag flow (C36), `null_means`, `field_reference`, `redact_paths`. Revision 6 replaced `probe_method` and
+`update_semantics` with `archetype`, which decides the behaviour instead of labelling it; revision 7 replaced the
+`pagination` label with `paging` names the engine actually uses. Every field has a reader.
 
 ## What stays out of the profile
 
 | Not in the profile | Where it stays | Why |
 |---|---|---|
-| Request bodies | `build_body` | Provider bodies are nested and typed; body templates in data are where the earlier app's complexity grew |
+| Request bodies and filters | `build_request` | Provider bodies are nested and typed; body templates in data are where the earlier app's complexity grew |
 | Provider error rows | `classify` + Layer A spec §2 | They match on body text, sometimes need a lookup (GHL duplicates) |
 | Timeouts and retries | `ExecutionSettings.adapter_client_timeout_s` (< `step_timeout_s`, C37); `retry_policy` | The adapter never sets its own deadline or retries (README §1) |
 | Mutation, risk, cost, `retry_safety`, inverse, observation method | `catalog.yaml` | Registry facts (A4) |
@@ -219,10 +234,10 @@ from `params`").
 S5 copies the catalog's one `versions.binding` into `FrozenBindingIdentity.binding_version`; S12 entry denies a plan
 whose binding row version no longer matches (`binding_version_mismatch`, C32, G2).
 
-**Rule:** a change to what a provider's adapter sends (`api_version`, `version_*`, `base_url`, `fixed_params`, an
-operation's `archetype`, `method`, `endpoint`, `api_version`, `stamp_marker`, or a `reads:` endpoint) bumps
-`versions.binding`. In the same change, the changed provider's profile lists **only** the new value; every other
-profile **adds** the new value to its list. `verified`, `review_by`, `limits` and `compare` change without a bump.
+**Rule:** every profile change bumps `versions.binding`, except changes to `verified`, `review_by`, `limits`,
+`compare`, `deprecated_at`, `sunset_at` and `replacement_kernel_op_id`. (A list of what does *not* bump is shorter and
+safer than a list of what does: a new field bumps until someone decides otherwise.) In the same change, the changed
+provider's profile lists **only** the new value; every other profile **adds** it to its list.
 
 **Runtime check (engine, before send):** if `binding.binding_version` is not in `compatible_binding_versions`, nothing
 is sent:
@@ -236,7 +251,9 @@ is sent:
 
 Why a list: with one catalog-wide version, a single string would make one provider's change fail every other
 provider's running executions. With the list, only the changed provider's admitted executions fail closed; the others
-keep running. S12 entry still refuses every plan built before the bump (C32), which is the existing behaviour.
+keep running. S12 entry still refuses every plan built before the bump (C32), for every provider: a plan waiting at
+S10 for confirmation, or suspended, must be requested again. That is the existing behaviour, and the reason bumps
+should be rare and batched.
 
 **Rollout:** pause new entries only for tenants using the changed provider (C39 `paused_until`), let their running
 executions finish, load the catalog and deploy, unpause. After that, old values can be pruned from every list. A
@@ -246,19 +263,22 @@ per-provider binding version in the catalog would remove the extra list entries;
 ## How a call runs
 
 1. **Binding version** in the list, else refuse (above).
-2. **Credential document**: `connection_id` missing → `client_error` `no_connection`; scopes and resource scope checked.
+2. **Credential document** (README §5): `connection_id` missing → `client_error` `no_connection`; `credential()`
+   raising → `not_dispatched`; a required setting missing → `client_error` `connection_incomplete`; then scopes and
+   resource scope.
 3. **URL**: `base_url` + `endpoint`; `{api_version}` and `{settings.*}` filled from the profile and the document; each
    `{name}` filled from step params **as one URL-encoded path segment** (a value containing `/`, `?`, `#` or `..` is
    refused before send, `client_error` `bad_path_param`); a placeholder left unfilled is refused the same way. A
    read above `max_url_length` switches to its POST form (which endpoint that is, e.g. Airtable `/listRecords`, is
    hook code).
-4. **Headers and fixed params**: version header; `fixed_params` set last, so params cannot override them; the
-   provider key for `native_header` / `body_field`.
+4. **Request**: `build_request` gives the query and body; the engine adds the paging values, the version header,
+   the provider key for `native_header` / `body_field`, and `fixed_params` last.
 5. **Archetype** runs the call (and, for probe, observe and inverse, the paths in the archetype table) with the hooks.
 6. **Classification**: `classify`, then the README §2 table. `data` on failure holds only `provider_status` and
    `provider_code`; bodies are never logged or kept.
 7. **One trace line** (INFO, no PII, no values): `trace_id`, `kernel_op_id`, archetype, call path, attempt,
-   `binding_version`, `api_version`, method, endpoint **template**, provider status, provider request id, latency. This
+   `binding_version`, `api_version`, method, endpoint **template**, provider status, provider request id (from
+   `request_id_header`), latency. This
    is how an operator finds which API version and endpoint an execution used, without changing the manifest.
 8. A `Sunset` or `Deprecation` response header adds one WARNING line. Adapters never emit events (README §1).
 
@@ -279,8 +299,8 @@ From the earlier app's Airtable and Notion work. Most are now engine rules (abov
 | No delete endpoint, or the action notifies people (comments) | The catalog marks it `IRREVERSIBLE` (archetype `send` or `custom`) |
 | A secret returned only once (Airtable webhook `macSecretBase64`) | Never in `data`; off the allow-list until a secret store takes it (DR-11, MC-058) |
 | No connection mapped for the caller | `client_error` `no_connection`; never a default account, token file or environment variable |
-| Empty values left out of responses (Airtable `false`, `""`, `[]`) | Engine rule "empty means absent" |
-| A 404 meaning "no access" (Airtable no-grant bases) | Engine rule "absent means absent" (parent read) |
+| Empty values left out of responses (Airtable `false`, `""`, `[]`) | Engine rule "compare what was written" |
+| A 404 meaning "no access" (Airtable no-grant bases) | `not_found: needs_parent_read` |
 | Request flags that change the provider's schema (Airtable `typecast: true`) | `fixed_params` |
 | Response keys users can rename (Airtable field and table names) | Ids in paths, `compare` and `fixed_params` (`returnFieldsByFieldId: true`) |
 | Very large or data-bearing error bodies (Notion: a 60 KB body for an invalid emoji) | Never logged or kept |
@@ -291,9 +311,10 @@ From the earlier app's Airtable and Notion work. Most are now engine rules (abov
 registry (README §1, isolation):
 
 - parses; `profile_format` known; required fields present; enum values valid;
-- every `create` with `stamp` has a `stamp_marker`; every `create`, `update` and `replace` has `compare`;
+- every `create` with `stamp` has a `stamp_marker`; every `create`, `update`, `replace` and `send` has `compare`;
 - `version_scheme: path` ⇒ `base_url` contains `{api_version}`; `header` ⇒ `version_header` set;
-- every endpoint placeholder is a step param, `{api_version}` or a `{settings.name}`;
+- every placeholder in an endpoint, a `reads:` entry or a `stamp_marker` is a step param, an `identifier` part,
+  `{api_version}` or a `{settings.name}`;
 - the subclass implements every hook its archetypes require; the count of `custom` entries is reported.
 
 **Catalog check** (`tests_agent`, against `docs/catalog/catalog.yaml`):
@@ -312,6 +333,11 @@ check next to `unverifiable_mutation` (M21, DR-41), which already reads the bind
 archetype, so a new operation gets its cases automatically and fails until its recorded fixtures exist
 (`tests_agent/fixtures/providers/<provider>/<operation>/<case>.json`).
 
+**Engine tests** (`tests_agent`, once, for all providers): the engine concentrates the safety rules, so a bug in it
+reaches every provider at once. It gets its own README §6 matrix against a fake provider, plus sabotage patches in the
+M10 pattern: `NOT_EXECUTED` from an `eventual` lookup, a 404 taken as gone without the parent read, an unencoded path
+parameter, a `fixed_params` value overridden by params, a probe or observe that skips `owns`. Each must be caught.
+
 **Date checks** (reported, never blocking unrelated work): `sunset_at` within N days; `review_by` passed.
 
 ## Example: `crm` (GoHighLevel)
@@ -327,9 +353,9 @@ api_version: "2021-07-28"
 version_scheme: header
 version_header: Version
 base_url: https://services.leadconnectorhq.com
-pagination: cursor
 max_page_size: 100
 idempotency: stamp
+not_found: absent               # GHL answers "no access" with 403 (ghl_crm.md §2)
 read_by_id: consistent          # ghl_crm.md: GET by id treated as authoritative (VERIFY)
 verified: {docs: null, recorded: null}
 review_by: 2026-12-31
@@ -337,11 +363,12 @@ limits: {burst: "100 per 10 s per location", daily: "200000 per location", bulkh
 
 reads:
   get_contact: {endpoint: "/contacts/{id}"}
-  get_note:    {endpoint: "/contacts/{contactId}/notes/{id}", parent: "/contacts/{contactId}"}
-  get_task:    {endpoint: "/contacts/{contactId}/tasks/{id}", parent: "/contacts/{contactId}"}
+  get_note:    {endpoint: "/contacts/{contactId}/notes/{id}", identifier: "{contactId}/{id}"}
+  get_task:    {endpoint: "/contacts/{contactId}/tasks/{id}", identifier: "{contactId}/{id}"}
 
 kernels:
-  crm.contact_list:   {archetype: list_page, method: POST, endpoint: /contacts/search}
+  crm.contact_list:   {archetype: list_page, method: POST, endpoint: /contacts/search,
+                       paging: {size: pageLimit, cursor: searchAfter, next: VERIFY}}
   crm.contact_create: {archetype: create, method: POST, endpoint: /contacts/, stamp_marker: "custom_field:s12_ref",
                        compare: [firstName, lastName, email, phone, tags, source, customFields]}
   crm.contact_update: {archetype: update, method: PUT, endpoint: "/contacts/{id}",
@@ -359,11 +386,12 @@ kernels:
   crm.task_delete:    {archetype: delete, method: DELETE, endpoint: "/contacts/{contactId}/tasks/{id}"}
 ```
 
-`stamp_lookup` stays `eventual` everywhere: GHL's contact search is an eventually consistent index, and the note and
+`lookup` stays `eventual` everywhere: GHL's contact search is an eventually consistent index, and the note and
 task lists may become `consistent` only after `ghl_crm.md`'s L2 measurement. `contact_update` is a `PUT` that sends
-only the fields in params (`ghl_crm.md` §1), so its archetype is `update`. The hooks GHL needs: `build_body`,
-`extract`, `classify` (duplicate-contact rule, 404 on delete), `find_by_stamp`, `normalize` (stamp-line stripping,
-E.164 phones, lower-cased email), `owns` (stamp and `locationId`).
+only the fields in params (`ghl_crm.md` §1), so its archetype is `update`. The note and task `identifier` patterns need the
+catalog change `ghl_crm.md` §0 already asks for (`identifier_field: ref`); until it is made, their delete observations
+stay UNKNOWN, as the spec says. The hooks GHL needs: `build_request`, `extract`, `classify` (duplicate-contact rule),
+`find_by_key`, `normalize` (stamp-line stripping, E.164 phones, lower-cased email), `owns` (stamp and `locationId`).
 
 ## Sketches for other providers (illustrative; need catalog rows and VERIFY)
 
@@ -374,12 +402,14 @@ provider: airtable
 api_version: "v0"
 version_scheme: path
 base_url: https://api.airtable.com/{api_version}
-pagination: offset_token
+paging: {size: pageSize, cursor: offset, next: offset}
 max_page_size: 100
 max_url_length: 16000
+not_found: needs_parent_read    # no grant on a base answers 404 everywhere
 fixed_params: {typecast: false, returnFieldsByFieldId: true}
 reads:
-  get_record: {endpoint: "/{baseId}/{tableId}/{id}", parent: "/{baseId}/{tableId}?pageSize=1"}
+  get_record: {endpoint: "/{baseId}/{tableId}/{id}", identifier: "{baseId}/{tableId}/{id}",
+               parent: "/{baseId}/{tableId}"}   # the engine asks the parent for one item
 kernels:
   airtable.record_list:   {archetype: list_page, method: GET, endpoint: "/{baseId}/{tableId}"}
   airtable.record_create: {archetype: create, method: POST, endpoint: "/{baseId}/{tableId}",
@@ -396,15 +426,16 @@ api_version: "2025-09-03"
 version_scheme: header
 version_header: Notion-Version
 base_url: https://api.notion.com/v1
-pagination: cursor
+paging: {size: page_size, cursor: start_cursor, next: next_cursor}
 max_page_size: 100
+not_found: needs_parent_read    # VERIFY whether an unshared page answers 403 or 404
 reads:
-  get_page: {endpoint: "/pages/{id}", absent_when: {in_trash: true}}
+  get_page: {endpoint: "/pages/{id}", absent_when: {in_trash: true}, parent: "/data_sources/{settings.data_source_id}"}
 kernels:
   notion.row_create:  {archetype: create, method: POST, endpoint: /pages,
                        stamp_marker: "property:{settings.stamp_property}", compare: [properties]}
   notion.page_update: {archetype: update, method: PATCH, endpoint: "/pages/{id}", compare: [properties]}
-  notion.page_trash:  {archetype: delete, method: PATCH, endpoint: "/pages/{id}"}   # build_body sends {in_trash: true}
+  notion.page_trash:  {archetype: delete, method: PATCH, endpoint: "/pages/{id}"}   # build_request sends {in_trash: true}
 ```
 
 ## Not adopted
@@ -421,7 +452,7 @@ kernels:
 | Async multi-step flows (Notion view queries, file uploads) | No verification path; off the allow-list |
 | Business-entity matrices, composites, workflow IR in the adapter layer | Plans belong to S4/S9 (M2a) |
 | Hot credential reload, token fallback chains, multi-account registries | One `CredentialProvider`, keyed by `connection_id` |
-| Request-body templates in the profile | `build_body` code; nested typed bodies in data are hard to review and test |
+| Request-body templates in the profile | `build_request` code; nested typed bodies in data are hard to review and test |
 | Profile fields (`api_version`, profile version) in the `ExecutionManifest` | The manifest is a frozen S0–S11 contract; the trace line records them instead |
 | The adapter checking the catalog's version at start | Isolation (README §1); the catalog check is a test and a Worker Runtime start-up check |
 | A plugin registry or dynamically loaded adapters | The catalog's `engine_module` / `adapter_class` already name the class; one routing adapter is DR-42 |
@@ -431,8 +462,9 @@ kernels:
 1. Check this structure against the Notion and Airtable v2 adapter package (DR-38, prepared for `adapters-work`, not in
    this repository).
 2. Accept the engine, the closed archetype set and the hook list; the first adapter is written in this shape, the
-   engine is extracted with the second.
-3. Accept the profile, its location and the `reads:` block as the definition of `observation.method` names.
+   engine is extracted with the second, and the engine tests and sabotage patches are part of that extraction.
+3. Accept the profile, its location, the `reads:` block as the definition of `observation.method` names, and the
+   `not_found` rule (default `needs_parent_read`).
 4. Accept the version rule with `compatible_binding_versions` and the per-provider rollout.
 5. Add the catalog check to the Worker Runtime start-up check (S12 code, next to `unverifiable_mutation`).
 6. Optional CONF items: a per-provider binding version in the catalog; per-provider breaker and bulkhead settings;
